@@ -1,0 +1,57 @@
+# image/Containerfile
+FROM debian:bookworm-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates curl git openssh-server ripgrep jq socat \
+      python3 build-essential procps less nano \
+    && rm -rf /var/lib/apt/lists/*
+
+# Node LTS (necessario para os CLIs dos agentes)
+RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/*
+
+# CLIs dos agentes
+RUN npm install -g @anthropic-ai/claude-code @openai/codex @google/gemini-cli \
+    && npm cache clean --force
+
+# gh CLI
+RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+      -o /usr/share/keyrings/githubcli.gpg \
+    && echo "deb [signed-by=/usr/share/keyrings/githubcli.gpg] https://cli.github.com/packages stable main" \
+      > /etc/apt/sources.list.d/github-cli.list \
+    && apt-get update && apt-get install -y --no-install-recommends gh \
+    && rm -rf /var/lib/apt/lists/*
+
+# usuario nao-root
+RUN useradd -m -u 1000 -s /bin/bash agent
+
+# mise para o agente
+USER agent
+RUN curl -fsSL https://mise.run | sh
+ENV PATH="/home/agent/.local/bin:/home/agent/.local/share/mise/shims:${PATH}"
+USER root
+
+# HOST KEYS ASSADAS NO BUILD — nao gerar em runtime.
+# Containers efemeros reusam portas em 127.0.0.1; chave por container
+# dispararia host-key-changed a cada workspace.
+RUN ssh-keygen -A && mkdir -p /run/sshd
+
+# sshd: so chave publica, sem senha, sem root
+RUN printf '%s\n' \
+      'PermitRootLogin no' \
+      'PasswordAuthentication no' \
+      'PubkeyAuthentication yes' \
+      'AuthorizedKeysFile /home/agent/.ssh/authorized_keys' \
+      'AcceptEnv HTTPS_PROXY HTTP_PROXY NO_PROXY' \
+      > /etc/ssh/sshd_config.d/agent-sandbox.conf
+
+# Aninhamento: cada agente tenta se sandboxar dentro do container e conflita.
+# O container E a fronteira; ver spec 3.6.
+ENV GEMINI_SANDBOX=false
+ENV CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1
+
+COPY entrypoint.sh /usr/local/bin/entrypoint.sh
+RUN chmod 0755 /usr/local/bin/entrypoint.sh
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

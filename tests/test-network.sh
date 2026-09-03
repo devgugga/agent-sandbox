@@ -19,7 +19,12 @@ podman run --rm --pod "$POD" --cap-add NET_ADMIN agent-sandbox-net \
 # squid como uid 900, com allowlist contendo apenas example.com
 podman run -d --name asb-squid --pod "$POD" --user 900 agent-sandbox-net \
   squid -N -f /etc/squid/squid.conf >/dev/null
-sleep 5
+# Espera o proxy responder de fato, em vez de torcer por um sleep fixo.
+wait_for 30 podman run --rm --pod "$POD" --user 1000 agent-sandbox-net \
+  sh -c 'echo > /dev/tcp/127.0.0.1/3128'
+require "o pod responde e o proxy esta de pe" \
+  podman run --rm --pod "$POD" --user 1000 agent-sandbox-net \
+    curl -s -o /dev/null -m 15 -x http://127.0.0.1:3128 https://example.com
 
 run_as_agent() { podman run --rm --pod "$POD" --user 1000 agent-sandbox-net sh -c "$1" 2>/dev/null; }
 

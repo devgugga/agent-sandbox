@@ -29,6 +29,36 @@ assert_fails() {
   fi
 }
 
+
+# Espera uma condicao ficar verdadeira. Substitui `sleep N` fixo, que sob carga
+# e a primeira coisa a quebrar.
+#   wait_for <segundos> <comando...>
+wait_for() {
+  local limit="$1"; shift
+  local i=0
+  while [ "$i" -lt "$limit" ]; do
+    "$@" >/dev/null 2>&1 && return 0
+    i=$((i+1)); sleep 1
+  done
+  return 1
+}
+
+# CONTROLE POSITIVO. Asserção negativa ("X esta bloqueado") passa de graça quando
+# o container nem subiu: o comando falha e o teste conclui "bloqueado". Um falso
+# verde numa asserção de seguranca e pior que uma falha. Portanto: antes de
+# confiar em qualquer "bloqueado", prove que o ambiente responde — e ABORTE se
+# nao responder, em vez de seguir e reportar verde.
+require() {
+  local msg="$1"; shift
+  if "$@" >/dev/null 2>&1; then
+    echo "  controle positivo ok: $msg"
+    return 0
+  fi
+  echo "  ABORTADO: controle positivo falhou -> $msg"
+  echo "  As assercoes de bloqueio nao sao confiaveis sem ele (falso verde)."
+  exit 1
+}
+
 report() {
   echo "---"; echo "passou: $_pass  falhou: $_fail"
   [ "$_fail" -eq 0 ] || return 1

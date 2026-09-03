@@ -23,6 +23,10 @@ port=$(echo "$out" | jq -r .port)
 assert_contains "asb-$WS" "$(echo "$out" | jq -r .pod)" "nome do pod correto"
 
 key=~/.config/agent-sandbox/id_ed25519
+ssh_probe() { ssh -q -o ConnectTimeout=3 -i "$key" -p "$port" -o IdentitiesOnly=yes \
+  -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null agent@127.0.0.1 true; }
+wait_for 40 ssh_probe
+require "SSH do workspace aceita conexao" ssh_probe
 ssh_agent() { ssh -i "$key" -p "$port" -o IdentitiesOnly=yes -o StrictHostKeyChecking=no \
   -o UserKnownHostsFile=/dev/null agent@127.0.0.1 "$1" 2>/dev/null; }
 

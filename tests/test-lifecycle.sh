@@ -29,6 +29,13 @@ ssh_agent() { ssh -i "$key" -p "$port" -o IdentitiesOnly=yes -o StrictHostKeyChe
 assert_eq "1000" "$(ssh_agent 'id -u')" "SSH conecta e o agente e uid 1000"
 assert_eq "ok" "$(ssh_agent 'test -d /workspace && echo ok')" "repo montado em /workspace"
 
+# O bug que a suite nao pegava: /workspace existia mas era ilegivel para o
+# agente (uid 1000 -> subuid sem posse). Existir nao basta; tem que escrever.
+assert_eq "ok" "$(ssh_agent 'echo teste > /workspace/.asb-escrita && echo ok')" \
+  "agente ESCREVE em /workspace"
+assert_eq "teste" "$(cat "$REPO/.asb-escrita" 2>/dev/null)" \
+  "host le de volta o que o agente escreveu"
+
 # o postgres do pod responde em localhost:5432 — a promessa central do modo isolado
 assert_eq "ok" "$(ssh_agent 'for i in $(seq 30); do nc -z 127.0.0.1 5432 && { echo ok; exit; }; sleep 2; done')" \
   "postgres descartavel responde em localhost:5432"

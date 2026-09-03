@@ -25,11 +25,19 @@ asb_up() {
 
   podman pod exists "$pod" && podman pod rm -f "$pod" >/dev/null
   # porta 0 = o kernel sorteia; lemos de volta depois
-  podman pod create --name "$pod" -p 127.0.0.1::22 >/dev/null
+  # keep-id: sem isso o uid 1000 do host mapeia para 0 aqui dentro e o agente
+  # (uid 1000) nao consegue escrever no /workspace montado. O userns e do
+  # POD: "--userns" em `podman run --pod` falha com "cannot set user
+  # namespace mode when joining pod with infra container".
+  podman pod create --name "$pod" -p 127.0.0.1::22 \
+    --userns=keep-id:uid=1000,gid=1000 >/dev/null
   podman pod start "$pod" >/dev/null
 
   # 1) firewall primeiro: nada sobe antes da fronteira existir
-  podman run --rm --pod "$pod" --cap-add NET_ADMIN agent-sandbox-net \
+  # --user 1000: sob keep-id o dono do user namespace e o uid 1000, nao o 0.
+  # Como root o nft falha com "Operation not permitted" e o firewall NAO sobe
+  # — silenciosamente, deixando o sandbox sem isolamento de rede algum.
+  podman run --rm --pod "$pod" --user 1000 --cap-add NET_ADMIN agent-sandbox-net \
     /usr/local/bin/apply.sh >&2
 
   # 2) proxy como uid 900 — o unico com egresso
@@ -44,7 +52,10 @@ p = json.load(open(sys.argv[1]))
 for name, svc in p.get("services", {}).items():
     print(name, svc["image"])
 PY
-    podman run -d --name "${pod}-${name}" --pod "$pod" \
+    # --user 0: imagens sem diretiva USER (como postgres) sao resolvidas por
+    # keep-id para o uid mapeado do host, e ai o initdb falha em ajustar
+    # permissoes dos diretorios da propria imagem ("Operation not permitted").
+    podman run -d --name "${pod}-${name}" --pod "$pod" --user 0 \
       -e POSTGRES_PASSWORD=sandbox -e POSTGRES_USER=sandbox -e POSTGRES_DB=sandbox \
       "$image" >/dev/null
   done

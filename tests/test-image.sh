@@ -17,9 +17,14 @@ fp2=$(podman run --rm --entrypoint ssh-keygen agent-sandbox-base -lf /etc/ssh/ss
 assert_eq "$fp1" "$fp2" "host key estavel entre containers"
 assert_contains "SHA256:" "$fp1" "host key existe e tem fingerprint"
 
+# Usar assert_eq: um `false` solto nao incrementa o contador de falhas, e a
+# suite sairia com 0 mesmo imprimindo FALHOU.
 for bin in claude codex gemini git gh rg mise sshd; do
-  podman run --rm --entrypoint sh agent-sandbox-base -c "command -v $bin" >/dev/null 2>&1 \
-    && { echo "  ok: $bin presente"; } || { echo "  FALHOU: $bin ausente"; false; }
+  if podman run --rm --entrypoint sh agent-sandbox-base -c "command -v $bin" >/dev/null 2>&1; then
+    assert_eq "presente" "presente" "$bin presente"
+  else
+    assert_eq "presente" "AUSENTE" "$bin presente"
+  fi
 done
 
 # o agente nao pode escalar privilegio dentro da imagem

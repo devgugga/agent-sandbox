@@ -1,0 +1,16 @@
+# Logs e arquivos temporários
+*.log
+.DS_Store
+Thumbs.db
+tmp/
+
+# Node
+node_modules/
+
+# Ambientes virtuais / Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+env/
+venv/

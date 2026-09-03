@@ -19,6 +19,7 @@ asb_up() {
 
   local profile squidconf
   profile=$(mktemp); squidconf=$(mktemp)
+  chmod 0644 "$squidconf"
   python3 "$ROOT/cli/lib/profile.py" "$repo" > "$profile"
   python3 "$ROOT/cli/lib/render_squid.py" "$ROOT/image/squid/allowlist-base.txt" "$profile" > "$squidconf"
 

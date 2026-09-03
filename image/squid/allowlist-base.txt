@@ -6,4 +6,5 @@
 .googleapis.com
 # codigo
 .github.com
-github.com
+# pacotes
+registry.npmjs.org

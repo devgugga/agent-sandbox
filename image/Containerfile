@@ -4,7 +4,7 @@ FROM debian:bookworm-slim
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl git openssh-server ripgrep jq socat netcat-openbsd \
-      python3 build-essential procps less nano \
+      python3 build-essential procps less nano bubblewrap \
     && rm -rf /var/lib/apt/lists/*
 
 # Node LTS (necessario para os CLIs dos agentes)

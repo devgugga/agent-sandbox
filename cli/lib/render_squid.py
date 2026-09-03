@@ -20,6 +20,29 @@ def read_base(path: Path) -> list[str]:
     return domains
 
 
+def normalize_domains(domains: list[str]) -> list[str]:
+    clean = set()
+    for d in domains:
+        d = d.strip()
+        if d:
+            clean.add(d)
+
+    result = []
+    for d in clean:
+        redundant = False
+        for other in clean:
+            if other == d:
+                continue
+            if other.startswith("."):
+                parent = other[1:]
+                if d == parent or d.endswith("." + parent):
+                    redundant = True
+                    break
+        if not redundant:
+            result.append(d)
+    return sorted(result)
+
+
 def main() -> int:
     if len(sys.argv) != 3:
         print("uso: render_squid.py <allowlist-base> <perfil-json>", file=sys.stderr)
@@ -29,12 +52,7 @@ def main() -> int:
     profile = json.loads(Path(sys.argv[2]).read_text())
     domains.extend(profile.get("allow", []))
 
-    # dedup preservando ordem
-    seen, ordered = set(), []
-    for d in domains:
-        if d not in seen:
-            seen.add(d)
-            ordered.append(d)
+    ordered = normalize_domains(domains)
 
     if not ordered:
         print("allowlist vazia: o sandbox ficaria sem egresso algum", file=sys.stderr)

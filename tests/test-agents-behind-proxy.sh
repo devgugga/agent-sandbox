@@ -15,7 +15,10 @@ sa() { ssh -i "$key" -p "$port" -o IdentitiesOnly=yes -o StrictHostKeyChecking=n
 
 echo "== Task 6: agentes atras do proxy =="
 assert_contains "http://127.0.0.1:3128" "$(sa 'echo $HTTPS_PROXY')" "HTTPS_PROXY chega na sessao SSH"
-assert_contains "false" "$(sa 'echo $GEMINI_SANDBOX')" "GEMINI_SANDBOX desligado"
+# O agy nao sobe container proprio: o conflito de aninhamento do Gemini some.
+assert_contains "1.1." "$(sa 'agy --version')" "Antigravity CLI presente"
+assert_contains "secrets" "$(sa 'ls ~/.local/share/keyrings 2>/dev/null | tr \"\\n\" \" \"; echo secrets')" \
+  "diretorio de keyring existe"
 
 claude_out=$(sa 'claude -p "responda apenas: ok" < /dev/null 2>&1 | tail -1')
 assert_contains "ok" "$claude_out" "Claude Code responde atras do proxy"

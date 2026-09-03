@@ -5,7 +5,10 @@ set -euo pipefail
 asb_auth() {
   local c=asb-auth
   podman rm -f "$c" >/dev/null 2>&1 || true
-  podman run -d --name "$c" --entrypoint sleep agent-sandbox-base infinity >/dev/null
+  podman run -d --name "$c" -e ASB_KEYRING_PASS="$(cat "$ASB_KEYRING_PASS_FILE")" \
+    --entrypoint sleep agent-sandbox-base infinity >/dev/null
+  # o agy so acha a sessao logada com o Secret Service de pe
+  podman exec -u agent "$c" /usr/local/bin/start-keyring.sh >/dev/null 2>&1 || true
 
   cat >&2 <<EOF
 
@@ -13,7 +16,11 @@ Faça os três logins AGORA, em outro terminal, um de cada vez:
 
   podman exec -it -u agent $c claude   /login
   podman exec -it -u agent $c codex    login --device-auth
-  podman exec -it -u agent $c gemini   auth
+  podman exec -it -u agent $c agy
+
+O agy NAO tem subcomando 'login' — rodar 'agy' puro abre o TUI, que dispara
+o fluxo de autenticacao no primeiro uso. Sobre um terminal headless ele
+imprime URL + codigo de ativacao para voce abrir no navegador do host.
 
 Use SEMPRE o fluxo device-auth. O OAuth padrão abre um servidor de callback
 numa porta do container que seu navegador não alcança, e trava.

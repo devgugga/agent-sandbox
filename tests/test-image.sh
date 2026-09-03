@@ -19,7 +19,7 @@ assert_contains "SHA256:" "$fp1" "host key existe e tem fingerprint"
 
 # Usar assert_eq: um `false` solto nao incrementa o contador de falhas, e a
 # suite sairia com 0 mesmo imprimindo FALHOU.
-for bin in claude codex gemini git gh rg mise sshd; do
+for bin in claude codex agy git gh rg mise sshd secret-tool; do
   if podman run --rm --entrypoint sh agent-sandbox-base -c "command -v $bin" >/dev/null 2>&1; then
     assert_eq "presente" "presente" "$bin presente"
   else

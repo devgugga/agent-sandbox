@@ -5,6 +5,17 @@ set -euo pipefail
 
 ASB_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/agent-sandbox"
 ASB_KEY="$ASB_CONFIG/id_ed25519"
+ASB_KEYRING_PASS_FILE="$ASB_CONFIG/keyring.pass"
+
+# A passphrase do keyring vive SO no host. A imagem autenticada carrega o
+# login.keyring cifrado; sem esta passphrase ela e inutil — verificado: com a
+# passphrase errada o Secret Service nega a leitura.
+asb_ensure_keyring_pass() {
+  [ -f "$ASB_KEYRING_PASS_FILE" ] && return 0
+  mkdir -p "$ASB_CONFIG"; chmod 0700 "$ASB_CONFIG"
+  ( umask 077; head -c 32 /dev/urandom | base64 | tr -d '\n' > "$ASB_KEYRING_PASS_FILE" )
+  chmod 0600 "$ASB_KEYRING_PASS_FILE"
+}
 
 asb_ensure_key() {
   [ -f "$ASB_KEY" ] && return 0
@@ -16,6 +27,7 @@ asb_up() {
   local ws="$1" repo="$2"
   local pod="asb-$ws"
   asb_ensure_key
+  asb_ensure_keyring_pass
 
   local profile squidconf
   profile=$(mktemp); squidconf=$(mktemp)
@@ -71,6 +83,7 @@ PY
 
   podman run -d --name "${pod}-agent" --pod "$pod" \
     -e ORCA_SSH_PUBLIC_KEY="$(cat "${ASB_KEY}.pub")" \
+    -e ASB_KEYRING_PASS="$(cat "$ASB_KEYRING_PASS_FILE")" \
     -e HTTPS_PROXY=http://127.0.0.1:3128 \
     -e HTTP_PROXY=http://127.0.0.1:3128 \
     -e NO_PROXY=127.0.0.1,localhost \

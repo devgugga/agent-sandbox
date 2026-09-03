@@ -4,6 +4,11 @@
 .anthropic.com
 .openai.com
 .googleapis.com
+# O agy faz um eligibility check que busca a foto de perfil do usuario; sem
+# este dominio ele falha no arranque com "Forbidden", apesar de autenticado.
+.googleusercontent.com
+.antigravity.google
+antigravity.google
 # codigo
 .github.com
 # pacotes

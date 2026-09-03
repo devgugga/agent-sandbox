@@ -5,6 +5,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl git openssh-server ripgrep jq socat netcat-openbsd \
       python3 build-essential procps less nano bubblewrap \
+      gnome-keyring libsecret-tools dbus-x11 \
     && rm -rf /var/lib/apt/lists/*
 
 # Node LTS (necessario para os CLIs dos agentes)
@@ -13,7 +14,7 @@ RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
     && rm -rf /var/lib/apt/lists/*
 
 # CLIs dos agentes
-RUN npm install -g @anthropic-ai/claude-code @openai/codex @google/gemini-cli \
+RUN npm install -g @anthropic-ai/claude-code @openai/codex \
     && npm cache clean --force
 
 # gh CLI
@@ -31,6 +32,9 @@ RUN useradd -m -u 1000 -s /bin/bash agent
 USER agent
 RUN curl -fsSL https://mise.run | sh
 ENV PATH="/home/agent/.local/bin:/home/agent/.local/share/mise/shims:${PATH}"
+# Antigravity CLI substitui o Gemini CLI, descontinuado em 2026-06-18 para
+# contas Pro/Ultra. E um binario Go unico; nao ha pacote npm.
+RUN curl -fsSL https://antigravity.google/cli/install.sh | bash
 USER root
 
 # HOST KEYS ASSADAS NO BUILD — nao gerar em runtime.
@@ -49,9 +53,9 @@ RUN printf '%s\n' \
 
 # Aninhamento: cada agente tenta se sandboxar dentro do container e conflita.
 # O container E a fronteira; ver spec 3.6.
-ENV GEMINI_SANDBOX=false
 ENV CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1
 
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
-RUN chmod 0755 /usr/local/bin/entrypoint.sh
+COPY start-keyring.sh /usr/local/bin/start-keyring.sh
+RUN chmod 0755 /usr/local/bin/entrypoint.sh /usr/local/bin/start-keyring.sh
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# cli/agent-sandbox — ponto de entrada do host
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT/cli/lib/pod.sh"
+
+usage() {
+  cat >&2 <<'USAGE'
+uso:
+  agent-sandbox up   --workspace <id> --repo <caminho>
+  agent-sandbox down --workspace <id>
+USAGE
+  exit 2
+}
+
+cmd="${1:-}"; shift || usage
+ws=""; repo=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --workspace) ws="${2:-}"; shift 2 ;;
+    --repo)      repo="${2:-}"; shift 2 ;;
+    *) usage ;;
+  esac
+done
+
+# id do workspace vira nome de container: rejeitar o que nao for seguro
+case "$ws" in
+  ''|*[!a-zA-Z0-9._-]*) echo "workspace invalido: use apenas [a-zA-Z0-9._-]" >&2; exit 2 ;;
+esac
+
+case "$cmd" in
+  up)   [ -d "$repo" ] || { echo "repo inexistente: $repo" >&2; exit 2; }
+        asb_up "$ws" "$(cd "$repo" && pwd)" ;;
+  down) asb_down "$ws" ;;
+  *)    usage ;;
+esac

@@ -5,18 +5,31 @@ set -euo pipefail
 asb_auth() {
   local c=asb-auth
   podman rm -f "$c" >/dev/null 2>&1 || true
+  # Entrypoint REAL, igual ao runtime: e ele quem sobe o dbus e o keyring e
+  # popula /etc/profile.d. Com "--entrypoint sleep" nada disso acontece e o
+  # agy cai no fallback de arquivo em texto puro.
   podman run -d --name "$c" -e ASB_KEYRING_PASS="$(cat "$ASB_KEYRING_PASS_FILE")" \
-    --entrypoint sleep agent-sandbox-base infinity >/dev/null
-  # o agy so acha a sessao logada com o Secret Service de pe
-  podman exec -u agent "$c" /usr/local/bin/start-keyring.sh >/dev/null 2>&1 || true
+    agent-sandbox-base >/dev/null
+  sleep 3
+
+  if ! podman exec -u agent "$c" bash -lc 'secret-tool lookup __probe__ x' >/dev/null 2>&1; then
+    case "$(podman exec -u agent "$c" bash -lc 'secret-tool lookup __probe__ x' 2>&1)" in
+      *"Cannot autolaunch"*|*"Could not connect"*)
+        echo "AVISO: Secret Service indisponivel — o agy gravaria a credencial" >&2
+        echo "       em arquivo texto puro em vez do keyring cifrado." >&2 ;;
+    esac
+  fi
 
   cat >&2 <<EOF
 
 Faça os três logins AGORA, em outro terminal, um de cada vez:
 
-  podman exec -it -u agent $c claude   /login
-  podman exec -it -u agent $c codex    login --device-auth
-  podman exec -it -u agent $c agy
+  podman exec -it -u agent $c bash -lc 'claude /login'
+  podman exec -it -u agent $c bash -lc 'codex login --device-auth'
+  podman exec -it -u agent $c bash -lc agy
+
+O 'bash -lc' nao e enfeite: sem shell de login o PATH nao tem o agy e o
+DBUS nao aparece — e ai o agy grava a credencial em texto puro.
 
 O agy NAO tem subcomando 'login' — rodar 'agy' puro abre o TUI, que dispara
 o fluxo de autenticacao no primeiro uso. Sobre um terminal headless ele

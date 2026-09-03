@@ -49,6 +49,11 @@ PY
       "$image" >/dev/null
   done
 
+  # 3.5) modo anexado: encaminhador TCP para servicos do host
+  if [ "$(jq -r .mode "$profile")" = "attached" ]; then
+    asb_attach "$pod" "$profile"
+  fi
+
   # 4) agente por ultimo, SEM NET_ADMIN
   local agent_image=agent-sandbox-base
   podman image exists agent-sandbox-auth && agent_image=agent-sandbox-auth

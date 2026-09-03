@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$ROOT/cli/lib/pod.sh"
 source "$ROOT/cli/lib/auth.sh"
+source "$ROOT/cli/lib/attach.sh"
 
 usage() {
   cat >&2 <<'USAGE'

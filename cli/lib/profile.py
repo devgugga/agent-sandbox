@@ -33,6 +33,7 @@ def main() -> int:
         "services": raw.get("services", {}),
         "allow": raw.get("network", {}).get("allow", []),
         "proxy": {**base.get("proxy", {}), **raw.get("proxy", {})},
+        "attach": raw.get("attach", []),
     }
 
     if out["mode"] not in ("isolated", "attached"):

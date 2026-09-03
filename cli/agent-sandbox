@@ -3,12 +3,14 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$ROOT/cli/lib/pod.sh"
+source "$ROOT/cli/lib/auth.sh"
 
 usage() {
   cat >&2 <<'USAGE'
 uso:
   agent-sandbox up   --workspace <id> --repo <caminho>
   agent-sandbox down --workspace <id>
+  agent-sandbox auth
 USAGE
   exit 2
 }
@@ -23,14 +25,18 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-# id do workspace vira nome de container: rejeitar o que nao for seguro
-case "$ws" in
-  ''|*[!a-zA-Z0-9._-]*) echo "workspace invalido: use apenas [a-zA-Z0-9._-]" >&2; exit 2 ;;
-esac
+check_ws() {
+  case "$ws" in
+    ''|*[!a-zA-Z0-9._-]*) echo "workspace invalido: use apenas [a-zA-Z0-9._-]" >&2; exit 2 ;;
+  esac
+}
 
 case "$cmd" in
-  up)   [ -d "$repo" ] || { echo "repo inexistente: $repo" >&2; exit 2; }
+  up)   check_ws
+        [ -d "$repo" ] || { echo "repo inexistente: $repo" >&2; exit 2; }
         asb_up "$ws" "$(cd "$repo" && pwd)" ;;
-  down) asb_down "$ws" ;;
+  down) check_ws
+        asb_down "$ws" ;;
+  auth) asb_auth ;;
   *)    usage ;;
 esac

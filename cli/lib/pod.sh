@@ -49,13 +49,16 @@ PY
   done
 
   # 4) agente por ultimo, SEM NET_ADMIN
+  local agent_image=agent-sandbox-base
+  podman image exists agent-sandbox-auth && agent_image=agent-sandbox-auth
+
   podman run -d --name "${pod}-agent" --pod "$pod" \
     -e ORCA_SSH_PUBLIC_KEY="$(cat "${ASB_KEY}.pub")" \
     -e HTTPS_PROXY=http://127.0.0.1:3128 \
     -e HTTP_PROXY=http://127.0.0.1:3128 \
     -e NO_PROXY=127.0.0.1,localhost \
     -v "$repo:/workspace:Z" \
-    agent-sandbox-base >/dev/null
+    "$agent_image" >/dev/null
 
   local port
   port=$(podman port "${pod}-agent" 22 2>/dev/null | head -1 | sed 's/.*://')

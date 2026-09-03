@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+# cli/lib/auth.sh — cria a imagem autenticada a partir da base
+set -euo pipefail
+
+asb_auth() {
+  local c=asb-auth
+  podman rm -f "$c" >/dev/null 2>&1 || true
+  podman run -d --name "$c" --entrypoint sleep agent-sandbox-base infinity >/dev/null
+
+  cat >&2 <<EOF
+
+Faça os três logins AGORA, em outro terminal, um de cada vez:
+
+  podman exec -it -u agent $c claude   /login
+  podman exec -it -u agent $c codex    login --device-auth
+  podman exec -it -u agent $c gemini   auth
+
+Use SEMPRE o fluxo device-auth. O OAuth padrão abre um servidor de callback
+numa porta do container que seu navegador não alcança, e trava.
+
+Quando terminar, pressione ENTER aqui.
+EOF
+  read -r _
+
+  # Verificar pelo EXIT CODE. Nunca por grep de "logged in": a string casa
+  # tambem com "not logged in" e commitaria uma imagem nao autenticada.
+  local failed=0
+  podman exec -u agent "$c" codex login status >/dev/null 2>&1 || { echo "codex NAO autenticado" >&2; failed=1; }
+  podman exec -u agent "$c" claude -p 'ok' >/dev/null 2>&1 || { echo "claude NAO autenticado" >&2; failed=1; }
+  if [ "$failed" -ne 0 ]; then
+    echo "abortado: nao vou commitar uma imagem nao autenticada" >&2
+    podman rm -f "$c" >/dev/null; return 1
+  fi
+
+  # Forcar o entrypoint de volta ao sshd: sem isso a imagem herda 'sleep'.
+  podman commit --change='ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]' \
+    "$c" agent-sandbox-auth >&2
+  podman rm -f "$c" >/dev/null
+  echo "imagem agent-sandbox-auth criada" >&2
+}

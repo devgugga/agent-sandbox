@@ -1,0 +1,9 @@
+# image/squid/allowlist-base.txt
+# Um dominio por linha. Prefixo "." casa subdominios.
+# APIs dos agentes
+.anthropic.com
+.openai.com
+.googleapis.com
+# codigo
+.github.com
+github.com

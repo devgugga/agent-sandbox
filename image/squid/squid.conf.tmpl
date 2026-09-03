@@ -1,0 +1,18 @@
+# image/squid/squid.conf.tmpl
+# __ALLOWLIST__ e substituido por cli/lib/render_squid.py
+http_port 3128
+
+acl allowed_domains dstdomain __ALLOWLIST__
+acl SSL_ports port 443
+acl CONNECT method CONNECT
+
+# CONNECT-only para TLS: nao ha MITM, controla-se destino e nao conteudo.
+http_access deny CONNECT !SSL_ports
+http_access deny !allowed_domains
+http_access allow allowed_domains
+http_access deny all
+
+cache deny all
+access_log stdio:/tmp/squid-access.log
+cache_log /tmp/squid-cache.log
+pid_filename /tmp/squid.pid

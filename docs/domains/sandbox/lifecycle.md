@@ -38,7 +38,10 @@ builds it:
    was verified to start the infra alone.)
 2. Apply the firewall, then **prove** it applied by reading back
    `nft list table inet asb`.
-3. Start Squid, then the services and forwarders, then the agent **last**.
+3. Start Squid and **verify it is running**, then the services and forwarders,
+   then the agent **last**. With the firewall applied and no proxy, the agent
+   comes up with no egress at all and the symptom reads as "the internet is
+   broken" rather than as a lifecycle error.
 
 Any failure in steps 1–3 stops the whole pod and exits non-zero. A half-started
 pod is exactly the unsafe state this path exists to prevent.
@@ -91,6 +94,15 @@ A **user** unit wanted by `default.target`, with no `After=default.target` (that
 would close an ordering cycle) and no lingering — Orca only runs after login, so
 a unit that starts at login is early enough. It calls `agent-sandbox
 restore-all`, which resumes every `asb-*` pod.
+
+`ExecStart` carries the repo's absolute path, baked in at install time. **Moving
+or renaming the `agent-sandbox` checkout silently breaks boot restore** — re-run
+`install-autostart` after a move.
+
+`restore-all` exits 0 when the only thing it could not restore is a pod created
+before per-pod state existed (`resume` returns 2 for those, and they are counted
+as ignored). A boot unit that goes `failed` for a legacy pod would hide a real
+failure in every other pod.
 
 **The stored SSH port is load-bearing.** `podman pod create -p 127.0.0.1::22`
 resolves the random port at *create* time and stores it concretely in

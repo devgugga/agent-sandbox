@@ -166,9 +166,12 @@ asb_resume() {
   local ws="$1" pod="asb-$ws"
   podman pod exists "$pod" || { echo "pod inexistente: $pod (use 'up')" >&2; return 1; }
 
+  # Codigo 2 = pod anterior a este estado persistido; nao da para restaurar e
+  # NAO e falha operacional. O restore-all precisa distinguir os dois, senao um
+  # pod legado marca a unidade do systemd como failed no boot.
   local state; state=$(asb_state_dir "$pod")
   [ -f "$state/squid.conf" ] || {
-    echo "estado ausente em $state; recrie o workspace com 'up'" >&2; return 1; }
+    echo "estado ausente em $state; recrie o workspace com 'up'" >&2; return 2; }
 
   # ja de pe: idempotente, so devolve a porta
   if [ -n "$(podman ps --filter "name=${pod}-agent" --filter status=running -q)" ]; then
@@ -202,7 +205,16 @@ asb_resume() {
   local members others
   members=$(podman pod inspect "$pod" --format '{{range .Containers}}{{.Name}}
 {{end}}')
+  # O proxy tem que estar de pe ANTES do agente: com o firewall aplicado e sem
+  # squid, o agente sobe sem egresso algum e parece so "internet quebrada".
+  # Verificar em vez de confiar no `podman start` — um pod sem container de
+  # squid (legado, ou construido pela metade) passaria batido no `|| true`.
   podman start "${pod}-squid" >/dev/null 2>&1 || true
+  if [ -z "$(podman ps --filter "name=${pod}-squid" --filter status=running -q)" ]; then
+    podman pod stop "$pod" >/dev/null 2>&1
+    echo "proxy nao subiu; pod parado (fail-closed)" >&2
+    return 1
+  fi
   others=$(printf '%s\n' "$members" | grep -v -e '-infra$' -e "^${pod}-squid$" -e "^${pod}-agent$" || true)
   for c in $others; do podman start "$c" >/dev/null 2>&1 || true; done
   podman start "${pod}-agent" >/dev/null || {
@@ -218,16 +230,19 @@ asb_resume() {
 # "running" no seu registro e nao reexecuta o create depois de um reboot: ele
 # so disca na porta que ja gravou. Sem isto, o workspace fica quebrado.
 asb_restore_all() {
-  local rc=0 pod ws n=0
+  local rc=0 pod ws n=0 skipped=0 code
   for pod in $(podman pod ls --format '{{.Name}}' | grep '^asb-' || true); do
     ws="${pod#asb-}"
-    if asb_resume "$ws" >/dev/null; then
-      echo "restaurado: $pod" >&2; n=$((n+1))
-    else
-      echo "FALHOU restaurar: $pod" >&2; rc=1
-    fi
+    asb_resume "$ws" >/dev/null && code=0 || code=$?
+    case "$code" in
+      0) echo "restaurado: $pod" >&2; n=$((n+1)) ;;
+      # Pod anterior ao estado persistido: nada a fazer, e nao e falha. Deixar
+      # que marque a unidade como failed no boot esconderia falhas reais.
+      2) echo "ignorado (sem estado, anterior a esta versao): $pod" >&2; skipped=$((skipped+1)) ;;
+      *) echo "FALHOU restaurar: $pod" >&2; rc=1 ;;
+    esac
   done
-  echo "$n sandbox(es) restaurado(s)" >&2
+  echo "$n sandbox(es) restaurado(s), $skipped ignorado(s)" >&2
   return $rc
 }
 

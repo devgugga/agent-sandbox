@@ -96,6 +96,25 @@ echo "== restore-all: o que a unidade do systemd chama no boot =="
 assert_eq "1" "$(podman ps --filter "name=asb-$WS-agent" --filter status=running -q | wc -l)" \
   "restore-all sobe o agente de volta"
 
+echo "== proxy que nao sobe tambem e fail-closed =="
+# Com firewall aplicado e sem squid o agente sobe sem egresso nenhum, e o
+# sintoma vira "internet quebrada" em vez de erro de ciclo de vida.
+./cli/agent-sandbox suspend --workspace "$WS" >/dev/null 2>&1
+podman rm -f "asb-$WS-squid" >/dev/null 2>&1
+./cli/agent-sandbox resume --workspace "$WS" >/dev/null 2>&1
+assert_eq "1" "$?" "resume falha quando o proxy nao sobe"
+assert_eq "" "$(podman ps --filter "name=asb-$WS-agent" --filter status=running -q)" \
+  "agente NAO fica no ar sem proxy"
+
+echo "== pod anterior ao estado persistido nao reprova o boot =="
+# restore-all e o ExecStart da unidade do systemd. Um pod legado que nao da
+# para restaurar nao pode marcar a unidade como failed — isso esconderia falhas
+# de verdade em todos os outros pods.
+rm -rf ~/.config/agent-sandbox/pods/asb-$WS
+out=$(./cli/agent-sandbox restore-all 2>&1); code=$?
+assert_eq "0" "$code" "restore-all sai com 0 apesar de um pod sem estado"
+assert_contains "ignorado" "$out" "pod legado e reportado como ignorado, nao como falha"
+
 echo "== down limpa o estado persistido =="
 ./cli/agent-sandbox down --workspace "$WS" >/dev/null 2>&1
 assert_fails "estado por pod removido no down" test -d ~/.config/agent-sandbox/pods/asb-$WS

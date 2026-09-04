@@ -17,6 +17,22 @@ _wsid() { env -u ORCA_WORKSPACE_ID bash -c '
 
 assert_eq "$(_wsid recipes/create.sh /tmp/proj)" "$(_wsid recipes/destroy.sh /tmp/proj)" \
   "create e destroy derivam o mesmo nome"
+
+# O Orca passa ORCA_VM_INSTANCE_ID, unico por workspace. Sem usa-lo, a
+# derivacao cai no caminho do repo — e como os shims rodam a partir do checkout
+# PRIMARIO, todo workspace do projeto teria o mesmo nome e o segundo mataria o
+# pod do primeiro.
+a=$(ORCA_VM_INSTANCE_ID=vm-a bash -c 'source <(sed -n "/^asb_workspace_id()/,/^}/p" recipes/create.sh); asb_workspace_id /tmp/proj')
+b=$(ORCA_VM_INSTANCE_ID=vm-b bash -c 'source <(sed -n "/^asb_workspace_id()/,/^}/p" recipes/create.sh); asb_workspace_id /tmp/proj')
+assert_eq "vm-a" "$a" "usa ORCA_VM_INSTANCE_ID quando presente"
+[ "$a" != "$b" ] && { echo "  ok: workspaces distintos geram nomes distintos"; _pass=$((_pass+1)); } \
+                 || { echo "  FALHOU: nomes colidem entre workspaces"; _fail=$((_fail+1)); }
+
+# O Orca aninha o resultado do create em recipeResult; ler so .userData nao
+# encontra o nome e deixa o pod orfao.
+nested=$(printf '{"recipeResult":{"userData":{"workspace":"vm-nested"}}}' \
+  | bash -c 'payload=$(cat); jq -r ".recipeResult.userData.workspace // .userData.workspace // empty" <<<"$payload"')
+assert_eq "vm-nested" "$nested" "destroy le workspace de recipeResult.userData"
 assert_eq "$(_wsid recipes/create.sh /tmp/proj)" "$(_wsid recipes/create.sh /tmp/proj/)" \
   "barra final nao muda o nome"
 case "$(_wsid recipes/create.sh /tmp/proj)" in

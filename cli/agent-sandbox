@@ -38,6 +38,15 @@ case "$cmd" in
         asb_up "$ws" "$(cd "$repo" && pwd)" ;;
   down) check_ws
         asb_down "$ws" ;;
+  prune)
+        # Reapa pods de sandbox orfaos. Necessario porque um destroy que erre o
+        # nome do workspace deixa o pod rodando em silencio, e o Orca reporta
+        # sucesso mesmo assim.
+        n=0
+        for p in $(podman pod ls --format '{{.Name}}' | grep '^asb-' || true); do
+          podman pod rm -f "$p" >/dev/null 2>&1 && { echo "removido: $p" >&2; n=$((n+1)); }
+        done
+        echo "$n pod(s) de sandbox removido(s)" >&2 ;;
   auth) asb_auth ;;
   install-guards)
         # Instala os nomes que vao no campo "Command" do Orca.

@@ -10,8 +10,14 @@ repo="${1:-$PWD}"
 # pod para tras exatamente assim, reportando sucesso.
 asb_workspace_id() {
   local repo="$1"
-  if [ -n "${ORCA_WORKSPACE_ID:-}" ]; then
-    printf '%s' "$ORCA_WORKSPACE_ID" | tr -c 'a-zA-Z0-9._-' '-'
+  # ORCA_VM_INSTANCE_ID e o identificador UNICO POR WORKSPACE que o Orca passa
+  # aos scripts de ciclo de vida. Sem ele, a derivacao cai no caminho do repo —
+  # e como o Orca executa os shims a partir do checkout PRIMARIO, todo workspace
+  # do mesmo projeto receberia o mesmo nome e o segundo mataria o pod do
+  # primeiro.
+  local given="${ORCA_VM_INSTANCE_ID:-${ORCA_WORKSPACE_ID:-}}"
+  if [ -n "$given" ]; then
+    printf '%s' "$given" | tr -c 'a-zA-Z0-9._-' '-'
     return
   fi
   # Normalizar ANTES de derivar: barra final muda o hash, e create e destroy

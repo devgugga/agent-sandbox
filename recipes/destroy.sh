@@ -7,8 +7,14 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # pod para tras exatamente assim, reportando sucesso.
 asb_workspace_id() {
   local repo="$1"
-  if [ -n "${ORCA_WORKSPACE_ID:-}" ]; then
-    printf '%s' "$ORCA_WORKSPACE_ID" | tr -c 'a-zA-Z0-9._-' '-'
+  # ORCA_VM_INSTANCE_ID e o identificador UNICO POR WORKSPACE que o Orca passa
+  # aos scripts de ciclo de vida. Sem ele, a derivacao cai no caminho do repo —
+  # e como o Orca executa os shims a partir do checkout PRIMARIO, todo workspace
+  # do mesmo projeto receberia o mesmo nome e o segundo mataria o pod do
+  # primeiro.
+  local given="${ORCA_VM_INSTANCE_ID:-${ORCA_WORKSPACE_ID:-}}"
+  if [ -n "$given" ]; then
+    printf '%s' "$given" | tr -c 'a-zA-Z0-9._-' '-'
     return
   fi
   # Normalizar ANTES de derivar: barra final muda o hash, e create e destroy
@@ -25,7 +31,10 @@ asb_workspace_id() {
 }
 
 payload=$(cat || true)
-ws=$(printf '%s' "$payload" | jq -r '.userData.workspace // empty' 2>/dev/null || true)
+# O Orca aninha o resultado do create em `recipeResult` (ver o exemplo do guia:
+# d.recipeResult?.userData?.resourceId). Ler so `.userData` encontra nada, cai
+# na derivacao por caminho e — quando ela diverge — o pod fica orfao.
+ws=$(printf '%s' "$payload" | jq -r '.recipeResult.userData.workspace // .userData.workspace // empty' 2>/dev/null || true)
 # Sem payload, deriva o MESMO nome que o create derivaria. NAO usar
 # ORCA_WORKSPACE_ID cru aqui: numa sessao do Orca ele e o id de worktree
 # (`<uuid>::/caminho`), que contem ":" e "/" e e rejeitado pelo CLI. Quem

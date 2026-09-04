@@ -155,3 +155,30 @@ firewall before any user container and verifies it applied. Install
 `agent-sandbox install-autostart` so the boot path is automatic — Orca marks the
 runtime `running` in its own registry and never re-runs `create` after a reboot.
 Full account: [lifecycle.md](./lifecycle.md).
+
+## Antigravity appears logged out only after reboot
+
+**Symptom.** `agy` reports that the user is not signed in after a reboot even
+though the keyring and token are present.
+
+**Confirmed cause.** The restore unit ran before DHCP installed the host's
+default route. Rootless `pasta` created the pod namespace from that incomplete
+state. Squid kept running but logged `Network is unreachable` for DNS; the
+Google user-info request returned a proxy 500, which the UI rendered as logout.
+
+**Resolution.** Reinstall the current unit with `agent-sandbox
+install-autostart`, then use `agent-sandbox doctor`. Current lifecycle code
+waits for host route/DNS and proves route, DNS and CONNECT inside the pod before
+starting the agent. Do not reauthenticate until `doctor` says networking is
+healthy: a network failure does not mean the token was lost.
+
+## Antigravity starts without plugins, skills, MCPs or working hooks
+
+**Cause.** Those files live under `~/.gemini/config`, separately from
+`~/.gemini/antigravity-cli/settings.json`. Older manifests copied only the
+latter. Orca-injected hook commands could also contain the host's absolute home
+path.
+
+**Resolution.** Recreate the workspace with the current manifest. The explicit
+provision list includes plugins, skills, MCP config and hooks, and `asb-agy`
+repairs the hook home path again at launch.

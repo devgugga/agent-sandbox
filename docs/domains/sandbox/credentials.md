@@ -46,6 +46,34 @@ proving the failure is specific to the keyring rather than a general breakage.
 `agy` therefore has a **better** posture than the other two, and the same
 treatment could be extended to them.
 
+## Agent configuration persistence
+
+Durable configuration does not use a shared `/home/agent` volume. A full-home
+volume would mix mutable state and credentials between unrelated workspaces.
+Instead, `profiles/provision.toml` is an explicit allowlist copied on every
+`up`:
+
+- Claude and Codex settings, plugins and skills;
+- Antigravity settings, `config.json`, `hooks.json`, `mcp_config.json`, import
+  manifest, plugins and skills.
+
+Session history, conversations, projects, SSH material and known credential
+files are denied recursively. Symlinks are materialized in staging so skills
+remain usable without mounting the host home, but only when their resolved
+targets stay inside the declared tree, `~/.agents/skills`, or Omarchy's system
+skill directory. Any other external target is rejected rather than followed.
+
+Inside the container, provisioning removes destination leaves through a
+root-owned no-follow installer. Parent components that the agent replaced by
+symlinks are unlinked and recreated as directories; they are never traversed.
+SSHD is gated by a unique per-start token until this process finishes, closing
+both the symlink TOCTOU window and Orca's reconnect race.
+
+Changes made only inside a workspace remain disposable. Make intended durable
+changes in the host source of truth; a real stopped-to-running `resume`
+synchronizes the manifest automatically. An already-running `resume` validates
+firewall/proxy and returns idempotently without rewriting live configuration.
+
 ### Known leak
 
 `ASB_KEYRING_PASS` is passed with `podman run -e`, so it stays in the

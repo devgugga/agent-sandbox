@@ -14,6 +14,60 @@ ASB_PODS_DIR="$ASB_CONFIG/pods"
 # recriado e as regras nft se perdem). Medido: curl direto respondendo 200.
 asb_state_dir() { printf '%s/%s' "$ASB_PODS_DIR" "$1"; }
 
+# O NetworkManager pode considerar a sessao grafica pronta antes de DHCP, DNS
+# e rota default. Se o `pasta` nasce nesse intervalo, ele copia um namespace
+# sem saida e esse estado nao se corrige quando a rede do host aparece depois.
+asb_host_network_ready() {
+  ip -4 route show default 2>/dev/null | grep -q '^default ' \
+    && timeout "${ASB_NETWORK_PROBE_TIMEOUT:-2}" \
+      getent ahostsv4 www.googleapis.com >/dev/null 2>&1
+}
+
+asb_wait_for_host_network() {
+  local attempts="${ASB_NETWORK_WAIT_ATTEMPTS:-20}"
+  local interval="${ASB_NETWORK_WAIT_INTERVAL:-1}"
+  local i
+  for ((i = 1; i <= attempts; i++)); do
+    asb_host_network_ready && return 0
+    [ "$i" -eq "$attempts" ] || sleep "$interval"
+  done
+  echo "rede do host indisponivel apos $attempts tentativa(s)" >&2
+  return 1
+}
+
+# Processo rodando nao significa proxy funcional. Esta prova acontece no mesmo
+# netns do pod e como uid 900, o unico autorizado a sair: rota, DNS e CONNECT
+# precisam funcionar antes de qualquer agente ser iniciado.
+asb_proxy_probe() {
+  local pod="$1"
+  timeout "${ASB_PROXY_PROBE_TIMEOUT:-8}" \
+    podman exec --user 900 "${pod}-squid" sh -ceu '
+    ip -4 route show default | grep -q "^default "
+    timeout 3 getent ahostsv4 api.anthropic.com >/dev/null
+    first_line=$(
+      printf "CONNECT api.anthropic.com:443 HTTP/1.1\r\nHost: api.anthropic.com:443\r\n\r\n" \
+        | nc -w 3 127.0.0.1 3128 | head -n 1
+    )
+    case "$first_line" in
+      "HTTP/1."*" 200 "*) exit 0 ;;
+      *) exit 1 ;;
+    esac
+  ' >/dev/null 2>&1
+}
+
+asb_wait_for_proxy() {
+  local pod="$1"
+  local attempts="${ASB_PROXY_READY_ATTEMPTS:-5}"
+  local interval="${ASB_PROXY_READY_INTERVAL:-1}"
+  local i
+  for ((i = 1; i <= attempts; i++)); do
+    asb_proxy_probe "$pod" && return 0
+    [ "$i" -eq "$attempts" ] || sleep "$interval"
+  done
+  echo "proxy sem rota, DNS ou CONNECT apos $attempts tentativa(s): $pod" >&2
+  return 1
+}
+
 # A passphrase do keyring vive SO no host. A imagem autenticada carrega o
 # login.keyring cifrado; sem esta passphrase ela e inutil — verificado: com a
 # passphrase errada o Secret Service nega a leitura.
@@ -30,14 +84,81 @@ asb_ensure_key() {
   ssh-keygen -t ed25519 -N '' -f "$ASB_KEY" -C agent-sandbox >&2
 }
 
-asb_up() {
+asb_prepare_agent_start() (
+  local pod="$1" token token_file
+  podman cp "$ROOT/image/entrypoint.sh" \
+    "${pod}-agent:/usr/local/bin/entrypoint.sh"
+  podman cp "$ROOT/image/asb-agent" \
+    "${pod}-agent:/usr/local/bin/asb-agent"
+  podman cp "$ROOT/image/install-config.py" \
+    "${pod}-agent:/usr/local/bin/asb-install-config"
+  token=$(od -An -N16 -tx1 /dev/urandom | tr -d ' \n')
+  token_file=$(mktemp)
+  trap 'rm -f "$token_file"' EXIT
+  printf '%s\n' "$token" > "$token_file"
+  podman cp "$token_file" \
+    "${pod}-agent:/run/agent-sandbox-provision-token"
+  printf '%s\n' "$token"
+)
+
+asb_provision_agent() (
+  local pod="$1" token="$2" stage
+  stage=$(mktemp -d)
+  trap 'rm -rf "$stage"' EXIT
+
+  if python3 "$ROOT/cli/lib/provision.py" "$ROOT/profiles/provision.toml" "$stage" > "$stage/plan" 2>"$stage/err"; then
+    [ ! -s "$stage/err" ] || cat "$stage/err" >&2
+    while IFS=$'\t' read -r src dst; do
+      [ -n "$src" ] || continue
+      podman exec --user 0 "${pod}-agent" \
+        /usr/local/bin/asb-install-config prepare "$dst"
+      if ! podman cp "$src" "${pod}-agent:$dst" 2>/dev/null; then
+        echo "provisionamento: falhou copiar $src para $dst" >&2
+        return 1
+      fi
+      podman exec --user 0 "${pod}-agent" \
+        /usr/local/bin/asb-install-config finalize "$dst"
+    done < "$stage/plan"
+  else
+    # Recusa do provisionador significa caminho negado no manifesto: abortar em
+    # vez de subir um sandbox com a credencial do host dentro.
+    cat "$stage/err" >&2
+    echo "provisionamento recusado; abortando" >&2
+    return 1
+  fi
+  podman exec --user 0 "${pod}-agent" \
+    touch "/run/agent-sandbox-provisioned-$token"
+)
+
+asb_up() (
   local ws="$1" repo="$2"
   local pod="asb-$ws"
+  local state="" pod_created=0 succeeded=0
+
+  cleanup_up() {
+    local rc=$?
+    if [ "$succeeded" -eq 0 ]; then
+      [ "$pod_created" -eq 0 ] || podman pod rm -f "$pod" >/dev/null 2>&1 || true
+      [ -z "$state" ] || rm -rf "$state"
+    fi
+    return "$rc"
+  }
+  trap cleanup_up EXIT
+
+  if ! podman image exists agent-sandbox-auth; then
+    echo "imagem agent-sandbox-auth ausente; execute 'agent-sandbox auth'" >&2
+    return 1
+  fi
+  if podman pod exists "$pod"; then
+    echo "workspace ja existe: $pod (use 'resume' ou 'down' explicitamente)" >&2
+    return 1
+  fi
+
   asb_ensure_key
   asb_ensure_keyring_pass
 
-  local state profile squidconf
   state=$(asb_state_dir "$pod")
+  local profile squidconf
   rm -rf "$state"; mkdir -p "$state"; chmod 0700 "$ASB_PODS_DIR" "$state"
   profile="$state/profile.json"; squidconf="$state/squid.conf"
   printf '%s' "$repo" > "$state/repo"
@@ -46,7 +167,6 @@ asb_up() {
   # o squid roda como uid 900 e precisa ler o arquivo montado
   chmod 0644 "$squidconf"
 
-  podman pod exists "$pod" && podman pod rm -f "$pod" >/dev/null
   # porta 0 = o kernel sorteia; lemos de volta depois
   # keep-id: sem isso o uid 1000 do host mapeia para 0 aqui dentro e o agente
   # (uid 1000) nao consegue escrever no /workspace montado. O userns e do
@@ -54,6 +174,7 @@ asb_up() {
   # namespace mode when joining pod with infra container".
   podman pod create --name "$pod" -p 127.0.0.1::22 \
     --userns=keep-id:uid=1000,gid=1000 >/dev/null
+  pod_created=1
   podman pod start "$pod" >/dev/null
 
   # 1) firewall primeiro: nada sobe antes da fronteira existir
@@ -67,6 +188,11 @@ asb_up() {
   podman run -d --name "${pod}-squid" --pod "$pod" --user 900 \
     -v "$squidconf:/etc/squid/squid.conf:ro,Z" \
     agent-sandbox-net squid -N -f /etc/squid/squid.conf >/dev/null
+  if ! asb_wait_for_proxy "$pod"; then
+    podman pod stop "$pod" >/dev/null 2>&1
+    echo "proxy nao ficou saudavel; pod parado (fail-closed)" >&2
+    return 1
+  fi
 
   # 3) servicos declarados no perfil (modo isolado)
   python3 - "$profile" <<'PY' | while read -r name image; do
@@ -89,9 +215,6 @@ PY
   fi
 
   # 4) agente por ultimo, SEM NET_ADMIN
-  local agent_image=agent-sandbox-base
-  podman image exists agent-sandbox-auth && agent_image=agent-sandbox-auth
-
   # Montar sob /home/agent, nao em /workspace: o Orca cria worktrees IRMAS do
   # projectRoot ("<root>-<nome>") quando nao configurado para usar .worktrees, e
   # com /workspace a irma cairia em /, que e 555 e nem root escreve.
@@ -99,7 +222,7 @@ PY
   # ATENCAO: comentario NUNCA no meio de um comando com continuacao de linha. O
   # "#" encerra a linha logica junto com a barra invertida, os argumentos
   # seguintes viram orfaos e o podman falha com "requires at least 1 arg(s)".
-  podman run -d --name "${pod}-agent" --pod "$pod" \
+  podman create --name "${pod}-agent" --pod "$pod" \
     -e ORCA_SSH_PUBLIC_KEY="$(cat "${ASB_KEY}.pub")" \
     -e ASB_KEYRING_PASS="$(cat "$ASB_KEYRING_PASS_FILE")" \
     -e HTTPS_PROXY=http://127.0.0.1:3128 \
@@ -107,38 +230,22 @@ PY
     -e NO_PROXY=127.0.0.1,localhost \
     -e ASB_ENFORCE_FIREWALL=1 \
     -v "$repo:/home/agent/workspace:Z" \
-    "$agent_image" >/dev/null
+    agent-sandbox-auth >/dev/null
+  local provision_token
+  provision_token=$(asb_prepare_agent_start "$pod")
+  podman start "${pod}-agent" >/dev/null
 
   # 5) provisionar a configuracao do host (skills, plugins, settings). Copia,
   #    nao montagem: o agente pode editar na sessao sem tocar no host, e a
   #    regra "home do host nunca e montado" continua valendo.
-  local stage
-  stage=$(mktemp -d)
-  if python3 "$ROOT/cli/lib/provision.py" "$ROOT/profiles/provision.toml" "$stage" > "$stage/plan" 2>>"$stage/err"; then
-    while IFS=$'\t' read -r src dst; do
-      [ -n "$src" ] || continue
-      podman exec --user 0 "${pod}-agent" mkdir -p "$(dirname "$dst")" 2>/dev/null
-      # `podman cp` copia PARA DENTRO de um destino que ja exista, aninhando o
-      # diretorio. Remover antes torna a copia idempotente.
-      podman exec --user 0 "${pod}-agent" rm -rf "$dst" 2>/dev/null
-      podman cp "$src" "${pod}-agent:$dst" 2>/dev/null \
-        || echo "provisionamento: falhou $src" >&2
-    done < "$stage/plan"
-    # podman cp preserva o dono da origem; o agente precisa conseguir ler.
-    podman exec --user 0 "${pod}-agent" \
-      chown -R agent:agent /home/agent/.claude /home/agent/.codex /home/agent/.gemini 2>/dev/null
-  else
-    # Recusa do provisionador significa caminho negado no manifesto: abortar em
-    # vez de subir um sandbox com a credencial do host dentro.
-    cat "$stage/err" >&2
-    rm -rf "$stage"
-    echo "provisionamento recusado; abortando" >&2
-    return 1
-  fi
-  rm -rf "$stage"
+  asb_provision_agent "$pod" "$provision_token"
 
-  asb_emit "$pod"
-}
+  local result
+  result=$(asb_emit "$pod")
+  succeeded=1
+  trap - EXIT
+  printf '%s\n' "$result"
+)
 
 # Resultado que o recipe do Orca consome. A porta e lida do podman, nunca
 # inventada: o Orca guarda a que o create devolveu e disca nela para sempre.
@@ -173,9 +280,18 @@ asb_resume() {
   [ -f "$state/squid.conf" ] || {
     echo "estado ausente em $state; recrie o workspace com 'up'" >&2; return 2; }
 
-  # ja de pe: idempotente, so devolve a porta
+  # Ja de pe: ainda validar a fronteira inteira. Se estiver quebrada, parar e
+  # continuar pelo caminho seguro de reconstrucao do netns.
   if [ -n "$(podman ps --filter "name=${pod}-agent" --filter status=running -q)" ]; then
-    asb_emit "$pod"; return 0
+    if [ -n "$(podman ps --filter "name=${pod}-squid" --filter status=running -q)" ] \
+        && podman exec --privileged --user 0 "${pod}-squid" \
+          nft list table inet asb >/dev/null 2>&1 \
+        && asb_proxy_probe "$pod"; then
+      asb_emit "$pod"
+      return 0
+    fi
+    echo "pod em execucao falhou na validacao; reiniciando com seguranca" >&2
+    podman pod stop "$pod" >/dev/null 2>&1
   fi
 
   # 1) SO a infra: cria o netns sem subir nenhum container de usuario.
@@ -215,13 +331,29 @@ asb_resume() {
     echo "proxy nao subiu; pod parado (fail-closed)" >&2
     return 1
   fi
+  if ! asb_wait_for_proxy "$pod"; then
+    podman pod stop "$pod" >/dev/null 2>&1
+    echo "proxy nao ficou saudavel; pod parado (fail-closed)" >&2
+    return 1
+  fi
   others=$(printf '%s\n' "$members" | grep -v -e '-infra$' -e "^${pod}-squid$" -e "^${pod}-agent$" || true)
   for c in $others; do podman start "$c" >/dev/null 2>&1 || true; done
+  local provision_token
+  if ! provision_token=$(asb_prepare_agent_start "$pod"); then
+    podman pod stop "$pod" >/dev/null 2>&1
+    echo "runtime do agente nao foi atualizado; pod parado" >&2
+    return 1
+  fi
   podman start "${pod}-agent" >/dev/null || {
     podman pod stop "$pod" >/dev/null 2>&1
     echo "container do agente nao subiu; pod parado" >&2
     return 1
   }
+  if ! asb_provision_agent "$pod" "$provision_token"; then
+    podman pod stop "$pod" >/dev/null 2>&1
+    echo "configuracao dos agentes nao foi sincronizada; pod parado" >&2
+    return 1
+  fi
 
   asb_emit "$pod"
 }
@@ -230,8 +362,17 @@ asb_resume() {
 # "running" no seu registro e nao reexecuta o create depois de um reboot: ele
 # so disca na porta que ja gravou. Sem isto, o workspace fica quebrado.
 asb_restore_all() {
-  local rc=0 pod ws n=0 skipped=0 code
-  for pod in $(podman pod ls --format '{{.Name}}' | grep '^asb-' || true); do
+  local rc=0 pod ws n=0 skipped=0 code needs_network=0
+  local -a pods=()
+  mapfile -t pods < <(podman pod ls --format '{{.Name}}' | grep '^asb-' || true)
+  for pod in "${pods[@]}"; do
+    [ -f "$(asb_state_dir "$pod")/squid.conf" ] && needs_network=1
+  done
+  if [ "$needs_network" -eq 1 ] && ! asb_wait_for_host_network; then
+    echo "restauracao adiada: rede do host ainda nao esta pronta" >&2
+    return 1
+  fi
+  for pod in "${pods[@]}"; do
     ws="${pod#asb-}"
     asb_resume "$ws" >/dev/null && code=0 || code=$?
     case "$code" in

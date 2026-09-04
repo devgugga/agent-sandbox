@@ -68,7 +68,9 @@ RUN printf 'agent-sandbox\n' > /etc/agent-sandbox-release
 # O mesmo guarda vai nos dois lados: o campo "Command" do Orca e global, entao
 # o nome precisa existir tambem dentro da imagem — aqui ele e transparente.
 COPY asb-agent /usr/local/bin/asb-agent
+COPY install-config.py /usr/local/bin/asb-install-config
 RUN chmod 0755 /usr/local/bin/asb-agent \
+    /usr/local/bin/asb-install-config \
     && for a in claude codex agy; do ln -sf /usr/local/bin/asb-agent "/usr/local/bin/asb-$a"; done
 
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh

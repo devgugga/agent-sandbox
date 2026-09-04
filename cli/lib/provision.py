@@ -8,6 +8,7 @@ Uso: provision.py <manifesto> <diretorio-de-staging>
 """
 import hashlib
 import json
+import re
 import shutil
 import sys
 import tomllib
@@ -21,6 +22,16 @@ DENY = {
     "sessions", "projects", "security", "ide", "conversations",
     "knowledge", "brain", ".ssh", "id_ed25519", "keyring.pass",
 }
+
+ALLOWED_SYMLINK_ROOTS = (
+    Path.home() / ".agents" / "skills",
+    Path("/usr/share/omarchy/default/agents/skills"),
+)
+ALLOWED_DESTINATION_ROOTS = (
+    Path("/home/agent/.claude"),
+    Path("/home/agent/.codex"),
+    Path("/home/agent/.gemini"),
+)
 
 
 def denied(path: Path) -> str | None:
@@ -40,20 +51,51 @@ def scan(root: Path) -> str | None:
     mas depender desse detalhe do podman como fronteira e fragil: qualquer troca
     por `tar --dereference` ou `cp -L` reabriria o buraco.
     """
-    base = root.resolve()
-    if root.is_file() or root.is_symlink():
-        if (bad := denied(Path(root.name))) is not None:
-            return bad
-        return denied(base)
+    source_root = root.resolve()
+    allowed_roots = tuple(path.resolve() for path in ALLOWED_SYMLINK_ROOTS)
+    seen: set[Path] = set()
 
-    for p in root.rglob("*"):
-        if p.name in DENY:
-            return str(p)
-        if p.is_symlink():
-            target = p.resolve()
+    def within(path: Path, parent: Path) -> bool:
+        return path == parent or path.is_relative_to(parent)
+
+    def trusted_target(target: Path) -> bool:
+        return within(target, source_root) or any(
+            within(target, allowed) for allowed in allowed_roots
+        )
+
+    def visit(path: Path, *, declared_root: bool = False) -> str | None:
+        if (bad := denied(Path(path.name))) is not None:
+            return f"{path} ({bad})"
+        if path.is_symlink():
+            try:
+                target = path.resolve(strict=True)
+            except FileNotFoundError:
+                return None
             if (bad := denied(target)) is not None:
-                return f"{p} -> {target} ({bad})"
-    return None
+                return f"{path} -> {target} ({bad})"
+            # O proprio src nao ganha confianca so por resolver para si mesmo.
+            if (declared_root and not any(within(target, a) for a in allowed_roots)) \
+                    or (not declared_root and not trusted_target(target)):
+                return f"{path} -> {target} (fora das raizes permitidas)"
+            return visit(target)
+        if path.is_file():
+            return denied(path.resolve())
+        if not path.is_dir():
+            return None
+        resolved = path.resolve()
+        if resolved in seen:
+            return None
+        seen.add(resolved)
+        try:
+            children = path.iterdir()
+            for child in children:
+                if (bad := visit(child)) is not None:
+                    return bad
+        except OSError as error:
+            return f"{path} nao pode ser inspecionado ({error})"
+        return None
+
+    return visit(root, declared_root=root.is_symlink())
 
 
 
@@ -94,7 +136,32 @@ def filter_claude_settings(src: Path, stage: Path) -> Path:
     return out
 
 
-FILTERS = {"claude-settings": filter_claude_settings}
+def filter_antigravity_hooks(src: Path, stage: Path) -> Path:
+    """Reescreve somente comandos de hook que apontam para o home do host."""
+    data = json.loads(src.read_text())
+    hook_path = re.compile(r"/(?:[^/\s'\"]+/)*\.orca/agent-hooks/")
+
+    def normalize(value):
+        if isinstance(value, dict):
+            return {
+                key: hook_path.sub("/home/agent/.orca/agent-hooks/", child)
+                if key == "command" and isinstance(child, str)
+                else normalize(child)
+                for key, child in value.items()
+            }
+        if isinstance(value, list):
+            return [normalize(child) for child in value]
+        return value
+
+    out = stage / "antigravity-hooks.json"
+    out.write_text(json.dumps(normalize(data), indent=2) + "\n")
+    return out
+
+
+FILTERS = {
+    "antigravity-hooks": filter_antigravity_hooks,
+    "claude-settings": filter_claude_settings,
+}
 
 
 def main() -> int:
@@ -107,6 +174,7 @@ def main() -> int:
 
     for e in entries:
         src = Path(e["src"]).expanduser()
+        dst = Path(e["dst"])
         if (bad := denied(Path(e["src"]))) is not None:
             print(f"recusado: {e['src']} contem caminho negado ({bad})", file=sys.stderr)
             return 1
@@ -116,11 +184,17 @@ def main() -> int:
         if (bad := scan(src)) is not None:
             print(f"recusado: {src} contem caminho negado ({bad})", file=sys.stderr)
             return 1
+        if ".." in dst.parts or not dst.is_absolute() or not any(
+            dst == root or dst.is_relative_to(root)
+            for root in ALLOWED_DESTINATION_ROOTS
+        ) or (bad := denied(dst)) is not None:
+            print(f"recusado: destino fora das raizes permitidas: {dst}", file=sys.stderr)
+            return 1
         if (name := e.get("filter")):
             src = FILTERS[name](src, stage)
         elif src.is_dir():
             src = materialize(src, stage)
-        print(f"{src}\t{e['dst']}")
+        print(f"{src}\t{dst}")
     return 0
 
 

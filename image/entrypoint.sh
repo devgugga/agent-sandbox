@@ -2,6 +2,13 @@
 # image/entrypoint.sh — instala a chave publica do workspace e sobe o sshd
 set -euo pipefail
 
+# Estes arquivos podem ser atualizados em um container autenticado antigo antes
+# do start. Trave a propriedade antes de criar qualquer processo uid 1000.
+chown root:root /usr/local/bin/entrypoint.sh /usr/local/bin/asb-agent \
+  /usr/local/bin/asb-install-config
+chmod 0755 /usr/local/bin/entrypoint.sh /usr/local/bin/asb-agent \
+  /usr/local/bin/asb-install-config
+
 # Propagar variaveis de ambiente do container para as sessoes SSH via PAM e profile
 env | grep -E '^(HTTPS_PROXY|HTTP_PROXY|NO_PROXY|PATH)=' > /etc/environment || true
 cat > /etc/profile.d/agent-sandbox.sh <<'ENV_EOF'
@@ -57,6 +64,28 @@ if [ "${ASB_ENFORCE_FIREWALL:-}" = "1" ]; then
     echo "agent-sandbox: resume', que reaplica as regras antes de subir o agente." >&2
     exit 1
   fi
+
+  # O container e criado antes do start e o host atualiza runtime/config por
+  # `podman exec`. SSH so fica disponivel depois do marcador, eliminando a
+  # corrida com o Orca, que ja conhece a porta salva apos reboot.
+  token_file=/run/agent-sandbox-provision-token
+  if [ ! -r "$token_file" ]; then
+    echo "agent-sandbox: token de provisionamento ausente" >&2
+    exit 1
+  fi
+  provision_token=$(cat "$token_file")
+  case "$provision_token" in
+    ''|*[!a-f0-9]*) echo "agent-sandbox: token de provisionamento invalido" >&2; exit 1 ;;
+  esac
+  rm -f "$token_file"
+  provision_marker="/run/agent-sandbox-provisioned-$provision_token"
+  rm -f "$provision_marker"
+  if ! timeout "${ASB_PROVISION_TIMEOUT:-120}" bash -c \
+      'until [ -f "$1" ]; do sleep 0.1; done' _ "$provision_marker"; then
+    echo "agent-sandbox: provisionamento nao concluiu; recusando subir sshd" >&2
+    exit 1
+  fi
+  rm -f "$provision_marker"
 fi
 
 # NAO gerar host keys aqui: elas vem do build. Gerar apenas se sumirem.

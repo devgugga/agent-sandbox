@@ -9,6 +9,7 @@ cd "$(dirname "$0")/.."
 source tests/assert.sh
 
 WS=resume-test
+POD="asb-$WS"
 REPO=$(mktemp -d)
 trap 'rm -rf "$REPO"; ./cli/agent-sandbox down --workspace "$WS" >/dev/null 2>&1' EXIT
 git -C "$REPO" init -q
@@ -25,6 +26,17 @@ port=$(echo "$out" | jq -r .port)
 wait_for 40 ssh_probe "$port"
 require "SSH responde antes do suspend" ssh_probe "$port"
 
+# Simula um workspace antigo, criado antes da correcao do guarda/config. O
+# resume precisa sincronizar o estado versionado sem recriar a imagem auth.
+podman exec --user 0 "asb-$WS-agent" sh -c \
+  'printf "wrapper antigo\n" > /usr/local/bin/asb-agent; chmod 0755 /usr/local/bin/asb-agent'
+podman exec --user agent "asb-$WS-agent" sh -c '
+  mkdir -p /home/agent/workspace/config-trap
+  printf "preservar\n" > /home/agent/workspace/config-trap/sentinel
+  rm -rf /home/agent/.gemini/config
+  ln -s /home/agent/workspace/config-trap /home/agent/.gemini/config
+'
+
 ./cli/agent-sandbox suspend --workspace "$WS" >/dev/null 2>&1
 assert_eq "" "$(podman ps --filter "name=asb-$WS-agent" --filter status=running -q)" \
   "suspend para o container do agente"
@@ -40,6 +52,13 @@ assert_eq "$port" "$rport" "resume preserva a porta SSH (o Orca guarda a antiga)
 
 wait_for 40 ssh_probe "$rport"
 require "SSH responde depois do resume" ssh_probe "$rport"
+assert_eq "$(sha256sum image/asb-agent | cut -c1-16)" \
+          "$(ssh_agent "$rport" 'sha256sum /usr/local/bin/asb-agent | cut -c1-16')" \
+  "resume sincroniza o guarda/config sem perder a imagem autenticada"
+assert_eq "arquivo" "$(ssh_agent "$rport" 'test -f ~/workspace/config-trap/sentinel && test ! -e ~/workspace/config-trap/plugins && echo arquivo')" \
+  "provisionamento nao segue symlink controlado ate o repo do host"
+assert_eq "diretorio" "$(ssh_agent "$rport" 'test -d ~/.gemini/config && test ! -L ~/.gemini/config && echo diretorio')" \
+  "resume substitui parent symlink por diretorio seguro"
 
 # ESTA e a asserção que faltava. Sem controle positivo acima, ela passaria de
 # graca com o container morto.
@@ -57,6 +76,34 @@ assert_contains "table inet asb" \
 code=$(ssh_agent "$rport" 'curl -s -o /dev/null -w %{http_code} -m 15 https://api.anthropic.com')
 case "$code" in ''|000) reached="" ;; *) reached="respondeu" ;; esac
 assert_eq "respondeu" "$reached" "egresso permitido volta pelo proxy (HTTP $code)"
+
+echo "== resume idempotente revalida pod que ainda aparece running =="
+podman run --rm --pod "$POD" --user 1000 --cap-add NET_ADMIN \
+  agent-sandbox-net ip route del default >/dev/null
+running_out=$(./cli/agent-sandbox resume --workspace "$WS" 2>/dev/null)
+assert_eq "$rport" "$(printf '%s' "$running_out" | jq -r .port)" \
+  "resume recupera pod running cuja rede quebrou"
+wait_for 40 ssh_probe "$rport"
+require "SSH responde depois da recuperacao do fast path" ssh_probe "$rport"
+code=$(ssh_agent "$rport" 'curl -s -o /dev/null -w %{http_code} -m 15 https://api.anthropic.com')
+case "$code" in ''|000) reached="" ;; *) reached="respondeu" ;; esac
+assert_eq "respondeu" "$reached" \
+  "fast path so retorna depois de restaurar proxy (HTTP $code)"
+
+echo "== resume e fail-closed: proxy vivo sem rota nao e saudavel =="
+./cli/agent-sandbox suspend --workspace "$WS" >/dev/null 2>&1
+infra=$(podman pod inspect "$POD" --format '{{.InfraContainerID}}')
+podman start "$infra" >/dev/null
+podman run --rm --pod "$POD" --user 1000 --cap-add NET_ADMIN \
+  agent-sandbox-net ip route del default >/dev/null
+assert_fails "resume falha quando o namespace nasce sem rota" \
+  ./cli/agent-sandbox resume --workspace "$WS"
+assert_eq "" "$(podman ps --filter "name=${POD}-agent" --filter status=running -q)" \
+  "agente NAO fica no ar quando Squid nao alcanca a internet"
+
+# O fail-closed acima para o pod. Um novo start da infra recria o namespace a
+# partir da rede normal do host, permitindo que os cenarios seguintes rodem.
+./cli/agent-sandbox resume --workspace "$WS" >/dev/null
 
 echo "== resume e fail-closed: firewall que falha nao deixa agente no ar =="
 ./cli/agent-sandbox suspend --workspace "$WS" >/dev/null 2>&1

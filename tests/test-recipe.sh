@@ -20,6 +20,11 @@ _wsid() { env -u ORCA_WORKSPACE_ID bash -c '
 # a existir — que era a causa real dos dois defeitos.
 dups=$(grep -l '^asb_workspace_id()' recipes/create.sh recipes/destroy.sh recipes/suspend.sh recipes/resume.sh 2>/dev/null | tr '\n' ' ')
 assert_eq "" "$dups" "nenhum hook redefine asb_workspace_id (fonte unica em common.sh)"
+for action in create destroy suspend resume; do
+  rendered=$(sed "s/__ACTION__/$action/g" recipes/shim.template.sh)
+  assert_contains "/recipes/$action.sh" "$rendered" \
+    "template do consumidor suporta $action"
+done
 
 # O Orca passa ORCA_VM_INSTANCE_ID, unico por workspace. Sem usa-lo, a
 # derivacao cai no caminho do repo — e como os shims rodam a partir do checkout

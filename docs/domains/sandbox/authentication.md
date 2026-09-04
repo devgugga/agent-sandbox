@@ -19,6 +19,10 @@ This is also why the image must not hardcode a proxy: the auth container runs
 outside the pod, where no Squid exists, so the entrypoint exports
 `HTTPS_PROXY`/`HTTP_PROXY` only when they are actually provided.
 
+There is no fixed startup sleep. The command polls the Secret Service D-Bus
+endpoint and aborts if it never becomes ready; this prevents a slow machine
+from silently sending Antigravity to its plaintext fallback.
+
 ## The three logins
 
 ```bash
@@ -45,6 +49,11 @@ Authentication is verified by **exit code**, never by grepping for
 unauthenticated image. If any agent fails, the script aborts rather than
 producing a broken image.
 
+The verification covers all three agents: `codex login status`, a prompt
+through Claude and a prompt through `asb-agy`. The temporary auth container is
+removed on every exit path. Every live verification also has a host-side
+deadline, including Claude, so a wedged CLI cannot hold the auth flow forever.
+
 ## Expiry
 
 Baked credentials expire. The symptom is the agent reporting that it is not
@@ -63,3 +72,7 @@ The guard `asb-agy` unsets `SSH_CONNECTION`, `SSH_CLIENT` and `SSH_TTY` before
 `exec`, scoped to `agy` alone — Claude and Codex work fine over SSH. A
 consequence worth knowing: if the Orca `Command` field is reverted to plain
 `agy`, this bug returns.
+
+The same guard normalizes Orca hook commands immediately before launch. Orca
+can inject `/home/<host-user>/.orca/agent-hooks/...` after provisioning; inside
+the container this becomes `/home/agent/.orca/agent-hooks/...`.

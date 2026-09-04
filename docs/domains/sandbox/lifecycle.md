@@ -38,10 +38,15 @@ builds it:
    was verified to start the infra alone.)
 2. Apply the firewall, then **prove** it applied by reading back
    `nft list table inet asb`.
-3. Start Squid and **verify it is running**, then the services and forwarders,
-   then the agent **last**. With the firewall applied and no proxy, the agent
-   comes up with no egress at all and the symptom reads as "the internet is
-   broken" rather than as a lifecycle error.
+3. Start Squid and prove, from inside the pod, that it has a default route, can
+   resolve an allowed domain and completes an HTTP CONNECT through the proxy.
+   A running Squid process alone is not health. Only then start services,
+   forwarders and the agent **last**. Before emitting the connection JSON,
+   synchronize the current guard and explicit agent-configuration manifest.
+   This upgrades an existing authenticated workspace without replacing its
+   keyring or writable layer. The entrypoint gates SSH with a unique per-start
+   token until synchronization completes, so Orca cannot reconnect halfway
+   through materialization.
 
 Any failure in steps 1–3 stops the whole pod and exits non-zero. A half-started
 pod is exactly the unsafe state this path exists to prevent.
@@ -95,6 +100,13 @@ would close an ordering cycle) and no lingering — Orca only runs after login, 
 a unit that starts at login is early enough. It calls `agent-sandbox
 restore-all`, which resumes every `asb-*` pod.
 
+The unit deliberately has `Restart=on-failure`. Before creating any network
+namespace, `restore-all` waits for the host to have both a default route and
+working DNS. This ordering is required with rootless `pasta`: a namespace born
+before DHCP can keep the route-less snapshot even after the host becomes
+online. The bounded wait fails the oneshot and systemd retries five seconds
+later.
+
 `ExecStart` carries the repo's absolute path, baked in at install time. **Moving
 or renaming the `agent-sandbox` checkout silently breaks boot restore** — re-run
 `install-autostart` after a move.
@@ -123,3 +135,22 @@ They cover Orca's own sleep/wake. **They do not cover reboot** — see above.
 All four hooks source `recipes/common.sh`. The workspace-id derivation used to
 be duplicated between `create` and `destroy`, and each time the copies diverged
 a pod leaked; `tests/test-recipe.sh` now fails if any hook redefines it.
+
+Every consumer `orca.yaml` must declare the complete set:
+
+```yaml
+create:  ./scripts/orca-vm/create.sh
+destroy: ./scripts/orca-vm/destroy.sh
+suspend: ./scripts/orca-vm/suspend.sh
+resume:  ./scripts/orca-vm/resume.sh
+```
+
+Use `agent-sandbox doctor` after installation or a reboot. It checks images,
+key files, persistent state, authenticated image use, firewall and real proxy
+connectivity for every running pod. A stopped pod is reported as unverified and
+returns non-zero; `doctor` does not guess whether it was intentionally suspended
+or failed during restore.
+
+`up` never replaces an existing workspace implicitly. Use `resume` for an
+existing pod or `down` explicitly before creating a replacement; this prevents
+a failed rebuild from destroying a healthy writable layer and saved state.

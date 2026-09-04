@@ -23,7 +23,7 @@ case "$agent" in
 esac
 
 # Marcador que so existe dentro da imagem do sandbox.
-SANDBOX_MARKER=/etc/agent-sandbox-release
+SANDBOX_MARKER="${ASB_SANDBOX_MARKER:-/etc/agent-sandbox-release}"
 
 # Excecao unica: manter o proprio agent-sandbox exige podman no host, entao um
 # agente trabalhando NESTE repo pode rodar fora. Comparacao por prefixo de
@@ -50,13 +50,57 @@ launch() {
   exec "$real" "$@"
 }
 
+normalize_antigravity_hooks() {
+  local hooks="$HOME/.gemini/config/hooks.json"
+  [ -f "$hooks" ] || return 0
+  python3 - "$hooks" "$HOME" <<'PY'
+import json
+import os
+import re
+import stat
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+home = sys.argv[2].rstrip("/")
+pattern = re.compile(r"/(?:[^/\s'\"]+/)*\.orca/agent-hooks/")
+data = json.loads(path.read_text())
+
+def normalize(value):
+    if isinstance(value, dict):
+        return {
+            key: pattern.sub(f"{home}/.orca/agent-hooks/", child)
+            if key == "command" and isinstance(child, str)
+            else normalize(child)
+            for key, child in value.items()
+        }
+    if isinstance(value, list):
+        return [normalize(child) for child in value]
+    return value
+
+rendered = json.dumps(normalize(data), indent=2) + "\n"
+if rendered != path.read_text():
+    mode = stat.S_IMODE(path.stat().st_mode)
+    temporary = path.with_name(f".{path.name}.tmp-{os.getpid()}")
+    temporary.write_text(rendered)
+    os.chmod(temporary, mode)
+    temporary.replace(path)
+PY
+}
+
 # 1) Dentro do sandbox: transparente.
 if [ -f "$SANDBOX_MARKER" ]; then
   # O agy detecta sessao SSH e trata como login remoto NOVO: ignora a
   # credencial em cache e pede device-auth toda vez. Como o Orca conecta no
   # container exatamente por SSH, sem isso o agente e inutilizavel no sandbox.
   # Escopo restrito ao agy de proposito — claude e codex funcionam por SSH.
-  [ "$agent" = "agy" ] && unset SSH_CONNECTION SSH_CLIENT SSH_TTY
+  if [ "$agent" = "agy" ]; then
+    normalize_antigravity_hooks || {
+      echo "asb-agent: nao foi possivel normalizar hooks do Antigravity" >&2
+      exit 78
+    }
+    unset SSH_CONNECTION SSH_CLIENT SSH_TTY
+  fi
   launch "$@"
 fi
 

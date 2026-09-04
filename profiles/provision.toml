@@ -41,3 +41,31 @@ dst = "/home/agent/.codex/skills"
 [[entry]]
 src = "~/.gemini/antigravity-cli/settings.json"
 dst = "/home/agent/.gemini/antigravity-cli/settings.json"
+
+# O Antigravity guarda plugins, skills, hooks e MCPs separadamente das
+# preferencias do CLI. Tudo continua numa allowlist explicita: projetos,
+# sessoes e credenciais nunca sao copiados por arrasto.
+[[entry]]
+src = "~/.gemini/config/config.json"
+dst = "/home/agent/.gemini/config/config.json"
+
+[[entry]]
+src = "~/.gemini/config/hooks.json"
+dst = "/home/agent/.gemini/config/hooks.json"
+filter = "antigravity-hooks"
+
+[[entry]]
+src = "~/.gemini/config/mcp_config.json"
+dst = "/home/agent/.gemini/config/mcp_config.json"
+
+[[entry]]
+src = "~/.gemini/config/import_manifest.json"
+dst = "/home/agent/.gemini/config/import_manifest.json"
+
+[[entry]]
+src = "~/.gemini/config/plugins"
+dst = "/home/agent/.gemini/config/plugins"
+
+[[entry]]
+src = "~/.gemini/config/skills"
+dst = "/home/agent/.gemini/config/skills"

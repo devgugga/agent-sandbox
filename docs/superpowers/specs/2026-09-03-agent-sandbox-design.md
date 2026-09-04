@@ -232,16 +232,11 @@ fica disponível para expor portas de serviço do sandbox quando necessário.
 
 ### 5.1 Ciclo de vida: suspend e resume
 
-O contrato do Orca trata `suspend` e `resume` como opcionais. **Esta primeira
-versão não os implementa**, por uma razão específica: `podman pod pause` congela
-os processos, mas a porta SSH publicada e o netns sobrevivem — e o `resume`
-teria de reemitir o JSON de conexão porque a porta pode mudar. Sem eles, dormir
-e acordar a máquina simplesmente derruba o workspace, e o Orca recria.
-
-A consequência a aceitar: **o estado não commitado dentro do container é
-perdido** ao dormir a máquina. O agente deve commitar localmente ao concluir
-etapas. Se isso se mostrar doloroso no uso real, `suspend`/`resume` viram a
-primeira extensão — o contrato já os prevê.
+Os quatro hooks do Orca são implementados. `suspend` para o pod preservando a
+porta e a camada gravável; `resume` inicia apenas a infra, reaplica e verifica o
+firewall, prova a saúde do proxy e só então inicia o agente. O JSON completo de
+conexão é reemitido. Após reboot, a unidade de usuário chama `restore-all`, pois
+o Orca preserva o runtime como `running` e não chama os hooks novamente.
 
 ---
 

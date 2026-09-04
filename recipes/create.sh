@@ -5,8 +5,22 @@
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 repo="${1:-$PWD}"
-ws="${ORCA_WORKSPACE_ID:-$(basename "$repo")-$$}"
-ws=$(printf '%s' "$ws" | tr -c 'a-zA-Z0-9._-' '-')
+# Nome DETERMINISTICO derivado do caminho do repo. Com $$ (PID) o destroy nao
+# tem como reproduzir o nome e o pod vaza — o `doctor --provision` deixou um
+# pod para tras exatamente assim, reportando sucesso.
+asb_workspace_id() {
+  local repo="$1"
+  if [ -n "${ORCA_WORKSPACE_ID:-}" ]; then
+    printf '%s' "$ORCA_WORKSPACE_ID" | tr -c 'a-zA-Z0-9._-' '-'
+    return
+  fi
+  local base short
+  base=$(basename "$repo" | tr -c 'a-zA-Z0-9._-' '-')
+  short=$(printf '%s' "$repo" | sha256sum | cut -c1-8)
+  printf '%s-%s' "$base" "$short"
+}
+
+ws=$(asb_workspace_id "$repo")
 
 up=$("$ROOT/cli/agent-sandbox" up --workspace "$ws" --repo "$repo")
 port=$(printf '%s' "$up" | jq -r .port)

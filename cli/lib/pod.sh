@@ -81,13 +81,20 @@ PY
   local agent_image=agent-sandbox-base
   podman image exists agent-sandbox-auth && agent_image=agent-sandbox-auth
 
+  # Montar sob /home/agent, nao em /workspace: o Orca cria worktrees IRMAS do
+  # projectRoot ("<root>-<nome>") quando nao configurado para usar .worktrees, e
+  # com /workspace a irma cairia em /, que e 555 e nem root escreve.
+  #
+  # ATENCAO: comentario NUNCA no meio de um comando com continuacao de linha. O
+  # "#" encerra a linha logica junto com a barra invertida, os argumentos
+  # seguintes viram orfaos e o podman falha com "requires at least 1 arg(s)".
   podman run -d --name "${pod}-agent" --pod "$pod" \
     -e ORCA_SSH_PUBLIC_KEY="$(cat "${ASB_KEY}.pub")" \
     -e ASB_KEYRING_PASS="$(cat "$ASB_KEYRING_PASS_FILE")" \
     -e HTTPS_PROXY=http://127.0.0.1:3128 \
     -e HTTP_PROXY=http://127.0.0.1:3128 \
     -e NO_PROXY=127.0.0.1,localhost \
-    -v "$repo:/workspace:Z" \
+    -v "$repo:/home/agent/workspace:Z" \
     "$agent_image" >/dev/null
 
   local port

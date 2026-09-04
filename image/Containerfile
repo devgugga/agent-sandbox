@@ -26,7 +26,8 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     && rm -rf /var/lib/apt/lists/*
 
 # usuario nao-root
-RUN useradd -m -u 1000 -s /bin/bash agent
+RUN useradd -m -u 1000 -s /bin/bash agent \
+    && install -d -o agent -g agent /home/agent/workspace
 
 # mise para o agente
 USER agent

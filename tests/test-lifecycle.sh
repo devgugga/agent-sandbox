@@ -31,12 +31,12 @@ ssh_agent() { ssh -i "$key" -p "$port" -o IdentitiesOnly=yes -o StrictHostKeyChe
   -o UserKnownHostsFile=/dev/null agent@127.0.0.1 "$1" 2>/dev/null; }
 
 assert_eq "1000" "$(ssh_agent 'id -u')" "SSH conecta e o agente e uid 1000"
-assert_eq "ok" "$(ssh_agent 'test -d /workspace && echo ok')" "repo montado em /workspace"
+assert_eq "ok" "$(ssh_agent 'test -d /home/agent/workspace && echo ok')" "repo montado em /home/agent/workspace"
 
-# O bug que a suite nao pegava: /workspace existia mas era ilegivel para o
+# O bug que a suite nao pegava: /home/agent/workspace existia mas era ilegivel para o
 # agente (uid 1000 -> subuid sem posse). Existir nao basta; tem que escrever.
-assert_eq "ok" "$(ssh_agent 'echo teste > /workspace/.asb-escrita && echo ok')" \
-  "agente ESCREVE em /workspace"
+assert_eq "ok" "$(ssh_agent 'echo teste > /home/agent/workspace/.asb-escrita && echo ok')" \
+  "agente ESCREVE em /home/agent/workspace"
 assert_eq "teste" "$(cat "$REPO/.asb-escrita" 2>/dev/null)" \
   "host le de volta o que o agente escreveu"
 

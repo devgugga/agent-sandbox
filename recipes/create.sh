@@ -38,7 +38,7 @@ jq -nc \
   },
   connection: {
     type: "ssh",
-    projectRoot: "/workspace",
+    projectRoot: "/home/agent/workspace",
     target: {
       label: $label,
       host: "127.0.0.1",

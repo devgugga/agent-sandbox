@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+# cli/asb-agent — guarda de execucao dos agentes.
+#
+# Instalado sob varios nomes (asb-claude, asb-codex, asb-agy) e descobre qual
+# agente lancar pelo nome de invocacao. Vai no campo "Command" de
+# Settings -> Agents do Orca, no lugar do binario:
+#
+#   Command: asb-agy        Arguments: --dangerously-skip-permissions
+#
+# Dentro do sandbox e transparente. No host, recusa — e essa e a unica coisa
+# que impede um agente em yolo mode de mexer na maquina, porque o Orca nao
+# oferece nenhuma forma de exigir a receita de ambiente.
+#
+# NAO e fronteira de seguranca: quem souber o caminho do binario real contorna.
+# Resolve execucao ACIDENTAL fora do sandbox, que e o problema real.
+set -euo pipefail
+
+invoked="${0##*/}"
+agent="${invoked#asb-}"
+case "$agent" in
+  claude|codex|agy) ;;
+  *) echo "asb-agent: nome de invocacao desconhecido: $invoked" >&2; exit 64 ;;
+esac
+
+# Marcador que so existe dentro da imagem do sandbox.
+SANDBOX_MARKER=/etc/agent-sandbox-release
+
+# Excecao unica: manter o proprio agent-sandbox exige podman no host, entao um
+# agente trabalhando NESTE repo pode rodar fora. Comparacao por prefixo de
+# caminho real — um agente em outro projeto nao consegue se declarar excecao.
+ASB_REPO="${ASB_REPO_PATH:-$HOME/Data/Projects/agent-sandbox}"
+
+resolve_real() {
+  # Encontra o binario real, ignorando este proprio guarda.
+  local self; self="$(readlink -f "$0")"
+  local IFS=:
+  for dir in $PATH; do
+    local cand="$dir/$agent"
+    [ -x "$cand" ] || continue
+    [ "$(readlink -f "$cand")" = "$self" ] && continue
+    printf '%s' "$cand"; return 0
+  done
+  return 1
+}
+
+launch() {
+  local real
+  real="$(resolve_real)" || {
+    echo "asb-agent: binario '$agent' nao encontrado no PATH" >&2; exit 127; }
+  exec "$real" "$@"
+}
+
+# 1) Dentro do sandbox: transparente.
+[ -f "$SANDBOX_MARKER" ] && launch "$@"
+
+# 2) Excecao de manutencao deste repositorio.
+cwd="$(pwd -P)"
+repo="$(readlink -f "$ASB_REPO" 2>/dev/null || printf '%s' "$ASB_REPO")"
+case "$cwd/" in
+  "$repo"/*) launch "$@" ;;
+esac
+
+# 3) Host, fora da excecao: recusa.
+#
+# A dica do binario real e para o humano. Quem le esta mensagem, porem, quase
+# sempre e o AGENTE — e um agente em yolo mode trata "chame este caminho" como
+# instrucao, ou seja, o bloqueio entregaria o proprio contorno a quem ele
+# deveria conter. TTY nao serve para distinguir: o Orca lanca o agente em PTY.
+# O que distingue e o flag de autonomia (o Orca sempre aplica um) e a presenca
+# do orca-ide na arvore de processos.
+launched_by_orca() {
+  local a
+  for a in "$@"; do
+    case "$a" in
+      --dangerously-*|--yolo|--permission-mode) return 0 ;;
+    esac
+  done
+  local pid=$PPID comm
+  while [ "${pid:-0}" -gt 1 ]; do
+    read -r comm < "/proc/$pid/comm" 2>/dev/null || return 1
+    [ "$comm" = "orca-ide" ] && return 0
+    pid=$(awk '{print $4}' "/proc/$pid/stat" 2>/dev/null) || return 1
+  done
+  return 1
+}
+
+hint=""
+launched_by_orca "$@" || hint="
+  Para rodar no host deliberadamente, chame o binario real:
+    $(resolve_real 2>/dev/null || echo '(nao encontrado)')
+"
+
+cat >&2 <<EOF
+
+  Bloqueado: '$agent' nao roda fora do sandbox.
+
+  Diretorio atual: $cwd
+
+  Abra um workspace com a receita "Agent Sandbox" (Orca -> Run on), que
+  cria o container e conecta o agente la dentro.
+
+  Manutencao do proprio agent-sandbox e a unica excecao, e roda em:
+    $repo
+$hint
+EOF
+exit 77

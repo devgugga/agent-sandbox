@@ -39,5 +39,14 @@ case "$cmd" in
   down) check_ws
         asb_down "$ws" ;;
   auth) asb_auth ;;
+  install-guards)
+        # Instala os nomes que vao no campo "Command" do Orca.
+        mkdir -p "$HOME/.local/bin"
+        for a in claude codex agy; do
+          ln -sf "$ROOT/cli/asb-agent" "$HOME/.local/bin/asb-$a"
+          echo "instalado: ~/.local/bin/asb-$a" >&2
+        done
+        echo "Agora, em Orca -> Settings -> Agents, troque o campo Command:" >&2
+        echo "  claude -> asb-claude | codex -> asb-codex | agy -> asb-agy" >&2 ;;
   *)    usage ;;
 esac

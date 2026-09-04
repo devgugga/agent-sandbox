@@ -55,6 +55,16 @@ RUN printf '%s\n' \
 # O container E a fronteira; ver spec 3.6.
 ENV CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1
 
+# Marcador que o guarda asb-agent procura para saber que esta DENTRO do
+# sandbox. Sua ausencia no host e o que faz o guarda recusar la.
+RUN printf 'agent-sandbox\n' > /etc/agent-sandbox-release
+
+# O mesmo guarda vai nos dois lados: o campo "Command" do Orca e global, entao
+# o nome precisa existir tambem dentro da imagem — aqui ele e transparente.
+COPY asb-agent /usr/local/bin/asb-agent
+RUN chmod 0755 /usr/local/bin/asb-agent \
+    && for a in claude codex agy; do ln -sf /usr/local/bin/asb-agent "/usr/local/bin/asb-$a"; done
+
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY start-keyring.sh /usr/local/bin/start-keyring.sh
 RUN chmod 0755 /usr/local/bin/entrypoint.sh /usr/local/bin/start-keyring.sh

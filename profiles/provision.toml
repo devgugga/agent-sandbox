@@ -1,0 +1,34 @@
+# Configuracao do host copiada para dentro do sandbox a cada `up`.
+#
+# A lista e EXPLICITA de proposito. `~/.claude` contem `.credentials.json` e
+# `~/.codex` contem `auth.json`: declarar o diretorio inteiro entregaria a
+# credencial do seu host ao sandbox, que e exatamente o que a imagem
+# autenticada existe para evitar. O provisionador recusa qualquer entrada que
+# contenha um caminho negado, inclusive dentro de diretorios.
+
+[[entry]]
+src = "~/.claude/settings.json"
+dst = "/home/agent/.claude/settings.json"
+# hooks e statusLine apontam para caminhos do host que nao existem no
+# container; sem o filtro o agente erra a cada sessao.
+filter = "claude-settings"
+
+[[entry]]
+src = "~/.claude/plugins"
+dst = "/home/agent/.claude/plugins"
+
+[[entry]]
+src = "~/.claude/skills"
+dst = "/home/agent/.claude/skills"
+
+[[entry]]
+src = "~/.codex/config.toml"
+dst = "/home/agent/.codex/config.toml"
+
+[[entry]]
+src = "~/.codex/hooks.json"
+dst = "/home/agent/.codex/hooks.json"
+
+[[entry]]
+src = "~/.gemini/antigravity-cli/settings.json"
+dst = "/home/agent/.gemini/antigravity-cli/settings.json"

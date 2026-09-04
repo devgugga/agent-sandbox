@@ -97,6 +97,31 @@ PY
     -v "$repo:/home/agent/workspace:Z" \
     "$agent_image" >/dev/null
 
+  # 5) provisionar a configuracao do host (skills, plugins, settings). Copia,
+  #    nao montagem: o agente pode editar na sessao sem tocar no host, e a
+  #    regra "home do host nunca e montado" continua valendo.
+  local stage
+  stage=$(mktemp -d)
+  if python3 "$ROOT/cli/lib/provision.py" "$ROOT/profiles/provision.toml" "$stage" > "$stage/plan" 2>>"$stage/err"; then
+    while IFS=$'\t' read -r src dst; do
+      [ -n "$src" ] || continue
+      podman exec --user 0 "${pod}-agent" mkdir -p "$(dirname "$dst")" 2>/dev/null
+      podman cp "$src" "${pod}-agent:$dst" 2>/dev/null \
+        || echo "provisionamento: falhou $src" >&2
+    done < "$stage/plan"
+    # podman cp preserva o dono da origem; o agente precisa conseguir ler.
+    podman exec --user 0 "${pod}-agent" \
+      chown -R agent:agent /home/agent/.claude /home/agent/.codex /home/agent/.gemini 2>/dev/null
+  else
+    # Recusa do provisionador significa caminho negado no manifesto: abortar em
+    # vez de subir um sandbox com a credencial do host dentro.
+    cat "$stage/err" >&2
+    rm -rf "$stage"
+    echo "provisionamento recusado; abortando" >&2
+    return 1
+  fi
+  rm -rf "$stage"
+
   local port
   port=$(podman port "${pod}-agent" 22 2>/dev/null | head -1 | sed 's/.*://')
   [ -n "$port" ] || { echo "nao foi possivel determinar a porta SSH" >&2; return 1; }

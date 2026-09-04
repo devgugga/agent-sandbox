@@ -13,3 +13,10 @@ antigravity.google
 .github.com
 # pacotes
 registry.npmjs.org
+
+# O Orca instala o relay dele DENTRO do container (~/.orca-remote) e o
+# node-pty compila via node-gyp, que busca os headers do Node aqui. Sem este
+# dominio o workspace da receita falha no arranque com "Request was cancelled".
+nodejs.org
+# Assets de release do GitHub (prebuilds nativos) resolvem para este host.
+.githubusercontent.com

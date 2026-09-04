@@ -26,4 +26,13 @@ assert_contains "ok" "$claude_out" "Claude Code responde atras do proxy"
 npm_out=$(sa 'npm ping 2>&1 | grep -i pong || echo fail')
 assert_contains "PONG" "$npm_out" "npm resolve atras do proxy"
 
+# O Orca instala o relay dele DENTRO do container (~/.orca-remote) e o node-pty
+# compila via node-gyp, que baixa os headers do Node de nodejs.org. Sem esse
+# dominio na allowlist o workspace da receita falha no arranque com "Request
+# was cancelled" — foi exatamente o que aconteceu no primeiro uso real.
+sa 'mkdir -p /tmp/relay-probe && cd /tmp/relay-probe && npm install \
+      --ignore-scripts=false --omit=dev --no-audit --no-fund node-pty@1.1.0' >/dev/null 2>&1
+assert_eq "ok" "$(sa 'test -f /tmp/relay-probe/node_modules/node-pty/build/Release/pty.node && echo ok')" \
+  "node-gyp compila modulo nativo atras do proxy (relay do Orca)"
+
 report

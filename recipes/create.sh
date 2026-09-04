@@ -14,8 +14,15 @@ asb_workspace_id() {
     printf '%s' "$ORCA_WORKSPACE_ID" | tr -c 'a-zA-Z0-9._-' '-'
     return
   fi
+  # Normalizar ANTES de derivar: barra final muda o hash, e create e destroy
+  # divergiriam se o caminho chegasse de formas diferentes — o mesmo tipo de
+  # divergencia que fazia o pod vazar.
+  repo="${repo%/}"
   local base short
-  base=$(basename "$repo" | tr -c 'a-zA-Z0-9._-' '-')
+  # ${repo##*/} em vez de $(basename ...): o subshell traz um newline final que
+  # o `tr -c` converte em traco, produzindo nomes como "hexmed-stack--f05b729e".
+  base=${repo##*/}
+  base=$(printf '%s' "$base" | tr -c 'a-zA-Z0-9._-' '-')
   short=$(printf '%s' "$repo" | sha256sum | cut -c1-8)
   printf '%s-%s' "$base" "$short"
 }

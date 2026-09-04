@@ -12,6 +12,10 @@ http_access deny !allowed_domains
 http_access allow allowed_domains
 http_access deny all
 
+# Default do squid e 30s de shutdown gracioso; o podman mata em 10 e emite
+# "failed to stop container ... resorting to SIGKILL" a cada teardown.
+shutdown_lifetime 1 second
+
 cache deny all
 access_log stdio:/tmp/squid-access.log
 cache_log /tmp/squid-cache.log

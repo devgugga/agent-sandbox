@@ -8,7 +8,13 @@
 # este dominio ele falha no arranque com "Forbidden", apesar de autenticado.
 .googleusercontent.com
 .antigravity.google
+# Servico de feature flags do Antigravity. Sem ele o agy aborta o arranque
+# com "authentication required" — mesmo estando autenticado no keyring.
+antigravity-unleash.goog
 antigravity.google
+# Servico de feature flags do Antigravity. Sem ele o agy aborta o arranque
+# com "authentication required" — mesmo estando autenticado no keyring.
+antigravity-unleash.goog
 # codigo
 .github.com
 # pacotes

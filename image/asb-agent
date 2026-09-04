@@ -51,7 +51,14 @@ launch() {
 }
 
 # 1) Dentro do sandbox: transparente.
-[ -f "$SANDBOX_MARKER" ] && launch "$@"
+if [ -f "$SANDBOX_MARKER" ]; then
+  # O agy detecta sessao SSH e trata como login remoto NOVO: ignora a
+  # credencial em cache e pede device-auth toda vez. Como o Orca conecta no
+  # container exatamente por SSH, sem isso o agente e inutilizavel no sandbox.
+  # Escopo restrito ao agy de proposito — claude e codex funcionam por SSH.
+  [ "$agent" = "agy" ] && unset SSH_CONNECTION SSH_CLIENT SSH_TTY
+  launch "$@"
+fi
 
 # 2) Excecao de manutencao deste repositorio.
 cwd="$(pwd -P)"

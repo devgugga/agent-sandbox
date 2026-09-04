@@ -17,6 +17,13 @@ echo "== Task 6: agentes atras do proxy =="
 assert_contains "http://127.0.0.1:3128" "$(sa 'echo $HTTPS_PROXY')" "HTTPS_PROXY chega na sessao SSH"
 # O agy nao sobe container proprio: o conflito de aninhamento do Gemini some.
 assert_contains "1.1." "$(sa 'agy --version')" "Antigravity CLI presente"
+
+# O agy detecta sessao SSH e trata como login remoto novo, ignorando a
+# credencial em cache — e o Orca conecta no container justamente por SSH. O
+# guarda asb-agy remove SSH_CONNECTION/SSH_CLIENT/SSH_TTY antes do exec. Sem
+# isso o agente pede autenticacao a cada abertura de workspace.
+assert_contains "ok" "$(sa 'asb-agy -p "responda apenas ok" --print-timeout 45s 2>&1 | tail -1')" \
+  "agy autentica por SSH quando lancado pelo guarda"
 assert_contains "secrets" "$(sa 'ls ~/.local/share/keyrings 2>/dev/null | tr \"\\n\" \" \"; echo secrets')" \
   "diretorio de keyring existe"
 

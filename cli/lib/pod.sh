@@ -106,6 +106,9 @@ PY
     while IFS=$'\t' read -r src dst; do
       [ -n "$src" ] || continue
       podman exec --user 0 "${pod}-agent" mkdir -p "$(dirname "$dst")" 2>/dev/null
+      # `podman cp` copia PARA DENTRO de um destino que ja exista, aninhando o
+      # diretorio. Remover antes torna a copia idempotente.
+      podman exec --user 0 "${pod}-agent" rm -rf "$dst" 2>/dev/null
       podman cp "$src" "${pod}-agent:$dst" 2>/dev/null \
         || echo "provisionamento: falhou $src" >&2
     done < "$stage/plan"

@@ -49,8 +49,18 @@ sa(){ ssh -q -i "$key" -p "$port" -o IdentitiesOnly=yes -o StrictHostKeyChecking
   -o UserKnownHostsFile=/dev/null agent@127.0.0.1 "$1" 2>/dev/null; }
 require "o workspace responde" sa true
 
-assert_eq "$(ls ~/.claude/skills 2>/dev/null | wc -l)" "$(sa 'ls ~/.claude/skills 2>/dev/null | wc -l')" \
-  "skills do host chegam ao sandbox"
+# Contar entradas nao prova nada: as skills do host sao symlinks para fora do
+# home (/usr/share/omarchy/..., ~/.agents/skills/...) e o `podman cp` os
+# preserva, entao chegavam como links QUEBRADOS — presentes num `ls`, inuteis
+# para o agente. A assercao tem de exigir conteudo legivel.
+assert_eq "$(ls ~/.claude/skills 2>/dev/null | wc -l)" \
+          "$(sa 'find ~/.claude/skills -maxdepth 2 -name SKILL.md 2>/dev/null | wc -l')" \
+  "skills do host chegam USAVEIS (SKILL.md legivel)"
+assert_eq "0" "$(sa 'find ~/.claude/skills ~/.codex/skills -xtype l 2>/dev/null | wc -l')" \
+  "nenhum symlink quebrado nas skills"
+assert_eq "$(ls ~/.codex/skills 2>/dev/null | wc -l)" \
+          "$(sa 'ls ~/.codex/skills 2>/dev/null | wc -l')" \
+  "skills do codex chegam ao sandbox"
 assert_eq "$(sha256sum ~/.claude/plugins/installed_plugins.json | cut -c1-16)" \
           "$(sa 'sha256sum ~/.claude/plugins/installed_plugins.json 2>/dev/null | cut -c1-16')" \
   "plugins do host chegam identicos"

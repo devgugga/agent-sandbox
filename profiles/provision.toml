@@ -29,6 +29,15 @@ dst = "/home/agent/.codex/config.toml"
 src = "~/.codex/hooks.json"
 dst = "/home/agent/.codex/hooks.json"
 
+# O Codex tem sistema de plugins e skills PROPRIO, separado do Claude.
+[[entry]]
+src = "~/.codex/plugins"
+dst = "/home/agent/.codex/plugins"
+
+[[entry]]
+src = "~/.codex/skills"
+dst = "/home/agent/.codex/skills"
+
 [[entry]]
 src = "~/.gemini/antigravity-cli/settings.json"
 dst = "/home/agent/.gemini/antigravity-cli/settings.json"

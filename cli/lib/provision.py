@@ -6,6 +6,7 @@ e imprime linhas `origem<TAB>destino` para o chamador copiar.
 
 Uso: provision.py <manifesto> <diretorio-de-staging>
 """
+import hashlib
 import json
 import shutil
 import sys
@@ -30,13 +31,58 @@ def denied(path: Path) -> str | None:
 
 
 def scan(root: Path) -> str | None:
-    """Procura caminho negado dentro de um diretorio declarado."""
-    if root.is_file():
-        return denied(Path(root.name))
+    """Procura caminho negado dentro de um diretorio declarado.
+
+    Verifica o nome E o alvo resolvido de cada entrada. Sem resolver, um
+    symlink chamado `inocente.json` apontando para `~/.claude/.credentials.json`
+    passa pela lista de negacao — o nome nao e negado. Hoje o `podman cp`
+    preserva symlinks em vez de segui-los, entao o vazamento nao se concretiza,
+    mas depender desse detalhe do podman como fronteira e fragil: qualquer troca
+    por `tar --dereference` ou `cp -L` reabriria o buraco.
+    """
+    base = root.resolve()
+    if root.is_file() or root.is_symlink():
+        if (bad := denied(Path(root.name))) is not None:
+            return bad
+        return denied(base)
+
     for p in root.rglob("*"):
         if p.name in DENY:
             return str(p)
+        if p.is_symlink():
+            target = p.resolve()
+            if (bad := denied(target)) is not None:
+                return f"{p} -> {target} ({bad})"
     return None
+
+
+
+def materialize(src: Path, stage: Path) -> Path:
+    """Copia um diretorio para o staging com os symlinks RESOLVIDOS.
+
+    `podman cp` preserva symlinks. As skills do host apontam para fora do home
+    (`/usr/share/omarchy/...`, `~/.agents/skills/...`), entao sem resolver elas
+    chegam ao container como links quebrados: presentes num `ls`, inuteis para
+    o agente. Links quebrados na origem sao ignorados em vez de abortar.
+    """
+    # Chave derivada do caminho de ORIGEM: ~/.claude/plugins e ~/.codex/plugins
+    # tem o mesmo basename e colidiriam no staging, com o segundo sobrescrevendo
+    # o primeiro em silencio.
+    key = hashlib.sha256(str(src).encode()).hexdigest()[:12]
+    dest = stage / f"{key}-{src.name}"
+    if dest.exists():
+        shutil.rmtree(dest)
+
+    def ignore(directory, names):
+        skip = []
+        for n in names:
+            candidate = Path(directory) / n
+            if candidate.is_symlink() and not candidate.exists():
+                skip.append(n)
+        return skip
+
+    shutil.copytree(src, dest, symlinks=False, ignore=ignore)
+    return dest
 
 
 def filter_claude_settings(src: Path, stage: Path) -> Path:
@@ -72,6 +118,8 @@ def main() -> int:
             return 1
         if (name := e.get("filter")):
             src = FILTERS[name](src, stage)
+        elif src.is_dir():
+            src = materialize(src, stage)
         print(f"{src}\t{e['dst']}")
     return 0
 

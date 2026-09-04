@@ -11,7 +11,7 @@ When running commands over SSH (e.g. `ssh agent@127.0.0.1 'echo $HTTPS_PROXY'`),
 OpenSSH scrubs parent process environment variables when creating a session for an authenticated user. Variables passed to `podman run -e ...` belong to the `sshd` daemon process and are not automatically passed to user shell sessions.
 
 ### Resolution
-In `image/entrypoint.sh`, relevant variables (`HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY`, `GEMINI_SANDBOX`, `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`, `PATH`) are written to `/etc/environment` (loaded by PAM `pam_env.so`) and `/etc/profile.d/agent-sandbox.sh` (sourced by login shells).
+In `image/entrypoint.sh`, relevant variables (`HTTPS_PROXY`, `HTTP_PROXY`, `NO_PROXY`, `PATH`) are written to `/etc/environment` (loaded by PAM `pam_env.so`) and `/etc/profile.d/agent-sandbox.sh` (sourced by login shells).
 
 ## 2. Squid ACL Redundancy Rules (`dstdomain`)
 
@@ -51,7 +51,22 @@ error: bubblewrap is required for subprocess env scrubbing and isolation. Instal
 ```
 
 ### Cause
-When `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1` is set, Claude Code expects `/usr/bin/bwrap` to be present on the system.
+## Never set `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` in the image
+
+It came from the original spec, where it protected subprocesses **on the host**.
+Inside the container it protects nothing — the container is already the boundary
+— and Claude Code responds to it by **forcing the permission mode to default**,
+which cancels the `--dangerously-skip-permissions` that Orca applies.
+
+The symptom is a banner at startup:
+
+```
+Permission mode forced to default — CLAUDE_CODE_SUBPROCESS_ENV_SCRUB is set
+```
+
+The sandbox exists to make autonomous mode safe. A hardening flag that silently
+disables autonomous mode defeats the purpose, and it went unnoticed because no
+test asserted the agent's effective permission mode.
 
 ### Resolution
 `bubblewrap` is pre-installed in `image/Containerfile`. For non-interactive invocations (such as `-p "..."`), redirecting stdin from `/dev/null` (`< /dev/null`) prevents Claude from pausing to wait for standard input.

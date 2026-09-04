@@ -54,7 +54,12 @@ RUN printf '%s\n' \
 
 # Aninhamento: cada agente tenta se sandboxar dentro do container e conflita.
 # O container E a fronteira; ver spec 3.6.
-ENV CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1
+# NAO definir CLAUDE_CODE_SUBPROCESS_ENV_SCRUB aqui. Ela veio do spec original,
+# onde protegia subprocessos NO HOST. Dentro do container ela nao protege nada
+# (o container ja e a fronteira) e o Claude Code responde a ela forcando o
+# permission mode para default — anulando o --dangerously-skip-permissions que
+# o Orca aplica, que e justamente a capacidade que o sandbox existe para
+# viabilizar com seguranca.
 
 # Marcador que o guarda asb-agent procura para saber que esta DENTRO do
 # sandbox. Sua ausencia no host e o que faz o guarda recusar la.

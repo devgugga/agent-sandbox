@@ -15,6 +15,16 @@ sa() { ssh -i "$key" -p "$port" -o IdentitiesOnly=yes -o StrictHostKeyChecking=n
 
 echo "== Task 6: agentes atras do proxy =="
 assert_contains "http://127.0.0.1:3128" "$(sa 'echo $HTTPS_PROXY')" "HTTPS_PROXY chega na sessao SSH"
+
+# CLAUDE_CODE_SUBPROCESS_ENV_SCRUB, herdada do spec original, faz o Claude Code
+# FORCAR o permission mode para default — anulando o --dangerously-skip-permissions
+# que o Orca aplica. Dentro do container ela nao protege nada, porque o container
+# ja e a fronteira. O sandbox existe para tornar o yolo mode seguro; deixar essa
+# variavel ligada desligava justamente o yolo mode.
+assert_eq "" "$(sa 'echo ${CLAUDE_CODE_SUBPROCESS_ENV_SCRUB:-}')" \
+  "CLAUDE_CODE_SUBPROCESS_ENV_SCRUB ausente do ambiente do agente"
+assert_eq "0" "$(sa 'asb-claude --dangerously-skip-permissions -p ok 2>&1 | grep -ci "forced to default"')" \
+  "claude aceita --dangerously-skip-permissions sem forcar default"
 # O agy nao sobe container proprio: o conflito de aninhamento do Gemini some.
 assert_contains "1.1." "$(sa 'agy --version')" "Antigravity CLI presente"
 

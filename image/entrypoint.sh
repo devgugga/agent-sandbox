@@ -3,7 +3,7 @@
 set -euo pipefail
 
 # Propagar variaveis de ambiente do container para as sessoes SSH via PAM e profile
-env | grep -E '^(HTTPS_PROXY|HTTP_PROXY|NO_PROXY|CLAUDE_CODE_SUBPROCESS_ENV_SCRUB|PATH)=' > /etc/environment || true
+env | grep -E '^(HTTPS_PROXY|HTTP_PROXY|NO_PROXY|PATH)=' > /etc/environment || true
 cat > /etc/profile.d/agent-sandbox.sh <<'ENV_EOF'
 # Sem default fixo: o container de autenticacao roda fora do pod e nao tem
 # Squid em 127.0.0.1:3128 — um default apontaria para um proxy inexistente e
@@ -11,7 +11,6 @@ cat > /etc/profile.d/agent-sandbox.sh <<'ENV_EOF'
 [ -n "${HTTPS_PROXY:-}" ] && export HTTPS_PROXY="$HTTPS_PROXY"
 [ -n "${HTTP_PROXY:-}" ] && export HTTP_PROXY="$HTTP_PROXY"
 [ -n "${NO_PROXY:-}" ] && export NO_PROXY="$NO_PROXY"
-export CLAUDE_CODE_SUBPROCESS_ENV_SCRUB=1
 export PATH="/home/agent/.local/bin:/home/agent/.local/share/mise/shims:${PATH}"
 ENV_EOF
 

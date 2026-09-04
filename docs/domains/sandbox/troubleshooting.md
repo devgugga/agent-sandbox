@@ -138,3 +138,20 @@ than reporting green.
 The same class of error bites when parsing command output. `dig +short` writes
 its errors to **stdout**, so matching "any output" reports a DNS leak that does
 not exist. Match the shape of a real answer, not the presence of text.
+
+## Sandbox came back after a reboot with no isolation
+
+**Symptom.** After the machine restarts, the Orca workspace fails to connect;
+starting the pod by hand brings the agent up but Squid is dead. Inside the
+sandbox, `curl https://example.com` returns 200 and DNS resolves.
+
+**Cause.** Two failures at once: the pod's network namespace is recreated on
+every start (losing the nftables ruleset), and the Squid config used to be
+written with `mktemp` into `/tmp`, which is tmpfs and is erased by the reboot.
+`podman pod start` fails on Squid only and starts the agent regardless.
+
+**Resolution.** `agent-sandbox resume --workspace <id>`, which applies the
+firewall before any user container and verifies it applied. Install
+`agent-sandbox install-autostart` so the boot path is automatic — Orca marks the
+runtime `running` in its own registry and never re-runs `create` after a reboot.
+Full account: [lifecycle.md](./lifecycle.md).

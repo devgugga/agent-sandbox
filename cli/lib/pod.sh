@@ -6,6 +6,13 @@ set -euo pipefail
 ASB_CONFIG="${XDG_CONFIG_HOME:-$HOME/.config}/agent-sandbox"
 ASB_KEY="$ASB_CONFIG/id_ed25519"
 ASB_KEYRING_PASS_FILE="$ASB_CONFIG/keyring.pass"
+ASB_PODS_DIR="$ASB_CONFIG/pods"
+
+# Estado por pod. NAO usar mktemp: /tmp e tmpfs, some no reboot, e o bind mount
+# do squid apontando para um caminho inexistente faz `podman pod start` falhar
+# SO no squid — subindo o agente sem proxy e, pior, sem firewall (o netns e
+# recriado e as regras nft se perdem). Medido: curl direto respondendo 200.
+asb_state_dir() { printf '%s/%s' "$ASB_PODS_DIR" "$1"; }
 
 # A passphrase do keyring vive SO no host. A imagem autenticada carrega o
 # login.keyring cifrado; sem esta passphrase ela e inutil — verificado: com a
@@ -29,11 +36,15 @@ asb_up() {
   asb_ensure_key
   asb_ensure_keyring_pass
 
-  local profile squidconf
-  profile=$(mktemp); squidconf=$(mktemp)
-  chmod 0644 "$squidconf"
+  local state profile squidconf
+  state=$(asb_state_dir "$pod")
+  rm -rf "$state"; mkdir -p "$state"; chmod 0700 "$ASB_PODS_DIR" "$state"
+  profile="$state/profile.json"; squidconf="$state/squid.conf"
+  printf '%s' "$repo" > "$state/repo"
   python3 "$ROOT/cli/lib/profile.py" "$repo" > "$profile"
   python3 "$ROOT/cli/lib/render_squid.py" "$ROOT/image/squid/allowlist-base.txt" "$profile" > "$squidconf"
+  # o squid roda como uid 900 e precisa ler o arquivo montado
+  chmod 0644 "$squidconf"
 
   podman pod exists "$pod" && podman pod rm -f "$pod" >/dev/null
   # porta 0 = o kernel sorteia; lemos de volta depois
@@ -94,6 +105,7 @@ PY
     -e HTTPS_PROXY=http://127.0.0.1:3128 \
     -e HTTP_PROXY=http://127.0.0.1:3128 \
     -e NO_PROXY=127.0.0.1,localhost \
+    -e ASB_ENFORCE_FIREWALL=1 \
     -v "$repo:/home/agent/workspace:Z" \
     "$agent_image" >/dev/null
 
@@ -125,16 +137,103 @@ PY
   fi
   rm -rf "$stage"
 
-  local port
+  asb_emit "$pod"
+}
+
+# Resultado que o recipe do Orca consome. A porta e lida do podman, nunca
+# inventada: o Orca guarda a que o create devolveu e disca nela para sempre.
+asb_emit() {
+  local pod="$1" port
   port=$(podman port "${pod}-agent" 22 2>/dev/null | head -1 | sed 's/.*://')
   [ -n "$port" ] || { echo "nao foi possivel determinar a porta SSH" >&2; return 1; }
-
-  rm -f "$profile"
   printf '{"pod":"%s","port":%s,"user":"agent"}\n' "$pod" "$port"
+}
+
+asb_suspend() {
+  local pod="asb-$1"
+  podman pod exists "$pod" || { echo "pod inexistente: $pod" >&2; return 1; }
+  podman pod stop "$pod" >/dev/null 2>&1
+  return 0
+}
+
+# Reacende um pod parado (reboot da maquina, suspend do workspace) SEM recriar:
+# recriar perderia o historico do agente e, no reboot, a porta SSH que o Orca
+# ja gravou. A ordem aqui e a mesma do `up` e e o ponto todo desta funcao:
+# `podman pod start` sobe TUDO de uma vez, e o agente fica no ar antes do
+# firewall existir. Medido: com `pod start` o sandbox voltava com o ruleset
+# vazio e egresso direto liberado.
+asb_resume() {
+  local ws="$1" pod="asb-$ws"
+  podman pod exists "$pod" || { echo "pod inexistente: $pod (use 'up')" >&2; return 1; }
+
+  local state; state=$(asb_state_dir "$pod")
+  [ -f "$state/squid.conf" ] || {
+    echo "estado ausente em $state; recrie o workspace com 'up'" >&2; return 1; }
+
+  # ja de pe: idempotente, so devolve a porta
+  if [ -n "$(podman ps --filter "name=${pod}-agent" --filter status=running -q)" ]; then
+    asb_emit "$pod"; return 0
+  fi
+
+  # 1) SO a infra: cria o netns sem subir nenhum container de usuario.
+  local infra
+  infra=$(podman pod inspect "$pod" --format '{{.InfraContainerID}}')
+  [ -n "$infra" ] || { echo "pod sem container de infra: $pod" >&2; return 1; }
+  podman start "$infra" >/dev/null 2>&1 || {
+    echo "nao foi possivel subir a infra do pod (porta ja em uso?)" >&2; return 1; }
+
+  # 2) firewall antes de tudo. Falhou -> derruba o pod inteiro. Um pod meio
+  #    subido e exatamente o estado inseguro que este caminho existe para evitar.
+  if ! podman run --rm --pod "$pod" --user 1000 --cap-add NET_ADMIN \
+        agent-sandbox-net /usr/local/bin/apply.sh >&2; then
+    podman pod stop "$pod" >/dev/null 2>&1
+    echo "firewall nao subiu; pod parado (fail-closed)" >&2
+    return 1
+  fi
+  # 3) provar que subiu, em vez de confiar no codigo de saida
+  if ! podman run --rm --pod "$pod" --user 1000 --cap-add NET_ADMIN \
+        agent-sandbox-net nft list table inet asb >/dev/null 2>&1; then
+    podman pod stop "$pod" >/dev/null 2>&1
+    echo "regras nft ausentes apos o apply; pod parado (fail-closed)" >&2
+    return 1
+  fi
+
+  # 4) resto na ordem do up: proxy, servicos/encaminhadores, agente por ultimo
+  local members others
+  members=$(podman pod inspect "$pod" --format '{{range .Containers}}{{.Name}}
+{{end}}')
+  podman start "${pod}-squid" >/dev/null 2>&1 || true
+  others=$(printf '%s\n' "$members" | grep -v -e '-infra$' -e "^${pod}-squid$" -e "^${pod}-agent$" || true)
+  for c in $others; do podman start "$c" >/dev/null 2>&1 || true; done
+  podman start "${pod}-agent" >/dev/null || {
+    podman pod stop "$pod" >/dev/null 2>&1
+    echo "container do agente nao subiu; pod parado" >&2
+    return 1
+  }
+
+  asb_emit "$pod"
+}
+
+# O que a unidade do systemd chama no boot. O Orca marca o workspace como
+# "running" no seu registro e nao reexecuta o create depois de um reboot: ele
+# so disca na porta que ja gravou. Sem isto, o workspace fica quebrado.
+asb_restore_all() {
+  local rc=0 pod ws n=0
+  for pod in $(podman pod ls --format '{{.Name}}' | grep '^asb-' || true); do
+    ws="${pod#asb-}"
+    if asb_resume "$ws" >/dev/null; then
+      echo "restaurado: $pod" >&2; n=$((n+1))
+    else
+      echo "FALHOU restaurar: $pod" >&2; rc=1
+    fi
+  done
+  echo "$n sandbox(es) restaurado(s)" >&2
+  return $rc
 }
 
 asb_down() {
   local pod="asb-$1"
   podman pod exists "$pod" 2>/dev/null && podman pod rm -f "$pod" >/dev/null 2>&1
+  rm -rf "$(asb_state_dir "$pod")"
   return 0
 }

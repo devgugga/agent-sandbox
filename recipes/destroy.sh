@@ -2,33 +2,7 @@
 # recipes/destroy.sh — le o payload do ciclo de vida no stdin
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# Nome DETERMINISTICO derivado do caminho do repo. Com $$ (PID) o destroy nao
-# tem como reproduzir o nome e o pod vaza — o `doctor --provision` deixou um
-# pod para tras exatamente assim, reportando sucesso.
-asb_workspace_id() {
-  local repo="$1"
-  # ORCA_VM_INSTANCE_ID e o identificador UNICO POR WORKSPACE que o Orca passa
-  # aos scripts de ciclo de vida. Sem ele, a derivacao cai no caminho do repo —
-  # e como o Orca executa os shims a partir do checkout PRIMARIO, todo workspace
-  # do mesmo projeto receberia o mesmo nome e o segundo mataria o pod do
-  # primeiro.
-  local given="${ORCA_VM_INSTANCE_ID:-${ORCA_WORKSPACE_ID:-}}"
-  if [ -n "$given" ]; then
-    printf '%s' "$given" | tr -c 'a-zA-Z0-9._-' '-'
-    return
-  fi
-  # Normalizar ANTES de derivar: barra final muda o hash, e create e destroy
-  # divergiriam se o caminho chegasse de formas diferentes — o mesmo tipo de
-  # divergencia que fazia o pod vazar.
-  repo="${repo%/}"
-  local base short
-  # ${repo##*/} em vez de $(basename ...): o subshell traz um newline final que
-  # o `tr -c` converte em traco, produzindo nomes como "hexmed-stack--f05b729e".
-  base=${repo##*/}
-  base=$(printf '%s' "$base" | tr -c 'a-zA-Z0-9._-' '-')
-  short=$(printf '%s' "$repo" | sha256sum | cut -c1-8)
-  printf '%s-%s' "$base" "$short"
-}
+source "$ROOT/recipes/common.sh"
 
 payload=$(cat || true)
 # O Orca aninha o resultado do create em `recipeResult` (ver o exemplo do guia:

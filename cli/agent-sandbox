@@ -9,8 +9,12 @@ source "$ROOT/cli/lib/attach.sh"
 usage() {
   cat >&2 <<'USAGE'
 uso:
-  agent-sandbox up   --workspace <id> --repo <caminho>
-  agent-sandbox down --workspace <id>
+  agent-sandbox up      --workspace <id> --repo <caminho>
+  agent-sandbox down    --workspace <id>
+  agent-sandbox suspend --workspace <id>
+  agent-sandbox resume  --workspace <id>
+  agent-sandbox restore-all
+  agent-sandbox install-autostart
   agent-sandbox auth
 USAGE
   exit 2
@@ -38,13 +42,43 @@ case "$cmd" in
         asb_up "$ws" "$(cd "$repo" && pwd)" ;;
   down) check_ws
         asb_down "$ws" ;;
+  suspend) check_ws
+        asb_suspend "$ws" ;;
+  resume)  check_ws
+        asb_resume "$ws" ;;
+  restore-all)
+        asb_restore_all ;;
+  install-autostart)
+        # O Orca marca o workspace como "running" no seu registro e NAO
+        # reexecuta o create depois de um reboot: ele so disca na porta SSH que
+        # ja gravou. Sem esta unidade, todo workspace quebra ao religar a
+        # maquina. Unidade de usuario (sem linger): o Orca so roda apos o login.
+        unit="$HOME/.config/systemd/user/agent-sandbox-restore.service"
+        mkdir -p "$(dirname "$unit")"
+        cat > "$unit" <<UNIT
+[Unit]
+Description=Restaura os sandboxes de agentes (agent-sandbox) apos o boot
+# Sem After=default.target: a unidade e puxada POR default.target e ordenar-se
+# depois dele fecha um ciclo, que o systemd resolve descartando a ordenacao.
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=$ROOT/cli/agent-sandbox restore-all
+
+[Install]
+WantedBy=default.target
+UNIT
+        systemctl --user daemon-reload
+        systemctl --user enable agent-sandbox-restore.service >&2
+        echo "instalado e habilitado: $unit" >&2 ;;
   prune)
         # Reapa pods de sandbox orfaos. Necessario porque um destroy que erre o
         # nome do workspace deixa o pod rodando em silencio, e o Orca reporta
         # sucesso mesmo assim.
         n=0
         for p in $(podman pod ls --format '{{.Name}}' | grep '^asb-' || true); do
-          podman pod rm -f "$p" >/dev/null 2>&1 && { echo "removido: $p" >&2; n=$((n+1)); }
+          podman pod rm -f "$p" >/dev/null 2>&1 && { rm -rf "$(asb_state_dir "$p")"; echo "removido: $p" >&2; n=$((n+1)); }
         done
         echo "$n pod(s) de sandbox removido(s)" >&2 ;;
   auth) asb_auth ;;

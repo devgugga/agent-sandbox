@@ -39,6 +39,26 @@ if [ -n "${ASB_KEYRING_PASS:-}" ]; then
     | tr -d "'\"" >> /etc/environment || true
 fi
 
+# Fail-closed. O netns do pod perde as regras nft toda vez que o pod para (um
+# reboot, por exemplo), e `podman pod start` sobe este container do mesmo jeito
+# — sem firewall e sem proxy. Medido: curl direto para a internet respondendo
+# 200 dentro do sandbox. Se daqui da para sair sem proxy, a fronteira nao
+# existe: e melhor nao servir SSH nenhum do que servir um sandbox falso.
+#
+# So vale dentro do pod: ASB_ENFORCE_FIREWALL nao e definido no container de
+# autenticacao, que roda fora do pod e precisa de egresso direto para o login.
+#
+# Deteccao positiva apenas: sem rede alguma o teste nao acusa (e ai tambem nao
+# ha egresso a proteger).
+if [ "${ASB_ENFORCE_FIREWALL:-}" = "1" ]; then
+  if timeout 3 bash -c 'exec 3<>/dev/tcp/1.1.1.1/443' 2>/dev/null; then
+    echo "agent-sandbox: EGRESSO DIRETO DETECTADO — o firewall do pod nao esta" >&2
+    echo "agent-sandbox: aplicado. Recusando subir o sshd. Use 'agent-sandbox" >&2
+    echo "agent-sandbox: resume', que reaplica as regras antes de subir o agente." >&2
+    exit 1
+  fi
+fi
+
 # NAO gerar host keys aqui: elas vem do build. Gerar apenas se sumirem.
 [ -f /etc/ssh/ssh_host_ed25519_key ] || ssh-keygen -A
 

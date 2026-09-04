@@ -10,4 +10,12 @@ This domain pack serves as the Single Source of Truth (SSoT) for the `agent-sand
 - [Authentication](./authentication.md): Device-auth workflow and derivative image generation.
 - [Troubleshooting](./troubleshooting.md): Operational edge cases, environment propagation, and runtime diagnostics.
 - [Hexmed Stack Notes](./hexmed-notes.md): Configuration reference for the `hexmed-stack` project.
-- [Enforcement](./enforcement.md): Orca recipe enforcement policies and boundary constraints.
+- [Enforcement](./enforcement.md): The `asb-agent` guard, Orca's `Command` override, and the limits of what it protects.
+
+## Read this first
+
+- The container is the boundary. The guard is **not** a security boundary; it
+  prevents accidental execution outside the sandbox.
+- Attached mode is **unverified** — it has never run end to end.
+- Every allowlist entry exists because something broke without it. Add domains
+  only against an observed `TCP_DENIED`, never preemptively.

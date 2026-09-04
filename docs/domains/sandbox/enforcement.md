@@ -1,23 +1,68 @@
-# Sandbox Enforcement & Boundary Limitations
+# Enforcement
 
-## 1. Investigation Findings
+## The problem
 
-An investigation of Orca CLI commands and schema (`orca agent-context --json`) reveals the current orchestration model:
+Orca launches every supported agent with its full-autonomy flag pre-applied —
+Claude with `--dangerously-skip-permissions`, Codex with
+`--dangerously-bypass-approvals-and-sandbox`, Antigravity with
+`--dangerously-skip-permissions`. It offers **no setting that requires** a
+workspace to use an environment recipe. Building the sandbox therefore creates
+an option, not an obligation, and an option nobody is forced to take does not
+protect the host.
 
-- `environmentRecipes` declared in `orca.yaml` registers alternative runtime environments (such as `agent-sandbox`).
-- When creating worktrees via the Orca UI, the recipe appears as an option in the environment selector dropdown (provided `orca.yaml` resides on the primary branch of the primary checkout).
-- From the CLI, `--environment` can target specific environments.
+## The mechanism: `Command` override
 
-## 2. Hard Enforcement Limitations
+Orca's **Settings → Agents** exposes a per-agent `Command` field, documented as
+*"Override the binary path or name"*. That is the supported interception point,
+and it is a persisted setting rather than a file that gets regenerated.
 
-> [!WARNING]
-> **Orca does not currently support mandatory repository-level recipe enforcement.**
+Set the field to the guard instead of the binary:
 
-- **Opt-In Model**: Launching workspaces inside `agent-sandbox` is currently **opt-in**.
-- **No Local Disabling**: There is no native Orca setting to disable raw host agent execution for a specific repository. If an operator starts an agent directly on the host (e.g. without selecting the "Agent Sandbox" recipe), the agent runs directly with host privileges.
-- **Operator Discipline**: Real-world containment depends entirely on the operator consistently selecting the `Agent Sandbox` recipe when creating workspaces.
+| Agent | Command | Arguments |
+| :--- | :--- | :--- |
+| Claude | `asb-claude` | unchanged |
+| Codex | `asb-codex` | unchanged |
+| Antigravity | `asb-agy` | unchanged |
 
-## 3. Mitigation & Recommendations
+Install the host side with `agent-sandbox install-guards`. The same guard is
+baked into the image, because the `Command` setting is global and applies to the
+SSH session inside the recipe container too.
 
-1. **Keep `orca.yaml` on `main`**: Ensure `orca.yaml` is merged to the primary branch so the recipe is always presented prominently in the workspace creator UI.
-2. **Setup Hooks Warning**: In repositories where sandbox execution is required, add a pre-execution check in repository setup scripts (`orca.yaml` setup hooks) that warns or aborts if executed directly on the host without `ASB_CONTAINER=1` or inside the sandbox namespace.
+## How the guard decides
+
+`cli/asb-agent` is installed under three names and infers the agent from its
+invocation name.
+
+1. **Inside the sandbox** — marker `/etc/agent-sandbox-release` present: it
+   `exec`s the real binary, transparently.
+2. **Host, inside the `agent-sandbox` repository** — allowed. Maintaining the
+   sandbox requires podman on the host; a blanket block makes this repository
+   unmaintainable. The comparison uses the resolved real path, so an agent in
+   another project cannot declare itself the exception.
+3. **Host, anywhere else** — refused, exit 77, with instructions.
+
+### The bypass hint is hidden from agents
+
+The refusal message names the real binary path so a human can override
+deliberately. That hint is suppressed when the launch is automatic, because the
+usual reader of the message is the agent — and an agent in yolo mode treats
+"call this path" as an instruction, which would make the block hand over its own
+bypass.
+
+TTY detection does **not** distinguish the two: Orca launches agents in a PTY.
+What distinguishes them is the presence of an autonomy flag in the arguments
+(Orca always applies one) and `orca-ide` in the process ancestry.
+
+## This is not a security boundary
+
+Anyone who knows the real binary path bypasses the guard in one command. It
+addresses **accidental** execution outside the sandbox, which is the actual
+failure mode: an agent in yolo mode reads "blocked" and stops rather than
+hunting for a hidden binary. Do not describe it as containment.
+
+## Prerequisite: the experimental flag
+
+Recipes only appear as **Run on** targets when **Settings → Experimental →
+"Cloud VM"** is enabled. Without it the picker is not rendered at all and a
+perfectly valid recipe is invisible. A recipe that does not show up is far more
+likely to be this flag than a problem with `orca.yaml`.

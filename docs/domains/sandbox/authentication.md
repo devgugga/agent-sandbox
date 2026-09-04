@@ -1,41 +1,65 @@
-# Authentication Architecture
+# Authentication Workflow
 
-This document describes authentication workflows and credential management within `agent-sandbox`.
+`agent-sandbox auth` builds the derivative image `agent-sandbox-auth` from the
+base image. The operator performs the interactive logins; the script verifies
+them and only then commits.
 
-## Overview
-
-AI coding agents (`claude`, `codex`, `gemini`) require authentication credentials to communicate with upstream provider APIs. Because `agent-sandbox` runs ephemeral containers per workspace, credentials must be baked into a derivative image named `agent-sandbox-auth` rather than passed via host home mounts or manual re-authentication.
-
-## Device Auth vs Browser Callback
-
-The CLI subcommands use device auth flows:
-
-- `claude /login`
-- `codex login --device-auth`
-- `gemini auth`
-
-### Why Device Auth is Mandatory
-
-Standard OAuth browser flows attempt to open a local HTTP listener on a loopback port in the container and direct the host browser to `http://localhost:<callback-port>`. In container environments without host port forward mapping for arbitrary callback listeners, the browser cannot reach the callback server, causing authentication to hang indefinitely.
-
-The device-code authentication flow provides a URL and a short alphanumeric code to enter on another device or host browser, completing authentication out-of-band via the provider's API.
-
-## Credentials Persistence
-
-All agent CLI credentials are saved under the unprivileged `agent` user home directory (`/home/agent`), ensuring that:
-1. File permissions match the runtime user (`agent`, uid 1000).
-2. Host user home directory (`$HOME`) is never mounted into the container.
-3. The derivative image `agent-sandbox-auth` commits `/home/agent` with all auth tokens.
-
-## Build and Commit Process
-
-Running:
+## Running it
 
 ```bash
-./cli/agent-sandbox auth
+agent-sandbox auth
 ```
 
-1. Starts an interactive helper container from `agent-sandbox-base`.
-2. Prompts the human operator to complete device-auth commands in another terminal.
-3. Asserts authentication status by checking exit codes (never regex-matching strings like `"logged in"`).
-4. Commits container state to `agent-sandbox-auth` with the entrypoint explicitly reset to `/usr/local/bin/entrypoint.sh`.
+It starts the container with the **real entrypoint** — not `--entrypoint sleep`
+— because the entrypoint is what starts D-Bus, unlocks the keyring and populates
+`/etc/profile.d`. With `sleep` none of that happens and `agy` silently falls back
+to storing its credential in a plaintext file instead of the encrypted keyring.
+
+This is also why the image must not hardcode a proxy: the auth container runs
+outside the pod, where no Squid exists, so the entrypoint exports
+`HTTPS_PROXY`/`HTTP_PROXY` only when they are actually provided.
+
+## The three logins
+
+```bash
+podman exec -it -u agent asb-auth bash -lc 'claude /login'
+podman exec -it -u agent asb-auth bash -lc 'codex login --device-auth'
+podman exec -it -u agent asb-auth bash -lc agy
+```
+
+Three details that each cost a debugging round:
+
+- **`bash -lc` is not decoration.** Without a login shell, `agy` is not on the
+  `PATH` and `DBUS_SESSION_BUS_ADDRESS` is absent — which is exactly how a
+  credential ends up in plaintext instead of the keyring.
+- **`agy` has no `login` subcommand.** Running bare `agy` opens the TUI, which
+  triggers authentication on first use. `agy login` fails with
+  `unexpected argument "login"`.
+- **Always use device-auth flows.** The default OAuth login starts a callback
+  server on a container port the host browser cannot reach, and hangs.
+
+## Verification before commit
+
+Authentication is verified by **exit code**, never by grepping for
+`logged in` — that string also matches "**not** logged in" and would commit an
+unauthenticated image. If any agent fails, the script aborts rather than
+producing a broken image.
+
+## Expiry
+
+Baked credentials expire. The symptom is the agent reporting that it is not
+logged in inside a freshly created workspace. The fix is to re-run
+`agent-sandbox auth`. Re-running starts from the base image, so all three logins
+are redone; to preserve existing ones, layer the new scripts onto the current
+authenticated image instead of rebuilding it from scratch.
+
+## SSH detection in Antigravity
+
+`agy` detects an SSH session and treats it as a **new remote login**, ignoring
+its cached credential and demanding device-auth every time. Orca connects to the
+recipe container over SSH, so this makes the agent unusable in the sandbox.
+
+The guard `asb-agy` unsets `SSH_CONNECTION`, `SSH_CLIENT` and `SSH_TTY` before
+`exec`, scoped to `agy` alone — Claude and Codex work fine over SSH. A
+consequence worth knowing: if the Orca `Command` field is reverted to plain
+`agy`, this bug returns.

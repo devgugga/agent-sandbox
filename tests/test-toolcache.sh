@@ -43,6 +43,17 @@ assert_eq "0" "$(podman exec "$A" sh -c "test -L '$HOME/.m2'; echo \$?")" \
 assert_eq "0" "$(podman exec "$A" sh -c "test -L '$HOME/.local/share/uv'; echo \$?")" \
   "~/.local/share/uv e um link para o volume"
 
+# REGRESSAO: o entrypoint faz `rm -rf ~/.local/share/uv` antes de linkar o
+# volume, e o `uv tool install` instala ali por padrao. Instalar o graphify no
+# caminho default apagaria a instalacao no primeiro arranque, e o sintoma
+# ("graphify nao existe") nao apontaria para o toolcache. Por isso as
+# ferramentas vivem fora do home reciclado.
+echo "-- ferramentas sobrevivem ao entrypoint --"
+for bin in uv rtk graphify; do
+  assert_eq "0" "$(podman exec -u 1000 "$A" bash -lc "$bin --version >/dev/null 2>&1; echo \$?")" \
+    "$bin responde --version depois que o entrypoint reciclou o home"
+done
+
 # Escreve marcadores no toolcache via caminhos do usuario
 podman exec "$A" sh -c "mkdir -p '$HOME/.local/share/mise' '$HOME/.cache' '$HOME/.m2' '$HOME/.local/share/uv' && \
   echo 'mise-cache-marca' > '$HOME/.local/share/mise/marker' && \

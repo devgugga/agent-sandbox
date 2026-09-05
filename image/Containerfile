@@ -32,6 +32,49 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     && apt-get update && apt-get install -y --no-install-recommends gh \
     && rm -rf /var/lib/apt/lists/*
 
+# Ferramentas de contexto do agente. Versoes FIXAS de proposito: um build nao
+# determinista deixaria um release quebrado entrar sem aviso, que e o modo de
+# falha que este projeto existe para eliminar (spec §16). O `doctor` compara
+# estes valores com os do host e avisa quando defasarem.
+ARG UV_VERSION=0.12.10
+ARG RTK_VERSION=0.46.0
+ARG GRAPHIFY_VERSION=0.9.51
+
+# Tudo em /usr/local/bin, NUNCA em ~/.local/bin ou ~/.local/share: o
+# entrypoint recicla parte do home a cada arranque para montar o
+# asb-toolcache, e ferramenta de sistema nao pode depender de um caminho que
+# e apagado e relinkado.
+RUN curl -fsSL "https://astral.sh/uv/${UV_VERSION}/install.sh" \
+      | env UV_INSTALL_DIR=/usr/local/bin sh
+
+# UV_TOOL_DIR so aqui, nao como ENV: o entrypoint faz
+# `rm -rf ~/.local/share/uv` antes de linkar o volume, e esse e exatamente o
+# default do `uv tool install` — instalar ali apagaria o graphify no primeiro
+# arranque, com o sintoma "graphify nao existe" sem pista da causa. Em runtime
+# a variavel fica desligada, para que um `uv tool install` do agente caia no
+# toolcache persistente, que e onde ele deve cair.
+# UV_PYTHON_DOWNLOADS=never usa o python3.11 do sistema (graphify pede >=3.10)
+# em vez de baixar um interpretador para dentro do home reciclado.
+RUN UV_TOOL_DIR=/opt/uv-tools UV_TOOL_BIN_DIR=/usr/local/bin \
+    UV_PYTHON_DOWNLOADS=never \
+      uv tool install "graphifyy==${GRAPHIFY_VERSION}"
+
+# O install.sh do rtk tambem tem ~/.local/bin como default; RTK_INSTALL_DIR o
+# tira de la. A tag do release leva "v", a versao reportada por `rtk --version`
+# nao — o label guarda a forma sem "v" para bater com a comparacao do doctor.
+RUN curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh \
+      -o /tmp/rtk-install.sh \
+    && RTK_VERSION="v${RTK_VERSION}" RTK_INSTALL_DIR=/usr/local/bin \
+       sh /tmp/rtk-install.sh \
+    && rm -f /tmp/rtk-install.sh
+
+# A telemetria do rtk ja e opt-in e a allowlist a bloquearia; a variavel torna
+# a intencao explicita em vez de depender do default alheio.
+ENV RTK_TELEMETRY_DISABLED=1
+
+LABEL asb.rtk.version="${RTK_VERSION}" \
+      asb.graphify.version="${GRAPHIFY_VERSION}"
+
 # O usuario espelha o do host: mesmo nome, uid 1000, MESMO home. E o home
 # identico que faz a worktree irma do Orca cair num caminho que existe dos
 # dois lados.

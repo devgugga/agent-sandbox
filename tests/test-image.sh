@@ -29,6 +29,21 @@ done
 assert_eq "0" "$(in_image bash -lc "podman compose version >/dev/null 2>&1; echo \$?")" \
   "podman compose funciona via wrapper nativo"
 
+# Ferramentas de contexto do agente (rtk, graphify) e o uv que as sustenta.
+# Instaladas na imagem, e nao por workspace: sao usadas em todo projeto e no
+# mise.toml de cada repositorio virariam download repetido.
+for bin in uv rtk graphify; do
+  assert_eq "0" "$(in_image sh -lc "command -v $bin >/dev/null; echo \$?")" \
+    "$bin esta no PATH de um shell de login"
+done
+
+# O doctor le a versao da imagem pelo label, sem precisar subir container.
+# Sem o label ele nao tem como detectar defasagem contra o host.
+for label in asb.rtk.version asb.graphify.version; do
+  assert_eq "0" "$(test -n "$(podman image inspect "$IMG" --format "{{index .Labels \"$label\"}}" 2>/dev/null)" && echo 0 || echo 1)" \
+    "a imagem declara o label $label"
+done
+
 # O sandbox E a fronteira; sudo dentro dele so serviria para escapar dela.
 assert_eq "1" "$(in_image bash -c 'command -v sudo >/dev/null; echo $?')" \
   "sudo nao existe na imagem"

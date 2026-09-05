@@ -78,6 +78,53 @@ During `asb-agent up`:
 
 ---
 
+## 3. Agent Context Tools (`rtk`, `graphify`)
+
+Two tools are baked into the **image** rather than declared per project, because every project uses them and a `mise.toml` entry would turn them into a repeated download in each repository:
+
+| Tool | Role | Runtime network |
+| :--- | :--- | :--- |
+| `rtk` | CLI proxy that filters and summarises command output to save agent context | none |
+| `graphify` | knowledge graph over the repository (tree-sitter AST, local) | none for code |
+| `uv` | Python package/tool manager; also required by projects such as `hexmed-stack/pacs/server` | pypi.org (per project allowlist) |
+
+Neither requires configuration: `rtk` runs on defaults (`~/.config/rtk/` is not created) and `graphify` installs its own skill into the project it is run against, so that skill travels with the worktree. Neither needs an allowlist entry — installation happens during `podman build` on the host, and both are offline at runtime.
+
+`rtk` telemetry is opt-in upstream and is additionally pinned off with `RTK_TELEMETRY_DISABLED=1`.
+
+### Install location is not incidental
+
+The tools are installed to `/usr/local/bin` (binaries) and `/opt/uv-tools` (the graphify virtualenv), never under `~/.local`. The entrypoint deletes and re-links parts of the home directory on every start to mount `asb-toolcache`:
+
+```bash
+rm -rf "$ASB_HOME/.local/share/uv"
+ln -sfn /run/asb-toolcache/uv "$ASB_HOME/.local/share/uv"
+```
+
+`uv tool install` defaults to exactly that path. Installing there at build time would delete graphify on the first container start, and the symptom (`graphify: command not found`) would give no hint of the cause. `UV_TOOL_DIR` is therefore set only for the build step — at runtime it stays unset, so an agent's own `uv tool install` lands in the persistent toolcache, which is where it belongs.
+
+### Version pinning and drift
+
+Versions are pinned as build args and published as image labels:
+
+```dockerfile
+ARG UV_VERSION=0.12.10
+ARG RTK_VERSION=0.46.0
+ARG GRAPHIFY_VERSION=0.9.51
+LABEL asb.rtk.version="${RTK_VERSION}" asb.graphify.version="${GRAPHIFY_VERSION}"
+```
+
+A pinned build is reproducible, but the image then drifts behind the host, where the operator upgrades these tools. `asb-agent doctor` closes that gap by comparing each label against the host binary:
+
+```
+ok   rtk 0.46.0 (imagem e host em sincronia)
+FALTA rtk 0.46.0 na imagem, 0.48.1 no host  ->  asb-agent build
+```
+
+Drift is reported but does not fail `doctor`: the image stays usable on the older version. What must not happen is the divergence staying invisible. If the host does not have the tool at all, nothing is printed — not every host uses `rtk`, and warning there would be noise rather than diagnosis.
+
+---
+
 ## 3. Worked Examples
 
 ### Example 1: `hexmed` (Host Services & Filtered Docker Inspection)

@@ -21,6 +21,62 @@ def _line(ok: bool, label: str, fix: str = "") -> bool:
     return ok
 
 
+# Ferramentas de contexto instaladas na imagem -> label que declara a versao.
+CONTEXT_TOOLS = {
+    "rtk": "asb.rtk.version",
+    "graphify": "asb.graphify.version",
+}
+
+
+def _host_version(tool: str) -> str | None:
+    """Versao instalada no host, ou None se a ferramenta nao existe la."""
+    if shutil.which(tool) is None:
+        return None
+    try:
+        res = subprocess.run([tool, "--version"], capture_output=True,
+                             text=True, timeout=5)
+    except Exception:
+        return None
+    parts = (res.stdout or "").split()
+    token = parts[-1] if parts else None
+    # Uma versao comeca por digito. Saida inesperada vira None em vez de virar
+    # um alerta de defasagem falso.
+    return token if isinstance(token, str) and token[:1].isdigit() else None
+
+
+def _image_version(label: str) -> str | None:
+    """Versao declarada pelo label da imagem, sem precisar subir container."""
+    try:
+        out = podman.out("image", "inspect", IMAGE, "--format",
+                         "{{index .Labels \"" + label + "\"}}").strip()
+    except Exception:
+        return None
+    # podman devolve "<no value>" quando o label nao existe.
+    return out if out and out != "<no value>" else None
+
+
+def tool_drift(tool: str, image_version: str | None,
+               host_version: str | None) -> tuple[bool, str, str] | None:
+    """Compara a versao assada na imagem com a instalada no host.
+
+    O host e a referencia: e nele que o operador atualiza a ferramenta. A
+    imagem so muda com `asb-agent build`, entao a divergencia fica silenciosa
+    ate alguem comparar as duas.
+
+    Devolve None quando o host nao tem a ferramenta — nem todo host usa rtk, e
+    avisar nesse caso seria ruido em vez de diagnostico.
+    """
+    if host_version is None:
+        return None
+    if image_version is None:
+        return (False, f"{tool} ausente na imagem (host tem {host_version})",
+                "asb-agent build")
+    if image_version == host_version:
+        return (True, f"{tool} {image_version} (imagem e host em sincronia)", "")
+    return (False, f"{tool} {image_version} na imagem, {host_version} no host",
+            "asb-agent build")
+
+
 def check_workspace_egress(ws: str, target: str = "github.com", port: int = 443,
                            timeout: int = 5) -> tuple[bool, str, str]:
     """Sonda egresso a partir de dentro do container proxy do workspace.
@@ -135,6 +191,13 @@ def doctor(root: Path) -> int:
     _line(broker.is_socket(),
           'broker do Docker (opcional; so para host_api = "read")',
           "asb-agent install-broker")
+
+    # Defasagem e informativa, nao falha: a imagem continua utilizavel com a
+    # versao antiga. O que nao pode acontecer e a divergencia ficar invisivel.
+    for tool, label in CONTEXT_TOOLS.items():
+        drift = tool_drift(tool, _image_version(label), _host_version(tool))
+        if drift is not None:
+            _line(*drift)
 
     print("\nworkspaces:")
     for state in sorted((Path.home() / ".local" / "state" /

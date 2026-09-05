@@ -365,3 +365,35 @@ class TestPurge(unittest.TestCase):
             mock_down.assert_called_once_with("test-ws")
             mock_remove.assert_called_once()
             self.assertIn("removido:", err.getvalue())
+
+
+class TestToolDrift(unittest.TestCase):
+    """Defasagem entre a versao assada na imagem e a instalada no host.
+
+    O host e a referencia: e nele que o operador atualiza a ferramenta. A
+    imagem so muda com `asb-agent build`, entao a divergencia e silenciosa
+    ate alguem comparar as duas.
+    """
+
+    def test_host_sem_a_ferramenta_nao_diz_nada(self):
+        # Nem todo host usa rtk. Avisar aqui seria ruido, nao diagnostico.
+        self.assertIsNone(doc_mod.tool_drift("rtk", "0.46.0", None))
+
+    def test_ferramenta_ausente_na_imagem_pede_build(self):
+        ok, label, fix = doc_mod.tool_drift("rtk", None, "0.46.0")
+        self.assertFalse(ok)
+        self.assertIn("rtk", label)
+        self.assertEqual("asb-agent build", fix)
+
+    def test_versoes_iguais_reportam_ok(self):
+        ok, label, fix = doc_mod.tool_drift("graphify", "0.9.51", "0.9.51")
+        self.assertTrue(ok)
+        self.assertIn("0.9.51", label)
+        self.assertEqual("", fix)
+
+    def test_versoes_diferentes_citam_as_duas_e_pedem_build(self):
+        ok, label, fix = doc_mod.tool_drift("rtk", "0.46.0", "0.48.1")
+        self.assertFalse(ok)
+        self.assertIn("0.46.0", label)
+        self.assertIn("0.48.1", label)
+        self.assertEqual("asb-agent build", fix)

@@ -55,10 +55,13 @@ assert_contains "200" "$code_after" "dominio httpbin.org permitido e funcional a
 port_after=$(podman port "asb-${WS}-agent" 22 | head -n 1 | awk -F: '{print $NF}')
 assert_eq "$port_before" "$port_after" "porta SSH publicada permanece rigorosamente identica"
 
-# 7. Adicionar dominio diretamente no clone dentro do workspace (layout.project_root)
+# 7. O perfil DENTRO do workspace e gravavel pelo agente. A politica de
+# egresso e do operador: um dominio que o agente acrescente ao proprio
+# .agent-sandbox.toml NAO pode entrar na allowlist, mesmo com mtime mais novo
+# e mesmo que o operador rode o reload por outro motivo qualquer.
 repo_name=$(basename "$repo")
 ws_conf="$HOME/asb-agent/$repo_name/$WS/$repo_name/.agent-sandbox.toml"
-sleep 1 # garantir mtime posterior ao origin
+sleep 1 # mtime posterior ao do origin: e a condicao que a heuristica premiava
 cat > "$ws_conf" <<'TOML'
 [network]
 allow = ["httpbin.org", "example.com"]
@@ -67,8 +70,15 @@ TOML
 OUT_RELOAD2=$("$ROOT/cli/asb-agent" reload-allowlist --workspace "$WS" 2>&1); RC_RELOAD2=$?
 assert_eq "0" "$RC_RELOAD2" "reload-allowlist com config editado no clone sai 0"
 
+# CONTROLE NEGATIVO
 code_clone=$(podman exec "asb-${WS}-proxy" sh -c \
   'printf "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n" | nc -w 2 127.0.0.1 3128 | head -n 1' || true)
-assert_contains "200" "$code_clone" "dominio adicionado diretamente no clone permitido e funcional"
+assert_contains "403" "$code_clone" "dominio escrito pelo AGENTE no clone continua recusado"
+
+# CONTROLE POSITIVO do mesmo reload: sem ele, o 403 acima poderia significar
+# apenas que a recarga nao aconteceu, e a assercao passaria de graca.
+code_origin=$(podman exec "asb-${WS}-proxy" sh -c \
+  'printf "CONNECT httpbin.org:443 HTTP/1.1\r\nHost: httpbin.org:443\r\n\r\n" | nc -w 2 127.0.0.1 3128 | head -n 1' || true)
+assert_contains "200" "$code_origin" "dominio do perfil do OPERADOR segue permitido apos o mesmo reload"
 
 report

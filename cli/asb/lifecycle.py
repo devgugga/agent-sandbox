@@ -462,17 +462,13 @@ def reload_allowlist(root: Path, ws: str) -> int:
     """
     n, home, origin = _require_workspace(ws)
     layout = layout_for(origin, ws, home)
-    config_repo = origin
-    if (layout.project_root / ".agent-sandbox.toml").exists():
-        if not (origin / ".agent-sandbox.toml").exists():
-            config_repo = layout.project_root
-        else:
-            mtime_orig = (origin / ".agent-sandbox.toml").stat().st_mtime
-            mtime_clone = (layout.project_root / ".agent-sandbox.toml").stat().st_mtime
-            if mtime_clone > mtime_orig:
-                config_repo = layout.project_root
-
-    profile = load_profile(config_repo)
+    # SEMPRE o perfil do checkout do operador, NUNCA o do clone. O clone vive
+    # dentro do mount gravavel e o agente o edita a vontade; preferi-lo faria
+    # do operador o carteiro da politica do agente, que acrescentaria um
+    # dominio ao proprio .agent-sandbox.toml e esperaria o proximo reload.
+    # E a mesma invariante que poe `state/` fora do mount (workspace.py), e a
+    # mesma fonte que o `up` usa — as duas rotas nao podem divergir.
+    profile = load_profile(origin)
     conf = layout.state / "squid.conf"
     conf.write_text(render(profile,
                            root / "image" / "squid" / "allowlist-base.txt",

@@ -1,3 +1,4 @@
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -97,6 +98,60 @@ class TestReloadAllowlist(unittest.TestCase):
                 mock_podman_run.assert_called_once_with("restart", "asb-test-ws-proxy")
                 conf_content = (fake_state / "squid.conf").read_text()
                 self.assertEqual(conf_content, "acl allowlist ...")
+
+    def test_reload_allowlist_ignora_o_perfil_editavel_pelo_agente(self):
+        """A politica de egresso e do operador, nunca do agente.
+
+        `layout.project_root` fica DENTRO do mount gravavel — o proprio
+        workspace.py documenta a invariante ao colocar `state/` fora dele:
+        "Nunca dentro do mount (o agente editaria a propria allowlist)".
+
+        Se o reload preferisse a copia do clone, um agente acrescentaria um
+        dominio ao proprio `.agent-sandbox.toml` e o operador o aplicaria sem
+        saber, ao rodar `reload-allowlist` por qualquer outro motivo. O
+        operador vira o carteiro da politica do agente.
+        """
+        from unittest import mock
+        from cli.asb.lifecycle import reload_allowlist
+        from cli.asb.workspace import Layout
+
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            origin = base / "origin"
+            clone = base / "mount" / "proj"
+            state = base / "state"
+            for d in (origin, clone, state):
+                d.mkdir(parents=True)
+            (base / "image" / "squid").mkdir(parents=True)
+            (base / "image" / "squid" / "allowlist-base.txt").touch()
+            (base / "image" / "squid" / "squid.conf.tmpl").touch()
+
+            (origin / ".agent-sandbox.toml").write_text(
+                '[network]\nallow = ["registry.npmjs.org"]\n')
+            # O clone precisa ser COMPROVADAMENTE mais novo: e essa a
+            # condicao sob a qual a heuristica de mtime preferia a copia do
+            # agente. Fixar os dois mtimes torna o teste deterministico.
+            clone_toml = clone / ".agent-sandbox.toml"
+            clone_toml.write_text('[network]\nallow = ["exfil.example"]\n')
+            os.utime(origin / ".agent-sandbox.toml", (10**9, 10**9))
+            os.utime(clone_toml, (10**9 + 500, 10**9 + 500))
+            assert (clone_toml.stat().st_mtime
+                    > (origin / ".agent-sandbox.toml").stat().st_mtime)
+
+            layout = Layout(ws="ws", project="proj", mount=base / "mount",
+                            project_root=clone, state=state)
+
+            with mock.patch("cli.asb.lifecycle._require_workspace",
+                            return_value=({"proxy": "p"}, base, origin)), \
+                 mock.patch("cli.asb.lifecycle.layout_for", return_value=layout), \
+                 mock.patch("cli.asb.lifecycle.load_profile") as mock_load, \
+                 mock.patch("cli.asb.lifecycle.render", return_value="acl x"), \
+                 mock.patch("cli.asb.podman.exists", return_value=True), \
+                 mock.patch("cli.asb.podman.run"):
+                reload_allowlist(base, "ws")
+
+            mock_load.assert_called_once_with(origin)
+
 
 
 if __name__ == "__main__":

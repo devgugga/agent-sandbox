@@ -58,7 +58,8 @@ The CLI entrypoint is `cli/asb-agent` (symlinked as `asb`):
 Additional utility commands:
 - `asb-agent list`: lists active and stopped workspaces and their backing repositories.
 - `asb-agent suspend --workspace <id>`: puts workspace containers to sleep (`podman stop`).
-- `asb-agent reload-allowlist --workspace <id>`: re-renders `squid.conf` from `.agent-sandbox.toml` and restarts the proxy container without touching the agent container or changing its published SSH port.
+- `asb-agent reload-allowlist --workspace <id>`: re-renders `squid.conf` and restarts the proxy container without touching the agent container or changing its published SSH port.
+  - The profile is read **only** from the operator's checkout — never from the clone inside the workspace. That clone sits in the agent's writable mount, so preferring it would let an agent extend its own egress policy and wait for the operator to apply it on the next reload. This is the same invariant that keeps `state/` outside the mount, and it is the same source `asb-agent up` uses: the two routes must never diverge.
 - `asb-agent install-guards`: installs the host command wrappers (`asb-claude`, `asb-codex`, `asb-agy`) **and `asb-agent` itself** into `~/.local/bin`, so the CLI runs from any directory instead of only from the checkout. All four are symlinks, never copies: a copy ages silently and starts behaving differently from what this repository says. `asb-agent doctor` verifies each one still points at this checkout — moving the checkout breaks them, and the failure is otherwise silent.
 - `asb-agent install-broker`: configures and starts the filtered Docker read-only broker (requires `sudo`).
 

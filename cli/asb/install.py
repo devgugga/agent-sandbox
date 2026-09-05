@@ -43,7 +43,23 @@ def podman_restart() -> int:
 
 
 def guards(root: Path) -> int:
-    raise NotImplementedError("install-guards nao implementado ainda")
+    """Instala os nomes que vao no campo Command do Orca.
+
+    Symlinks para o checkout, nunca copias: uma copia envelhece em silencio e
+    o agente passa a se comportar diferente do que este repositorio diz.
+    """
+    target = Path.home() / ".local" / "bin"
+    target.mkdir(parents=True, exist_ok=True)
+    for agent in ("claude", "codex", "agy"):
+        link = target / f"asb-{agent}"
+        if link.is_symlink() or link.exists():
+            link.unlink()
+        link.symlink_to(root / "cli" / "asb-guard")
+        print(f"instalado: {link}", file=sys.stderr)
+    print("Em Orca -> Settings -> Agents, troque o campo Command:\n"
+          "  claude -> asb-claude | codex -> asb-codex | agy -> asb-agy",
+          file=sys.stderr)
+    return 0
 
 
 def broker(root: Path) -> int:

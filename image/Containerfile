@@ -1,23 +1,30 @@
-# image/Containerfile
+# image/Containerfile — imagem base do agente.
+#
+# ASB_USER e ASB_HOME espelham o usuario do HOST. Sao build args, nunca
+# literais: um nome de usuario assado aqui quebraria a imagem no primeiro host
+# diferente, e o sintoma seriam caminhos que nao batem (spec §16).
 FROM debian:bookworm-slim
 
+ARG ASB_USER
+ARG ASB_HOME
 ENV DEBIAN_FRONTEND=noninteractive
+
+RUN test -n "$ASB_USER" && test -n "$ASB_HOME" \
+    || (echo "ASB_USER e ASB_HOME sao obrigatorios" >&2; exit 1)
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl git openssh-server ripgrep jq socat netcat-openbsd \
-      python3 build-essential procps less nano bubblewrap \
+      ca-certificates curl git openssh-server ripgrep jq socat \
+      netcat-openbsd python3 build-essential procps less nano bubblewrap \
       gnome-keyring libsecret-tools dbus-x11 \
     && rm -rf /var/lib/apt/lists/*
 
-# Node LTS (necessario para os CLIs dos agentes)
 RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
-# CLIs dos agentes
 RUN npm install -g @anthropic-ai/claude-code @openai/codex \
     && npm cache clean --force
 
-# gh CLI
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
       -o /usr/share/keyrings/githubcli.gpg \
     && echo "deb [signed-by=/usr/share/keyrings/githubcli.gpg] https://cli.github.com/packages stable main" \
@@ -25,55 +32,53 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     && apt-get update && apt-get install -y --no-install-recommends gh \
     && rm -rf /var/lib/apt/lists/*
 
-# usuario nao-root
-RUN useradd -m -u 1000 -s /bin/bash agent \
-    && install -d -o agent -g agent /home/agent/workspace
+# O usuario espelha o do host: mesmo nome, uid 1000, MESMO home. E o home
+# identico que faz a worktree irma do Orca cair num caminho que existe dos
+# dois lados.
+RUN useradd -m -u 1000 -d "$ASB_HOME" -s /bin/bash "$ASB_USER"
 
-# mise para o agente
-USER agent
+USER $ASB_USER
+ENV HOME=$ASB_HOME
 RUN curl -fsSL https://mise.run | sh
-ENV PATH="/home/agent/.local/bin:/home/agent/.local/share/mise/shims:${PATH}"
-# Antigravity CLI substitui o Gemini CLI, descontinuado em 2026-06-18 para
+ENV PATH="$ASB_HOME/.local/bin:$ASB_HOME/.local/share/mise/shims:${PATH}"
+# O Antigravity CLI substituiu o Gemini CLI, descontinuado em 2026-06-18 para
 # contas Pro/Ultra. E um binario Go unico; nao ha pacote npm.
 RUN curl -fsSL https://antigravity.google/cli/install.sh | bash
 USER root
 
-# HOST KEYS ASSADAS NO BUILD — nao gerar em runtime.
-# Containers efemeros reusam portas em 127.0.0.1; chave por container
-# dispararia host-key-changed a cada workspace.
+# HOST KEYS ASSADAS NO BUILD. Geradas em runtime, cada workspace teria a sua, e
+# como todos atendem em 127.0.0.1 o ssh do Orca acusaria host-key-changed a
+# cada workspace novo.
 RUN ssh-keygen -A && mkdir -p /run/sshd
 
-# sshd: so chave publica, sem senha, sem root
 RUN printf '%s\n' \
       'PermitRootLogin no' \
       'PasswordAuthentication no' \
       'PubkeyAuthentication yes' \
-      'AuthorizedKeysFile /home/agent/.ssh/authorized_keys' \
+      "AuthorizedKeysFile $ASB_HOME/.ssh/authorized_keys" \
       'AcceptEnv HTTPS_PROXY HTTP_PROXY NO_PROXY' \
       > /etc/ssh/sshd_config.d/agent-sandbox.conf
 
-# Aninhamento: cada agente tenta se sandboxar dentro do container e conflita.
-# O container E a fronteira; ver spec 3.6.
-# NAO definir CLAUDE_CODE_SUBPROCESS_ENV_SCRUB aqui. Ela veio do spec original,
-# onde protegia subprocessos NO HOST. Dentro do container ela nao protege nada
-# (o container ja e a fronteira) e o Claude Code responde a ela forcando o
-# permission mode para default — anulando o --dangerously-skip-permissions que
-# o Orca aplica, que e justamente a capacidade que o sandbox existe para
-# viabilizar com seguranca.
+# NAO definir CLAUDE_CODE_SUBPROCESS_ENV_SCRUB aqui, nem em lugar algum. Ela
+# protegia subprocessos NO HOST; dentro do container nao protege nada e o
+# Claude Code responde a ela forcando o permission mode para default, anulando
+# o --dangerously-skip-permissions que o Orca aplica.
 
-# Marcador que o guarda asb-agent procura para saber que esta DENTRO do
-# sandbox. Sua ausencia no host e o que faz o guarda recusar la.
+# Marcador que o guarda procura para saber que esta DENTRO do sandbox. A
+# ausencia dele no host e o que faz o guarda recusar la.
 RUN printf 'agent-sandbox\n' > /etc/agent-sandbox-release
 
-# O mesmo guarda vai nos dois lados: o campo "Command" do Orca e global, entao
-# o nome precisa existir tambem dentro da imagem — aqui ele e transparente.
-COPY asb-agent /usr/local/bin/asb-agent
-COPY install-config.py /usr/local/bin/asb-install-config
-RUN chmod 0755 /usr/local/bin/asb-agent \
-    /usr/local/bin/asb-install-config \
-    && for a in claude codex agy; do ln -sf /usr/local/bin/asb-agent "/usr/local/bin/asb-$a"; done
+# Contexto de build e a RAIZ do repositorio, para que exista uma unica copia
+# do guarda. No v1 ele vivia em cli/ e em image/, e duas copias do mesmo
+# programa divergem — de forma invisivel ate o agente se comportar diferente
+# dentro e fora do sandbox.
+COPY cli/asb-guard /usr/local/bin/asb-guard
+RUN chmod 0755 /usr/local/bin/asb-guard \
+    && for a in claude codex agy; do \
+         ln -sf /usr/local/bin/asb-guard "/usr/local/bin/asb-$a"; \
+       done
 
-COPY entrypoint.sh /usr/local/bin/entrypoint.sh
-COPY start-keyring.sh /usr/local/bin/start-keyring.sh
+COPY image/entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY image/start-keyring.sh /usr/local/bin/start-keyring.sh
 RUN chmod 0755 /usr/local/bin/entrypoint.sh /usr/local/bin/start-keyring.sh
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

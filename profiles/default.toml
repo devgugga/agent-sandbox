@@ -1,9 +1,0 @@
-# profiles/default.toml
-[sandbox]
-mode = "isolated"
-
-[network]
-allow = []
-
-[proxy]
-java = false

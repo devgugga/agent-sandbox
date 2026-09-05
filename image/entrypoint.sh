@@ -66,6 +66,27 @@ if [ -f /run/asb-config/manifest.tsv ]; then
   done < /run/asb-config/manifest.tsv
 fi
 
+# Credenciais: o volume e a fonte, e o caminho real e um LINK para dentro dele.
+# Nao uma copia: os agentes renovam o token durante a sessao, e uma copia
+# perderia a renovacao na proxima partida — que e exatamente o sintoma de
+# "perdi a sessao" que este redesenho existe para eliminar.
+if [ -d /run/asb-credentials ]; then
+  link_credential() {
+    real="$1"; stored="/run/asb-credentials/$2"
+    install -d -o "$ASB_USER" -g "$ASB_USER" "$(dirname "$real")"
+    [ -e "$stored" ] || [ -d "$stored" ] || {
+      : > "$stored"; chmod 0600 "$stored"; }
+    rm -rf "$real"
+    ln -s "$stored" "$real"
+    chown -h "$ASB_USER:$ASB_USER" "$real"
+  }
+  install -d -o "$ASB_USER" -g "$ASB_USER" -m 0700 /run/asb-credentials/keyrings
+  link_credential "$ASB_HOME/.claude/.credentials.json" claude.json
+  link_credential "$ASB_HOME/.codex/auth.json"          codex-auth.json
+  link_credential "$ASB_HOME/.local/share/keyrings"     keyrings
+  chown -R "$ASB_USER:$ASB_USER" /run/asb-credentials
+fi
+
 if [ "$#" -gt 0 ]; then
   exec "$@"
 fi

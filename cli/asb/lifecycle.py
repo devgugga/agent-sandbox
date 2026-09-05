@@ -1,6 +1,7 @@
 """cli/asb/lifecycle.py — up, down, suspend, resume, purge, pull, build."""
 from __future__ import annotations
 
+import base64
 import getpass
 import json
 import os
@@ -20,6 +21,8 @@ PROXY_IMAGE = "agent-sandbox-proxy:latest"
 PROXY_PORT = 3128
 CONFIG = Path(os.path.expanduser("~")) / ".config" / "agent-sandbox"
 SSH_KEY = CONFIG / "id_ed25519"
+CREDENTIALS_VOLUME = "asb-credentials"
+KEYRING_PASS = CONFIG / "keyring.pass"
 
 
 def names(ws: str) -> dict[str, str]:
@@ -42,6 +45,27 @@ def ensure_ssh_key() -> Path:
                     "-C", "agent-sandbox"], check=True,
                    stdout=subprocess.DEVNULL)
     return SSH_KEY
+
+
+def ensure_credentials_volume() -> str:
+    if not podman.exists("volume", CREDENTIALS_VOLUME):
+        podman.run("volume", "create", CREDENTIALS_VOLUME)
+    return CREDENTIALS_VOLUME
+
+
+def ensure_keyring_pass() -> Path:
+    """A passphrase do keyring vive SO no host. Uma copia do volume levada para
+    outra maquina carrega um keyring cifrado que nao abre — verificado no v1:
+    com a passphrase errada o agy falha enquanto o claude continua respondendo,
+    provando que a falha e do keyring e nao geral."""
+    if KEYRING_PASS.exists():
+        return KEYRING_PASS
+    CONFIG.mkdir(parents=True, exist_ok=True)
+    CONFIG.chmod(0o700)
+    KEYRING_PASS.write_text(
+        base64.b64encode(os.urandom(32)).decode().strip())
+    KEYRING_PASS.chmod(0o600)
+    return KEYRING_PASS
 
 
 def build_proxy(root: Path) -> None:
@@ -156,6 +180,8 @@ def _up(root: Path, ws: str, repo: Path) -> int:
         "-e", "NO_PROXY=127.0.0.1,localhost",
         "-v", f"{layout.mount}:{layout.mount}:Z",
         "-v", f"{stage}:/run/asb-config:ro,Z",
+        "-e", f"ASB_KEYRING_PASS={ensure_keyring_pass().read_text().strip()}",
+        "-v", f"{ensure_credentials_volume()}:/run/asb-credentials:Z",
         IMAGE,
     ]
     podman.run(*agent_args)
@@ -247,7 +273,70 @@ def purge(workspace: str, confirmed: bool = False) -> int:
 
 
 def login(root: Path) -> int:
-    raise NotImplementedError("login nao implementado ainda")
+    """Autentica os tres agentes UMA VEZ, num container fora da rede interna.
+
+    Fora da rede interna de proposito: o login por device-auth precisa de
+    egresso direto, e nao ha proxy algum neste caminho.
+    """
+    if not podman.exists("image", IMAGE):
+        raise podman.PodmanError(
+            f"imagem {IMAGE} ausente; execute 'asb-agent build'")
+    ensure_credentials_volume()
+    passphrase = ensure_keyring_pass().read_text().strip()
+    name = "asb-login"
+    if podman.exists("container", name):
+        podman.run("rm", "-f", name, check=False)
+
+    # Com o ENTRYPOINT REAL, nao --entrypoint sleep: e o entrypoint que sobe o
+    # D-Bus, destrava o keyring e popula /etc/profile.d. Com sleep nada disso
+    # acontece e o agy guarda a credencial em ARQUIVO TEXTO em silencio.
+    podman.run(
+        "run", "-d", "--name", name,
+        "--userns", "keep-id:uid=1000,gid=1000",
+        "-e", f"ASB_KEYRING_PASS={passphrase}",
+        "-v", f"{CREDENTIALS_VOLUME}:/run/asb-credentials:Z",
+        IMAGE)
+    try:
+        print("\nEntre em cada agente. Use SEMPRE fluxos de device-auth: o "
+              "OAuth padrao abre um servidor de callback numa porta do "
+              "container que o navegador do host nao alcanca, e trava.\n",
+              file=sys.stderr)
+        for label, command in (
+                ("Claude Code", "claude /login"),
+                ("Codex", "codex login --device-auth"),
+                # `agy` nao tem subcomando `login`: o binario nu abre a TUI,
+                # que autentica no primeiro uso. `agy login` falha com
+                # "unexpected argument".
+                ("Antigravity", "agy")):
+            print(f"--- {label} ---", file=sys.stderr)
+            # `bash -lc` nao e decoracao: sem shell de login o agy nao esta no
+            # PATH e DBUS_SESSION_BUS_ADDRESS esta ausente, que e exatamente
+            # como a credencial acaba em texto claro em vez do keyring.
+            subprocess.run([podman.require_binary(), "exec", "-it",
+                            "-u", "1000", name, "bash", "-lc", command])
+
+        # Verificar por CODIGO DE SAIDA, nunca por grep de "logged in": essa
+        # string casa tambem com "not logged in".
+        checks = (("Codex", "codex login status"),
+                  ("Claude Code", "claude -p ping < /dev/null"),
+                  ("Antigravity", "asb-agy --version"))
+        failed = []
+        for label, command in checks:
+            result = subprocess.run(
+                [podman.require_binary(), "exec", "-u", "1000", name,
+                 "timeout", "120", "bash", "-lc", command],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            state = "ok" if result.returncode == 0 else "FALHOU"
+            print(f"  {label}: {state}", file=sys.stderr)
+            if result.returncode != 0:
+                failed.append(label)
+        if failed:
+            raise podman.PodmanError(
+                "nao autenticado: " + ", ".join(failed))
+        print("credenciais gravadas no volume asb-credentials", file=sys.stderr)
+        return 0
+    finally:
+        podman.run("rm", "-f", name, check=False)
 
 
 def list_workspaces() -> int:

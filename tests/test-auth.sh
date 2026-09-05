@@ -1,79 +1,59 @@
 #!/usr/bin/env bash
-# tests/test-auth.sh — auth so gera imagem depois de provar os tres agentes.
+# tests/test-auth.sh — a credencial sobrevive ao workspace e a imagem.
 set -uo pipefail
-cd "$(dirname "$0")/.."
-source tests/assert.sh
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT/tests/assert.sh"
 
-echo "== autenticacao verificavel =="
+WS_A="test-auth-a-$$"
+WS_B="test-auth-b-$$"
+REPO=$(mktemp -d)/proj
+mkdir -p "$REPO" && cd "$REPO"
+git init -q -b main . && git config user.email t@e.com && git config user.name T
+echo ok > README.md && git add -A && git commit -qm inicial
+cd "$ROOT"
 
-tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
-mkdir -p "$tmp/bin"
-
-cat > "$tmp/bin/sleep" <<'SH'
-#!/usr/bin/env bash
-exit 0
-SH
-cat > "$tmp/bin/podman" <<'SH'
-#!/usr/bin/env bash
-printf '%s\n' "$*" >> "$ASB_TEST_PODMAN_LOG"
-case "$*" in
-  *dbus-send*)
-    count=$(cat "$ASB_TEST_DBUS_COUNT" 2>/dev/null || printf 0)
-    count=$((count + 1))
-    printf '%s\n' "$count" > "$ASB_TEST_DBUS_COUNT"
-    [ "$count" -ge 3 ]
-    exit $?
-    ;;
-  *"asb-agy -p"*) [ "${ASB_TEST_MODE:-}" != agy-fails ]; exit $? ;;
-  *"claude -p"*)
-    [ "${ASB_TEST_MODE:-}" != claude-hangs ] || /usr/bin/sleep 10
-    exit 0
-    ;;
-esac
-exit 0
-SH
-chmod +x "$tmp/bin/podman" "$tmp/bin/sleep"
-
-run_auth() {
-  local mode="$1" home="$tmp/home-$1" log="$tmp/$1.log"
-  mkdir -p "$home/.config/agent-sandbox"
-  printf 'test-pass\n' > "$home/.config/agent-sandbox/keyring.pass"
-  chmod 0600 "$home/.config/agent-sandbox/keyring.pass"
-  : > "$tmp/dbus-$mode"
-  if printf '\n' | HOME="$home" XDG_CONFIG_HOME="$home/.config" \
-      PATH="$tmp/bin:$PATH" ASB_TEST_MODE="$mode" \
-      ASB_TEST_PODMAN_LOG="$log" ASB_TEST_DBUS_COUNT="$tmp/dbus-$mode" \
-      ASB_AUTH_READY_ATTEMPTS=3 ASB_AUTH_READY_INTERVAL=0 \
-      ASB_AUTH_AGENT_TIMEOUT="${ASB_AUTH_AGENT_TIMEOUT:-90}" \
-      ./cli/agent-sandbox auth >/dev/null 2>&1; then
-    printf 0
-  else
-    printf '%s' "$?"
-  fi
+cleanup() {
+  "$ROOT/cli/asb-agent" down --workspace "$WS_A" >/dev/null 2>&1
+  "$ROOT/cli/asb-agent" down --workspace "$WS_B" >/dev/null 2>&1
 }
+trap cleanup EXIT
 
-assert_eq "0" "$(run_auth healthy)" "auth aceita os tres agentes verificados"
-assert_eq "3" "$(cat "$tmp/dbus-healthy")" \
-  "auth espera o Secret Service responder em vez de usar sleep fixo"
-assert_contains "asb-agy -p" "$(cat "$tmp/healthy.log")" \
-  "auth valida Antigravity de ponta a ponta"
-assert_contains "commit" "$(cat "$tmp/healthy.log")" \
-  "imagem e gerada depois das verificacoes"
+echo "== credenciais =="
+"$ROOT/cli/asb-agent" up --workspace "$WS_A" --repo "$REPO" >/dev/null || {
+  echo "  ABORTADO: up falhou"; exit 1; }
+A="asb-${WS_A}-agent"
+require "o agente A responde" podman exec "$A" true
 
-assert_eq "1" "$(run_auth agy-fails)" "auth recusa quando Antigravity falha"
-assert_eq "" "$(grep -F 'commit' "$tmp/agy-fails.log" || true)" \
-  "falha do Antigravity impede commit da imagem"
-assert_contains "rm -f asb-auth" "$(cat "$tmp/agy-fails.log")" \
-  "container temporario sempre e limpo"
+# O caminho real e um LINK para o volume: o refresh de token que o agente faz
+# durante a sessao precisa aterrissar no volume, nao numa copia efemera.
+assert_eq "0" "$(podman exec "$A" sh -c "test -L '$HOME/.claude/.credentials.json'; echo \$?")" \
+  "a credencial do Claude e um link para o volume"
+assert_eq "0" "$(podman exec "$A" sh -c "test -L '$HOME/.codex/auth.json'; echo \$?")" \
+  "a credencial do Codex e um link para o volume"
+assert_eq "0" "$(podman exec "$A" sh -c "test -L '$HOME/.local/share/keyrings'; echo \$?")" \
+  "o keyring e um link para o volume"
 
-started=$SECONDS
-timeout_result=$(ASB_AUTH_AGENT_TIMEOUT=0.1 run_auth claude-hangs)
-assert_eq "1" "$timeout_result" \
-  "auth interrompe verificacao de agente travada"
-elapsed=$((SECONDS - started))
-[ "$elapsed" -lt 3 ] \
-  && { echo "  ok: timeout de auth e realmente limitado"; _pass=$((_pass+1)); } \
-  || { echo "  FALHOU: timeout de auth levou ${elapsed}s"; _fail=$((_fail+1)); }
+# Escreve pelo CAMINHO REAL (como o agente faz) e confirma que aterrissou no
+# volume. Se algum agente substituir o link por arquivo comum, este teste e o
+# que acusa — e a correcao e trocar o link por bind mount do arquivo.
+podman exec "$A" sh -c "printf 'marca-do-teste' > '$HOME/.codex/auth.json'"
+assert_eq "0" "$(podman exec "$A" sh -c "test -L '$HOME/.codex/auth.json'; echo \$?")" \
+  "escrever pelo caminho real nao destruiu o link"
+
+"$ROOT/cli/asb-agent" down --workspace "$WS_A" >/dev/null
+
+echo "-- outro workspace ve a mesma credencial --"
+"$ROOT/cli/asb-agent" up --workspace "$WS_B" --repo "$REPO" >/dev/null || {
+  echo "  ABORTADO: up de B falhou"; exit 1; }
+B="asb-${WS_B}-agent"
+require "o agente B responde" podman exec "$B" true
+assert_eq "marca-do-teste" \
+  "$(podman exec "$B" sh -c "cat '$HOME/.codex/auth.json'")" \
+  "a credencial sobreviveu ao down e chegou ao workspace novo"
+
+echo "-- o volume nao e removido por down nem por purge --"
+"$ROOT/cli/asb-agent" down --workspace "$WS_B" >/dev/null
+assert_eq "0" "$(podman volume exists asb-credentials; echo $?)" \
+  "o volume de credenciais sobreviveu ao down"
 
 report

@@ -63,4 +63,34 @@ assert_eq "0" "$(podman container exists "asb-${WS_ROLLBACK}-agent"; echo $?)" \
 
 "$ROOT/cli/asb-agent" down --workspace "$WS_ROLLBACK" >/dev/null 2>&1
 
+echo "-- isolamento entre workspaces irmaos (sem destruicao por prefixo) --"
+WS_A="test-demo-$$"
+WS_B="test-demo-$$-2"
+
+cleanup_siblings() {
+  "$ROOT/cli/asb-agent" down --workspace "$WS_A" >/dev/null 2>&1 || true
+  "$ROOT/cli/asb-agent" down --workspace "$WS_B" >/dev/null 2>&1 || true
+}
+trap 'cleanup; cleanup_siblings' EXIT
+
+"$ROOT/cli/asb-agent" up --workspace "$WS_A" --repo "$repo" >/dev/null 2>&1
+"$ROOT/cli/asb-agent" up --workspace "$WS_B" --repo "$repo" >/dev/null 2>&1
+
+assert_eq "0" "$(podman container exists "asb-${WS_A}-agent"; echo $?)" \
+  "workspace A esta ativo antes do teste"
+assert_eq "0" "$(podman container exists "asb-${WS_B}-agent"; echo $?)" \
+  "workspace B (prefixado por A) esta ativo antes do teste"
+
+# down de WS_A NAO pode derrubar containers de WS_B
+"$ROOT/cli/asb-agent" down --workspace "$WS_A" >/dev/null 2>&1
+
+assert_eq "1" "$(podman container exists "asb-${WS_A}-agent"; echo $?)" \
+  "containers do workspace A foram removidos no down"
+assert_eq "0" "$(podman container exists "asb-${WS_B}-agent"; echo $?)" \
+  "containers do workspace B (irmao) permanecem intactos apos down do workspace A"
+assert_eq "0" "$(podman container exists "asb-${WS_B}-proxy"; echo $?)" \
+  "proxy do workspace B permanece intacto apos down do workspace A"
+
+"$ROOT/cli/asb-agent" down --workspace "$WS_B" >/dev/null 2>&1
+
 report

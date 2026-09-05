@@ -21,7 +21,7 @@ cat > /etc/profile.d/agent-sandbox.sh <<ENV_EOF
 [ -n "\${HTTPS_PROXY:-}" ] && export HTTPS_PROXY="\$HTTPS_PROXY"
 [ -n "\${HTTP_PROXY:-}" ] && export HTTP_PROXY="\$HTTP_PROXY"
 [ -n "\${NO_PROXY:-}" ] && export NO_PROXY="\$NO_PROXY"
-export PATH="$ASB_HOME/.local/bin:$ASB_HOME/.local/share/mise/shims:\${PATH}"
+export PATH="/usr/local/sbin:/usr/sbin:/sbin:$ASB_HOME/.local/bin:$ASB_HOME/.local/share/mise/shims:\${PATH}"
 ENV_EOF
 
 if [ -n "${ORCA_SSH_PUBLIC_KEY:-}" ]; then

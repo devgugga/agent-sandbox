@@ -40,7 +40,7 @@ RUN useradd -m -u 1000 -d "$ASB_HOME" -s /bin/bash "$ASB_USER"
 USER $ASB_USER
 ENV HOME=$ASB_HOME
 RUN curl -fsSL https://mise.run | sh
-ENV PATH="$ASB_HOME/.local/bin:$ASB_HOME/.local/share/mise/shims:${PATH}"
+ENV PATH="/usr/local/sbin:/usr/sbin:/sbin:$ASB_HOME/.local/bin:$ASB_HOME/.local/share/mise/shims:${PATH}"
 # O Antigravity CLI substituiu o Gemini CLI, descontinuado em 2026-06-18 para
 # contas Pro/Ultra. E um binario Go unico; nao ha pacote npm.
 RUN curl -fsSL https://antigravity.google/cli/install.sh | bash
@@ -72,11 +72,11 @@ RUN printf 'agent-sandbox\n' > /etc/agent-sandbox-release
 # abaixo nao sao opcionais: sem elas o podman aninhado falha com
 # "newuidmap: write to uid_map failed: Operation not permitted" — medido.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      podman fuse-overlayfs uidmap passt slirp4netns libcap2-bin \
+      podman fuse-overlayfs uidmap passt slirp4netns netavark aardvark-dns iptables libcap2-bin \
     && rm -rf /var/lib/apt/lists/*
 
 # 1) subuid/subgid para o usuario: dentro do namespace de keep-id do host
-# (uid 1000), os uids disponiveis sao 1..999 e 1001..65535. newuidmap/newgidmap
+# (uid 1000), os uids disponiveis sao 1..999 e 1001..64535. newuidmap/newgidmap
 # precisam de file capability cap_setuid/cap_setgid em vez de setuid-root,
 # pois o kernel ignora o bit suid dentro de user namespaces nao privilegiados.
 RUN printf '%s:1:999\n%s:1001:64535\n' "$ASB_USER" "$ASB_USER" > /etc/subuid \
@@ -97,17 +97,13 @@ RUN mkdir -p /etc/containers && printf '%s\n' \
       'mountopt = "nodev,fsync=0"' \
       > /etc/containers/storage.conf
 
-# 3) cgroupfs, crun, netns=host, userns=host, log em arquivo:
-#    sem systemd nem sessao dbus de usuario aqui.
+# 3) cgroupfs, crun, log em arquivo, utsns=host e default_sysctls vazio:
+#    sem systemd nem sessao dbus de usuario aqui. utsns=host evita falha de
+#    sethostname sem root; default_sysctls=[] evita falha em sysctl read-only.
 RUN printf '%s\n' \
       '[containers]' \
-      'netns = "host"' \
-      'userns = "host"' \
-      'ipcns = "host"' \
       'utsns = "host"' \
-      'cgroupns = "host"' \
-      'cgroups = "disabled"' \
-      'log_driver = "k8s-file"' \
+      'default_sysctls = []' \
       '[engine]' \
       'cgroup_manager = "cgroupfs"' \
       'events_logger = "file"' \

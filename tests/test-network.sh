@@ -58,8 +58,14 @@ assert_fails "CONNECT para dominio NAO permitido e recusado" \
 
 # ---- SSH PUBLICADO E UTIL ----
 PORT=$(printf '%s' "$OUT" | python3 -c 'import json,sys; print(json.load(sys.stdin)["port"])')
-assert_eq "0" "$(timeout 5 bash -c "exec 3<>/dev/tcp/127.0.0.1/$PORT" 2>/dev/null; echo $?)" \
-  "a porta SSH publicada aceita conexao no host"
+SSH_BANNER=$(python3 -c 'import socket,sys; s=socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=5); print(s.recv(1024).decode(errors="ignore")); s.close()' "$PORT")
+assert_contains "SSH-2.0-" "$SSH_BANNER" "o servidor sshd responde com banner SSH valido"
+
+SSH_KEY="$HOME/.config/agent-sandbox/id_ed25519"
+assert_eq "0" "$(ssh -i "$SSH_KEY" -p "$PORT" \
+  -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o BatchMode=yes \
+  "$(id -un)@127.0.0.1" true 2>/dev/null; echo $?)" \
+  "autenticacao SSH por chave funciona de ponta a ponta"
 
 # ---- O MOUNT E IDENTICO E GRAVAVEL ----
 MOUNT="$HOME/asb-agent/$(basename "$REPO")/$WS"

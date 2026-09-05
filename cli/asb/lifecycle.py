@@ -119,13 +119,21 @@ def up(root: Path, ws: str, repo: Path) -> int:
 
 
 def _sweep_containers(ws: str) -> None:
-    """Remove todo container do workspace pelo PREFIXO, nunca por lista: um
-    tipo de container acrescentado depois seria esquecido e vazaria."""
+    """Remove todo container do workspace pelo LABEL, nunca por prefixo solto:
+    casar prefixo sem delimitador casava workspaces irmaos (ex: asb-demo- casava asb-demo-2-)."""
+    found: set[str] = set()
     for container in podman.out(
-            "ps", "-a", "--filter", f"name=^asb-{ws}-",
+            "ps", "-a", "--filter", f"label=asb.workspace={ws}",
             "--format", "{{.Names}}").splitlines():
-        if container.strip():
-            podman.run("rm", "-f", container.strip(), check=False)
+        c = container.strip()
+        if c:
+            found.add(c)
+    n = names(ws)
+    for c in (n["agent"], n["proxy"], f"{n['net']}-fwd", f"{n['net']}-docker"):
+        if podman.exists("container", c):
+            found.add(c)
+    for container in sorted(found):
+        podman.run("rm", "-f", container, check=False)
 
 
 def start_services(ws: str, profile: Profile) -> None:
@@ -138,8 +146,10 @@ def start_services(ws: str, profile: Profile) -> None:
         # --user 0: imagens sem diretiva USER (postgres, por exemplo) sao
         # resolvidas por keep-id para o uid mapeado do host, e o initdb falha
         # em ajustar permissoes dos diretorios da propria imagem.
-        podman.run("run", "-d", "--name", container, "--restart",
-                   "unless-stopped", "--network", n["net"], "--user", "0",
+        podman.run("run", "-d", "--name", container,
+                   "--label", f"asb.workspace={ws}",
+                   "--restart", "unless-stopped",
+                   "--network", n["net"], "--user", "0",
                    *env, service.image)
 
 
@@ -160,7 +170,9 @@ def start_forwarder(ws: str, profile: Profile) -> None:
     script = " ".join(
         f"socat TCP-LISTEN:{port},fork,reuseaddr "
         f"TCP:host.containers.internal:{port} &" for port in profile.host_ports)
-    podman.run("run", "-d", "--name", forwarder, "--restart", "unless-stopped",
+    podman.run("run", "-d", "--name", forwarder,
+               "--label", f"asb.workspace={ws}",
+               "--restart", "unless-stopped",
                "--network", f"{n['net']},{n['out']}", "--user", "900",
                "--entrypoint", "sh", PROXY_IMAGE,
                "-c", f"trap 'exit 0' TERM; {script} wait")
@@ -199,7 +211,9 @@ def _up(root: Path, ws: str, repo: Path) -> int:
 
     # O proxy tem perna nas duas redes: e o unico caminho para fora.
     podman.run(
-        "run", "-d", "--name", n["proxy"], "--restart", "unless-stopped",
+        "run", "-d", "--name", n["proxy"],
+        "--label", f"asb.workspace={ws}",
+        "--restart", "unless-stopped",
         "--network", f"{n['net']},{n['out']}", "--user", "900",
         "-v", f"{conf}:/etc/squid/squid.conf:ro,Z",
         PROXY_IMAGE, "squid", "-N", "-f", "/etc/squid/squid.conf")
@@ -216,8 +230,10 @@ def _up(root: Path, ws: str, repo: Path) -> int:
         # Container proprio, SEM rede externa: quem fala com o socket do
         # Docker nao ganha egresso de tabela junto.
         podman.run(
-            "run", "-d", "--name", f"{n['net']}-docker", "--restart",
-            "unless-stopped", "--network", n["net"], "--user", "900",
+            "run", "-d", "--name", f"{n['net']}-docker",
+            "--label", f"asb.workspace={ws}",
+            "--restart", "unless-stopped",
+            "--network", n["net"], "--user", "900",
             "-v", f"{broker_sock}:/var/run/docker.sock:Z",
             "--entrypoint", "sh", PROXY_IMAGE, "-c",
             "socat TCP-LISTEN:2375,fork,reuseaddr "
@@ -230,7 +246,9 @@ def _up(root: Path, ws: str, repo: Path) -> int:
 
     key = ensure_ssh_key()
     agent_args = [
-        "run", "-d", "--name", n["agent"], "--restart", "unless-stopped",
+        "run", "-d", "--name", n["agent"],
+        "--label", f"asb.workspace={ws}",
+        "--restart", "unless-stopped",
         "--network", n["net"],
         "-p", "127.0.0.1::22",
         # Sem keep-id o uid 1000 do host mapeia para 0 aqui dentro, o
@@ -252,16 +270,17 @@ def _up(root: Path, ws: str, repo: Path) -> int:
         IMAGE,
     ]
     if profile.container_mode == "nested":
-        # /dev/fuse para o fuse-overlayfs; label=disable porque o SELinux do
-        # host nao rotula o que o podman de dentro cria. NAO --privileged: a
-        # nidificacao nao precisa e o custo seria a fronteira inteira.
+        # /dev/fuse para o fuse-overlayfs, /dev/net/tun para o netavark/slirp;
+        # label=disable porque o SELinux do host nao rotula o que o podman de dentro cria.
+        # unmask=/proc/* permite o mount proc do crun sem expor /sys/firmware.
         volume = f"{n['net']}-containers"
         if not podman.exists("volume", volume):
             podman.run("volume", "create", volume)
         agent_args[-1:-1] = [
             "--device", "/dev/fuse",
+            "--device", "/dev/net/tun",
             "--security-opt", "label=disable",
-            "--security-opt", "unmask=ALL",
+            "--security-opt", "unmask=/proc/*",
             # Armazenamento das imagens aninhadas fora da camada gravavel: um
             # `down` seguido de `up` nao rebaixa tudo de novo.
             "-v", f"{volume}:{home}/.local/share/containers:Z",
@@ -326,8 +345,13 @@ def _require_workspace(ws: str) -> tuple[dict[str, str], Path, Path]:
 
 def suspend(ws: str) -> int:
     n, _, _ = _require_workspace(ws)
-    for container in (n["agent"], n["proxy"]):
-        if podman.exists("container", container):
+    containers = podman.out(
+        "ps", "--filter", f"label=asb.workspace={ws}",
+        "--format", "{{.Names}}").splitlines()
+    found = {c.strip() for c in containers if c.strip()}
+    found.update({n["agent"], n["proxy"]})
+    for container in sorted(found):
+        if podman.exists("container", container) and podman.running(container):
             podman.run("stop", "-t", "5", container, check=False)
     return 0
 
@@ -335,14 +359,22 @@ def suspend(ws: str) -> int:
 def resume(root: Path, ws: str) -> int:
     """Religa o workspace.
 
-    E `podman start`, e so. Nao ha ordem a respeitar: a rede interna nao pode
-    "nao ter subido", entao o agente nunca ganha egresso indevido por partir
-    primeiro. O proxy sobe antes por educacao — para o agente nao passar alguns
-    segundos sem saida — nao por seguranca.
+    E `podman start`, e so. Nao ha ordem a respeitar por seguranca: a rede interna
+    nao pode "nao ter subido", entao o agente nunca ganha egresso indevido por
+    partir primeiro. O proxy sobe antes por educacao — para o agente nao passar alguns
+    segundos sem saida. Todos os outros containers do workspace (servicos, forwarder,
+    broker) tambem sao religados.
     """
     n, home, origin = _require_workspace(ws)
-    for container in (n["proxy"], n["agent"]):
-        if podman.exists("container", container):
+    if podman.exists("container", n["proxy"]):
+        podman.run("start", n["proxy"], check=False)
+    containers = podman.out(
+        "ps", "-a", "--filter", f"label=asb.workspace={ws}",
+        "--format", "{{.Names}}").splitlines()
+    found = {c.strip() for c in containers if c.strip()}
+    found.update({n["agent"]})
+    for container in sorted(found):
+        if container != n["proxy"] and podman.exists("container", container):
             podman.run("start", container, check=False)
     return emit(ws, layout_for(origin, ws, home))
 

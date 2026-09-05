@@ -63,6 +63,25 @@ assert_contains "HOST-OK" "$(podman exec "$AGENT" sh -c \
 assert_fails "uma porta NAO declarada do host nao e alcancavel" \
   podman exec "$AGENT" sh -c "timeout 3 nc -z 127.0.0.1 $((PORT+1))"
 
+echo "-- suspend e resume afetam TODOS os containers do workspace --"
+"$ROOT/cli/asb-agent" suspend --workspace "$WS" >/dev/null
+
+assert_eq "" "$(podman ps --filter "name=^asb-${WS}-svc-cache$" --filter status=running -q)" \
+  "suspend parou o container de servico"
+assert_eq "" "$(podman ps --filter "name=^asb-${WS}-fwd$" --filter status=running -q)" \
+  "suspend parou o container encaminhador"
+assert_eq "" "$(podman ps --filter "name=^asb-${WS}-agent$" --filter status=running -q)" \
+  "suspend parou o container do agente"
+
+"$ROOT/cli/asb-agent" resume --workspace "$WS" >/dev/null
+
+assert_eq "0" "$(podman exec "$AGENT" sh -c \
+  'timeout 5 nc -z asb-'"$WS"'-svc-cache 6379; echo $?')" \
+  "resume religou o servico descartavel"
+assert_contains "HOST-OK" "$(podman exec "$AGENT" sh -c \
+  "timeout 5 nc 127.0.0.1 $PORT")" \
+  "resume religou o encaminhador para o host"
+
 echo "-- servicos sao descartaveis --"
 "$ROOT/cli/asb-agent" down --workspace "$WS" >/dev/null
 assert_eq "1" "$(podman container exists asb-${WS}-svc-cache; echo $?)" \

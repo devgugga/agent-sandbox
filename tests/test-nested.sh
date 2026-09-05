@@ -37,10 +37,22 @@ assert_contains "ANINHADO-OK" \
      'timeout 300 podman run --rm docker.io/library/alpine:latest echo ANINHADO-OK 2>&1 | tail -1')" \
   "o agente puxa e roda uma imagem atraves do proxy"
 
+# Rede definida pelo usuario e resolucao por nome (suporte real a podman compose)
+podman exec -u 1000 "$AGENT" bash -lc 'podman network create appnet >/dev/null'
+podman exec -u 1000 "$AGENT" bash -lc 'podman run -d --name svc --network appnet docker.io/library/alpine:latest sh -c "while true; do echo NET-OK | nc -l -p 8080; done" >/dev/null'
+
+RESOLV_OUT=$(podman exec -u 1000 "$AGENT" bash -lc 'timeout 15 podman run --rm --network appnet docker.io/library/alpine:latest nc svc 8080 2>&1')
+assert_contains "NET-OK" "$RESOLV_OUT" \
+  "redes definidas pelo usuario e resolucao por nome entre containers funcionam"
+
+podman exec -u 1000 "$AGENT" bash -lc 'podman rm -f svc >/dev/null; podman network rm appnet >/dev/null'
+
 # A fronteira nao afrouxa por causa do modo aninhado.
 assert_fails "o agente continua sem egresso direto" \
   podman exec "$AGENT" sh -c 'timeout 5 bash -c "exec 3<>/dev/tcp/1.1.1.1/443"'
 assert_eq "1" "$(podman exec "$AGENT" sh -c "test -e /var/run/docker.sock; echo \$?")" \
   "o socket do Docker do host nao esta montado"
+assert_eq "" "$(podman exec "$AGENT" sh -c 'ls /sys/firmware 2>/dev/null')" \
+  "/sys/firmware permanece mascarado do host no modo aninhado"
 
 report

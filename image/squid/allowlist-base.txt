@@ -2,7 +2,16 @@
 # Um dominio por linha. Prefixo "." casa subdominios.
 # APIs dos agentes
 .anthropic.com
+# O Claude Code >= v2.1 usa platform.claude.com alem de api.anthropic.com, e
+# .anthropic.com NAO cobre esse dominio. Sem ele o agente arranca e morre em
+# "Failed to connect to platform.claude.com: Status 403".
+.claude.com
 .openai.com
+# O Codex (>= v0.153) fala com chatgpt.com/backend-api, nao mais so com
+# api.openai.com. Sem este dominio ele arranca e morre em "Proxy connection
+# failed: HTTP CONNECT failed with status 403" — que parece bloqueio
+# proposital do sandbox, e nao allowlist desatualizada. Cobre ab.chatgpt.com.
+.chatgpt.com
 .googleapis.com
 # O agy faz um eligibility check que busca a foto de perfil do usuario; sem
 # este dominio ele falha no arranque com "Forbidden", apesar de autenticado.

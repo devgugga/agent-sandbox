@@ -498,6 +498,19 @@ def purge(ws: str, confirmed: bool) -> int:
     return 0
 
 
+# Verificar por CODIGO DE SAIDA de um comando que EXERCITA autenticacao.
+# `--version` responde 0 com o agente deslogado: era o que fazia o login
+# imprimir "Antigravity: ok" enquanto a CLI dizia "You are currently not
+# signed in". Um falso verde aqui e pior que nenhuma checagem, porque manda o
+# operador embora achando que a credencial foi gravada.
+# Tambem nao vale grepar "logged in": essa string casa "not logged in".
+LOGIN_CHECKS = (
+    ("Codex", "codex login status"),
+    ("Claude Code", "claude -p ping < /dev/null"),
+    ("Antigravity", "agy -p ping < /dev/null"),
+)
+
+
 def login(root: Path) -> int:
     """Autentica os tres agentes UMA VEZ, num container fora da rede interna.
 
@@ -543,11 +556,8 @@ def login(root: Path) -> int:
 
         # Verificar por CODIGO DE SAIDA, nunca por grep de "logged in": essa
         # string casa tambem com "not logged in".
-        checks = (("Codex", "codex login status"),
-                  ("Claude Code", "claude -p ping < /dev/null"),
-                  ("Antigravity", "asb-agy --version"))
         failed = []
-        for label, command in checks:
+        for label, command in LOGIN_CHECKS:
             result = subprocess.run(
                 [podman.require_binary(), "exec", "-u", "1000", name,
                  "timeout", "120", "bash", "-lc", command],

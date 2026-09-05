@@ -55,3 +55,27 @@ class TestAuthLifecycle(unittest.TestCase):
             self.assertEqual(vol, lifecycle.CREDENTIALS_VOLUME)
             mock_exists.assert_called_once_with("volume", lifecycle.CREDENTIALS_VOLUME)
             mock_run.assert_not_called()
+
+
+class TestVerificacaoDeLogin(unittest.TestCase):
+    """A verificacao do login tem de EXERCITAR autenticacao.
+
+    `asb-agy --version` responde 0 com o agente deslogado: o `asb-agent login`
+    imprimia "Antigravity: ok" enquanto a CLI dizia "You are currently not
+    signed in". Um falso verde aqui e pior que nenhuma checagem, porque manda
+    o operador embora achando que a credencial foi gravada.
+    """
+
+    def test_nenhuma_checagem_e_consulta_de_versao(self):
+        from asb import lifecycle
+        for label, command in lifecycle.LOGIN_CHECKS:
+            with self.subTest(agente=label):
+                self.assertNotIn(
+                    "--version", command,
+                    f"a checagem do {label} e {command!r}, que responde 0 com "
+                    f"o agente deslogado")
+
+    def test_ha_uma_checagem_para_cada_agente_instalado(self):
+        from asb import lifecycle
+        labels = {label for label, _ in lifecycle.LOGIN_CHECKS}
+        self.assertEqual(labels, {"Codex", "Claude Code", "Antigravity"})

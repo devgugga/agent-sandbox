@@ -82,3 +82,45 @@ class TestRender(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestAllowlistBaseCobreOsAgentes(unittest.TestCase):
+    """A imagem instala claude, codex e agy. Se a base nao alcanca a API de um
+    deles, o agente nao inicia e o sintoma e um CONNECT 403 no Squid —
+    indistinguivel de bloqueio proposital, que e o pior tipo de falha aqui.
+
+    Foi exatamente o que aconteceu: o Codex migrou de api.openai.com para
+    chatgpt.com e a allowlist base ficou para tras.
+    """
+
+    BASE = (Path(__file__).resolve().parents[2] / "image" / "squid"
+            / "allowlist-base.txt")
+
+    @staticmethod
+    def _cobre(host: str, domains: list[str]) -> bool:
+        """Semantica do dstdomain do Squid: '.x.com' casa x.com e subdominios."""
+        for d in domains:
+            if d == host:
+                return True
+            if d.startswith(".") and (host == d[1:] or host.endswith(d)):
+                return True
+        return False
+
+    def test_base_alcanca_a_api_de_cada_agente_instalado(self):
+        from asb.squid import read_base
+        domains = read_base(self.BASE)
+        for agente, host in (("claude", "api.anthropic.com"),
+                             # O Claude Code >= v2.1 tambem fala com
+                             # platform.claude.com, que NAO e coberto por
+                             # .anthropic.com. Sem ele o agente morre em
+                             # "Failed to connect to platform.claude.com:
+                             # Status 403" — de novo indistinguivel de
+                             # bloqueio proposital.
+                             ("claude", "platform.claude.com"),
+                             ("codex", "chatgpt.com"),
+                             ("agy", "antigravity.google")):
+            with self.subTest(agente=agente):
+                self.assertTrue(
+                    self._cobre(host, domains),
+                    f"a allowlist base nao alcanca {host}, de que o {agente} "
+                    f"depende para iniciar")

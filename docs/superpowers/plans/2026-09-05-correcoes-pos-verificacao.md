@@ -17,6 +17,10 @@
 | **T8** | **concluída e verificada empiricamente** — `doctor` sonda egresso real (DNS e TCP) em cada workspace ativo com controles positivo e negativo; recuperação (`podman unshare --rootless-netns true`) documentada em `failure-modes.md` |
 | **T9** | **concluída** — pré-requisito `mvn package` do `Dockerfile.jvm` e fluxo híbrido documentados em `BlackICE/infra/README.md` |
 | **T10** | **T10.1 [HUMANO] pendente** (exercitar reboot real com workspace ativo); **T10.2 concluída** (implicações de `Linger=no` documentadas em `failure-modes.md` e `README.md`) |
+| **T11** | **nova** — `test_broker` depende do estado ambiente da máquina |
+| **T12** | **nova** — `asb-agent login` tem armadilha de UX no passo do Claude |
+| **T13** | **nova** — não há como recarregar a allowlist sem recriar o workspace |
+| **T14** | **nova** — inventário de domínios negados aguardando decisão |
 
 Sobre T1, o Gemini escolheu a **Opção A (preservar o workspace)**, que era a
 recomendada. Verificado: `up` sai 1, não emite o JSON da receita e mantém os
@@ -456,3 +460,148 @@ explícita, não efeito colateral de uma tarefa de documentação.
 
 Documentar as duas situações e o comando, em `failure-modes.md`, junto do
 sintoma "o workspace sumiu depois do reboot".
+
+---
+
+## Contexto: dois falsos verdes achados em uso real (JÁ CORRIGIDOS)
+
+Registrados para o padrão não se repetir. **Não refazer.**
+
+1. **Allowlist defasada.** `.openai.com` não cobre `chatgpt.com`, que o Codex
+   >= v0.153 usa; `.anthropic.com` não cobre `platform.claude.com`, que o
+   Claude Code >= v2.1 usa. Os dois agentes morriam com `CONNECT 403`, que o
+   operador lê como bloqueio proposital do sandbox. Corrigido com `.chatgpt.com`
+   e `.claude.com`, mais um teste em `test_squid.py` que afirma que a base
+   alcança a API de **cada agente que a imagem instala**.
+
+2. **A verificação do login mentia.** `asb-agy --version` responde 0 com o
+   agente deslogado; o `asb-agent login` imprimia `Antigravity: ok` enquanto a
+   CLI dizia *"You are currently not signed in"*. Corrigido para `agy -p ping`,
+   com a lista extraída para `LOGIN_CHECKS` e dois testes em `test_auth.py`.
+
+---
+
+## T11 — `test_broker` depende do estado ambiente da máquina
+
+**Arquivo.** `tests/unit/test_broker.py`,
+`test_lifecycle_up_refuses_read_when_broker_socket_missing`.
+
+**Problema.** O nome diz *"when broker socket missing"*, mas o teste **nunca
+torna o socket ausente** — depende de `/run/asb-docker/docker.sock` não existir
+na máquina. Passou o dia todo enquanto o broker não estava instalado; no minuto
+em que o operador rodou `asb-agent install-broker`, passou a quebrar. Um teste
+unitário que muda de resultado conforme o host não pode ser acreditado em
+nenhuma das duas direções.
+
+**Segundo defeito, encadeado.** Quando a guarda não dispara, a execução segue
+para o laço do mise e estoura longe da causa:
+
+```
+TypeError: sequence item 0: expected str instance, MagicMock found
+  lifecycle.py: failed_names = ", ".join(d.name for d, _, _ in mise_errors)
+```
+
+`mock_layout.return_value` só configura `.state` e `.mount`; `.project_root`
+fica um `MagicMock`, e `discover_mise_dirs` o devolve como se fosse diretório.
+
+**Correção.**
+
+1. Tornar o teste hermético: controlar a existência do socket em vez de
+   herdá-la do host. O resultado tem de ser o mesmo com e sem broker instalado.
+2. Configurar `mock_layout.return_value.project_root` com um diretório real,
+   para que uma futura falha da guarda quebre **na asserção** e não num
+   `TypeError` distante.
+
+**Verificação.** Controle positivo nos dois sentidos: passa com o broker
+instalado **e** sem ele. O broker está instalado nesta máquina agora, então dá
+para exercitar os dois casos de verdade.
+
+---
+
+## T12 — `asb-agent login`: armadilha de UX no passo do Claude
+
+O `login` roda `claude /login` com diretório de trabalho em `/`. O Claude Code
+pede confirmação de confiança na pasta **antes** de qualquer login, e o default
+é a opção errada:
+
+```
+Accessing workspace: /
+Quick safety check: Is this a project you created or one you trust?
+) No, exit                     ← selecionado por padrão
+  Yes, I trust this folder
+```
+
+Um Enter distraído sai sem logar, o laço segue para o Codex, e o resultado é um
+`claude.json` de **0 bytes** no volume — foi exatamente o que aconteceu em uso
+real, e só apareceu dias depois, quando o Claude pediu login dentro de um
+workspace.
+
+**Correção — escolher uma, não empilhar:**
+
+- rodar o passo do Claude num diretório dedicado e já confiável (por exemplo
+  `$ASB_HOME`, com a marca de confiança criada na imagem), **ou**
+- imprimir instrução explícita antes do passo, mandando escolher
+  *"Yes, I trust this folder"*.
+
+**Nota importante para quem implementar:** existe um caminho melhor que já
+funciona hoje — **logar de dentro de um workspace**. O entrypoint faz symlink
+de `~/.claude/.credentials.json` e `~/.local/share/keyrings` para o volume
+`asb-credentials` (verificado), então um login feito ali dentro persiste para
+todos os workspaces. Documentar isso em `docs/domains/sandbox/README.md` como a
+via recomendada, deixando o `asb-agent login` para o primeiro uso da máquina.
+
+---
+
+## T13 — Não há como recarregar a allowlist sem recriar o workspace
+
+O `squid.conf` é gerado no `up` a partir de `allowlist-base.txt` mais o perfil e
+montado read-only no proxy. Mudar a allowlist depois exigiria `down` + `up` —
+mas o `up` publica a porta SSH com `-p 127.0.0.1::22`, **aleatória a cada
+criação**. Num workspace do Orca isso significa perder a porta que o Orca
+guardou, ou seja, perder a sessão.
+
+A correção das duas allowlists foi feita à mão: regenerar o `squid.conf` no
+diretório de estado e `podman restart asb-<ws>-proxy`. O container do agente não
+é tocado e a porta sobrevive.
+
+**Correção.** Um subcomando — `asb-agent reload-allowlist --workspace <ws>` ou
+equivalente — que faça exatamente isso. Sem ele, "mudei a allowlist" implica
+"recrie o workspace", caro demais numa ferramenta de uso diário para uma
+mudança de uma linha.
+
+**Verificação.** Teste de integração: subir workspace, confirmar que um domínio
+é negado, acrescentá-lo ao perfil, rodar o comando, confirmar que passa a ser
+permitido — **e que a porta SSH não mudou**. Essa última asserção é o ponto
+inteiro do comando.
+
+---
+
+## T14 — Inventário de domínios negados aguardando decisão
+
+Coletado dos logs do Squid dos workspaces reais. **Não liberar nada sem o
+humano decidir**; a lista existe para a decisão ser informada.
+
+| Domínio | Tentativas | O que quebra hoje |
+| :--- | ---: | :--- |
+| `www.dcm4che.org` | 777 | algo no BlackICE tenta muito buscar a doc oficial do DICOM |
+| `registry.access.redhat.com` | 2 | imagem base do backend (`ubi9/openjdk-21-runtime`); build aninhado falha |
+| `dl-cdn.alpinelinux.org` | 2 | `apk` dentro de builds aninhados |
+| `cdn.playwright.dev` + 3 `*.azureedge.net` | 8 | download de browser do Playwright |
+| `pypi.org` | 4 | ausente da allowlist do BlackICE |
+| `repo.gradle.org` | 2 | Gradle |
+| `dl.google.com`, `*.gvt1.com`, `clients2.google.com` | ~80 | auto-updater do Antigravity |
+
+**Recomendações:**
+
+- `registry.access.redhat.com` provavelmente pertence a `NESTED_REGISTRIES` em
+  `cli/asb/squid.py`, ao lado de docker.io, quay.io e ghcr.io: é registry de
+  container e só faz sentido com `mode = "nested"`.
+- `dl-cdn.alpinelinux.org`, Playwright, `pypi.org` e Gradle são específicos de
+  projeto e pertencem ao `[network] allow` do BlackICE.
+- **Manter o auto-updater do Google bloqueado.** A versão do `agy` é fixada na
+  imagem; permitir auto-update dentro do sandbox contorna esse controle e faz a
+  ferramenta mudar sob os pés do operador.
+- As 777 tentativas ao `dcm4che.org` merecem investigação **antes** de qualquer
+  liberação: descobrir o que está buscando. O subagente `dicom-domain-reviewer`
+  é read-only (`tools: Read, Grep, Glob`) e não faz rede, então a origem é
+  outra.

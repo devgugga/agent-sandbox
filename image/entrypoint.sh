@@ -87,6 +87,10 @@ if [ -d /run/asb-credentials ]; then
   chown -R "$ASB_USER:$ASB_USER" /run/asb-credentials
 fi
 
+if [ -d "$ASB_HOME/.local/share/containers" ]; then
+  chown -R "$ASB_USER:$ASB_USER" "$ASB_HOME/.local/share/containers"
+fi
+
 # O projeto continua apontando para localhost:5432. Sem pod, o agente e o
 # encaminhador estao em namespaces separados, entao um socat local recria o
 # endereco que o projeto espera. Dois saltos triviais; a alternativa seria

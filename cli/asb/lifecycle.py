@@ -227,6 +227,21 @@ def _up(root: Path, ws: str, repo: Path) -> int:
         "-e", f"ASB_WORKSPACE={ws}",
         IMAGE,
     ]
+    if profile.container_mode == "nested":
+        # /dev/fuse para o fuse-overlayfs; label=disable porque o SELinux do
+        # host nao rotula o que o podman de dentro cria. NAO --privileged: a
+        # nidificacao nao precisa e o custo seria a fronteira inteira.
+        volume = f"{n['net']}-containers"
+        if not podman.exists("volume", volume):
+            podman.run("volume", "create", volume)
+        agent_args[-1:-1] = [
+            "--device", "/dev/fuse",
+            "--security-opt", "label=disable",
+            "--security-opt", "unmask=ALL",
+            # Armazenamento das imagens aninhadas fora da camada gravavel: um
+            # `down` seguido de `up` nao rebaixa tudo de novo.
+            "-v", f"{volume}:{home}/.local/share/containers:Z",
+        ]
     podman.run(*agent_args)
     # Idempotente e barato; chamar aqui evita que o operador precise lembrar.
     from . import install
@@ -257,6 +272,9 @@ def down(ws: str) -> int:
     for network in (n["net"], n["out"]):
         if podman.exists("network", network):
             podman.run("network", "rm", "-f", network, check=False)
+    volume = f"asb-{ws}-containers"
+    if podman.exists("volume", volume):
+        podman.run("volume", "rm", "-f", volume, check=False)
     origin = _origin_of(ws, home)
     if origin is not None:
         remove_state(layout_for(origin, ws, home))

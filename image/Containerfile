@@ -68,6 +68,58 @@ RUN printf '%s\n' \
 # ausencia dele no host e o que faz o guarda recusar la.
 RUN printf 'agent-sandbox\n' > /etc/agent-sandbox-release
 
+# Runtime de containers DENTRO do sandbox (spec §6.2). As configuracoes
+# abaixo nao sao opcionais: sem elas o podman aninhado falha com
+# "newuidmap: write to uid_map failed: Operation not permitted" — medido.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      podman fuse-overlayfs uidmap passt slirp4netns libcap2-bin \
+    && rm -rf /var/lib/apt/lists/*
+
+# 1) subuid/subgid para o usuario: dentro do namespace de keep-id do host
+# (uid 1000), os uids disponiveis sao 1..999 e 1001..65535. newuidmap/newgidmap
+# precisam de file capability cap_setuid/cap_setgid em vez de setuid-root,
+# pois o kernel ignora o bit suid dentro de user namespaces nao privilegiados.
+RUN printf '%s:1:999\n%s:1001:64535\n' "$ASB_USER" "$ASB_USER" > /etc/subuid \
+    && printf '%s:1:999\n%s:1001:64535\n' "$ASB_USER" "$ASB_USER" > /etc/subgid \
+    && chmod u-s /usr/bin/newuidmap /usr/bin/newgidmap \
+    && setcap cap_setuid=ep /usr/bin/newuidmap \
+    && setcap cap_setgid=ep /usr/bin/newgidmap
+
+# 2) overlay via fuse-overlayfs: o driver overlay do kernel nao esta disponivel
+#    para um usuario sem privilegio dentro de outro container.
+RUN mkdir -p /etc/containers && printf '%s\n' \
+      '[storage]' \
+      'driver = "overlay"' \
+      'runroot = "/run/containers/storage"' \
+      'graphroot = "/var/lib/containers/storage"' \
+      '[storage.options.overlay]' \
+      'mount_program = "/usr/bin/fuse-overlayfs"' \
+      'mountopt = "nodev,fsync=0"' \
+      > /etc/containers/storage.conf
+
+# 3) cgroupfs, crun, netns=host, userns=host, log em arquivo:
+#    sem systemd nem sessao dbus de usuario aqui.
+RUN printf '%s\n' \
+      '[containers]' \
+      'netns = "host"' \
+      'userns = "host"' \
+      'ipcns = "host"' \
+      'utsns = "host"' \
+      'cgroupns = "host"' \
+      'cgroups = "disabled"' \
+      'log_driver = "k8s-file"' \
+      '[engine]' \
+      'cgroup_manager = "cgroupfs"' \
+      'events_logger = "file"' \
+      'runtime = "crun"' \
+      > /etc/containers/containers.conf
+
+# 4) registries explicitos: sem isso um `podman run alpine` fica ambiguo e o
+#    podman recusa em vez de escolher.
+RUN printf '%s\n' \
+      'unqualified-search-registries = ["docker.io"]' \
+      > /etc/containers/registries.conf
+
 # Contexto de build e a RAIZ do repositorio, para que exista uma unica copia
 # do guarda. No v1 ele vivia em cli/ e em image/, e duas copias do mesmo
 # programa divergem — de forma invisivel ate o agente se comportar diferente

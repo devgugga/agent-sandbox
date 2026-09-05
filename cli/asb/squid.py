@@ -20,6 +20,7 @@ NESTED_REGISTRIES = (
     "registry-1.docker.io",
     "auth.docker.io",
     "production.cloudflare.docker.com",
+    "production.cloudfront.docker.com",
     "quay.io",
     "cdn.quay.io",
     "ghcr.io",

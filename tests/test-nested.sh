@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# tests/test-nested.sh — runtime de containers DENTRO do sandbox.
+set -uo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT/tests/assert.sh"
+
+WS="test-nested-$$"
+REPO=$(mktemp -d)/proj
+mkdir -p "$REPO" && cd "$REPO"
+git init -q -b main . && git config user.email t@e.com && git config user.name T
+echo ok > README.md
+printf '[docker]\nmode = "nested"\n' > .agent-sandbox.toml
+git add -A && git commit -qm inicial
+cd "$ROOT"
+
+cleanup() { "$ROOT/cli/asb-agent" down --workspace "$WS" >/dev/null 2>&1; }
+trap cleanup EXIT
+
+AGENT="asb-${WS}-agent"
+"$ROOT/cli/asb-agent" up --workspace "$WS" --repo "$REPO" >/dev/null || {
+  echo "  ABORTADO: up falhou"; exit 1; }
+
+echo "== containers aninhados =="
+require "o agente responde" podman exec "$AGENT" true
+require "o podman aninhado responde" \
+  podman exec -u 1000 "$AGENT" bash -lc 'podman --version'
+
+assert_contains "true" \
+  "$(podman exec -u 1000 "$AGENT" bash -lc \
+     'podman info --format "{{.Host.Security.Rootless}}" 2>/dev/null | tail -1')" \
+  "o podman aninhado roda rootless"
+
+# O pull sai pelo Squid: sem os registries na allowlist a falha apareceria como
+# "o build nao funciona", sem apontar a causa.
+assert_contains "ANINHADO-OK" \
+  "$(podman exec -u 1000 "$AGENT" bash -lc \
+     'timeout 300 podman run --rm docker.io/library/alpine:latest echo ANINHADO-OK 2>&1 | tail -1')" \
+  "o agente puxa e roda uma imagem atraves do proxy"
+
+# A fronteira nao afrouxa por causa do modo aninhado.
+assert_fails "o agente continua sem egresso direto" \
+  podman exec "$AGENT" sh -c 'timeout 5 bash -c "exec 3<>/dev/tcp/1.1.1.1/443"'
+assert_eq "1" "$(podman exec "$AGENT" sh -c "test -e /var/run/docker.sock; echo \$?")" \
+  "o socket do Docker do host nao esta montado"
+
+report

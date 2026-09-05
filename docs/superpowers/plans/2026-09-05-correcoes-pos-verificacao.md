@@ -6,6 +6,23 @@
 
 ---
 
+## Estado (atualizado 2026-09-05, após a entrega do Gemini)
+
+| Tarefa | Estado |
+| :--- | :--- |
+| T1, T2, T3, T5, T6, T7 | **concluídas e verificadas empiricamente** (hexmed real: 5 diretórios do mise instalados, `pacs/server` responde `Python 3.8.20`; `test-toolcache.sh` 19/19; 103 testes unitários) |
+| T4.2 | **concluída** — `host_ports` reduzido a 80, 5432, 6379, 8080; 389 e 8843 confirmados fechados |
+| T4.1 | **[HUMANO] pendente** — é o elo que quebra a cadeia; T4.3 continua bloqueado por ela |
+| T4.3 | corretamente **não habilitado** |
+| **T8** | **concluída e verificada empiricamente** — `doctor` sonda egresso real (DNS e TCP) em cada workspace ativo com controles positivo e negativo; recuperação (`podman unshare --rootless-netns true`) documentada em `failure-modes.md` |
+| **T9** | **concluída** — pré-requisito `mvn package` do `Dockerfile.jvm` e fluxo híbrido documentados em `BlackICE/infra/README.md` |
+
+Sobre T1, o Gemini escolheu a **Opção A (preservar o workspace)**, que era a
+recomendada. Verificado: `up` sai 1, não emite o JSON da receita e mantém os
+containers no ar.
+
+---
+
 ## O que já está verificado e NÃO deve ser mexido
 
 | Item | Evidência |
@@ -277,3 +294,99 @@ Confirmar com o humano antes de apagar — pode haver algo em investigação.
 - Primeiro `up` emite `[WARN] migrate: failed create_dir_all:
   ~/.local/share/mise/migrations` — efeito do symlink do toolcache. Inofensivo,
   mas polui a saída; vale criar o diretório no `entrypoint.sh`.
+
+---
+
+## T8 — Perda de egresso do podman rootless passa despercebida
+
+**Incidente observado (2026-09-05).** Um `podman pull` dentro do sandbox travou:
+blobs pequenos concluíam, o de 107 MiB parava em 16 KiB e o pull reiniciava em
+laço. A causa **não** era a allowlist, nem MTU, nem política do Squid.
+
+O `pasta` — processo que dá uplink ao namespace de rede rootless compartilhado
+do podman — parou de servir tráfego. Cascata:
+
+```
+pasta para
+ └─ aardvark-dns: "dns request failed: io error: Network is unreachable (os error 101)"
+     └─ squid nao resolve:            NONE_NONE/500 ... HIER_NONE/-
+         └─ e nas conexoes ja abertas: NONE_NONE/503 apos 66s, 119s, 135s
+             └─ podman: blobs pequenos "done", o grande trava e reinicia
+```
+
+Diagnóstico de dentro do proxy, com a rota default **correta**:
+
+```
+default via 10.89.3.1 dev eth1     ← rota ok
+dig @10.89.2.1  → timed out
+dig @10.89.3.1  → no servers could be reached
+TCP 1.1.1.1:443 → Network is unreachable
+```
+
+**Linha do tempo.** Último túnel bem-sucedido 13:12:03 (blobs de 28 MB, 8 MB e
+4,5 MB passaram normalmente); `rootless-netns-a4542060.scope` termina 13:12:04;
+falhas de 13:13:12 a 13:14:30; um túnel às 13:27 levou **895 segundos**. O
+podman só percebeu às 13:36, quando um comando forçou a verificação.
+
+**Causa do desligamento do `pasta`: desconhecida.** Duas candidatas não
+discriminadas — contabilidade de lifecycle do podman perturbada por um `purge`
+15 min antes, ou evento de rede do host (a máquina roda Tailscale). O
+experimento que separa as duas (subir dois workspaces, derrubar um, observar o
+outro) **não deve ser executado enquanto houver workspace em uso**: o modo de
+falha dele é cortar a sessão ativa.
+
+### T8.1 — `doctor` precisa provar egresso, não inferir
+
+Hoje o `doctor` valida imagem, volumes, guardas e `podman-restart.service`.
+Nenhuma dessas checagens teria pego este incidente: **tudo continuava
+"presente" enquanto nada saía**.
+
+Acrescentar, para cada workspace em execução, uma asserção que **saia de dentro
+do proxy até um destino real** — resolução DNS mais conexão TCP, com timeout
+curto (5s) para não travar o `doctor`. O diagnóstico precisa distinguir três
+estados, porque hoje os três produzem o mesmo sintoma para o operador:
+
+1. egresso ok;
+2. **uplink rootless morto** (rota presente, `Network is unreachable`) → apontar
+   a recuperação do T8.2;
+3. domínio fora da allowlist (`TCP_DENIED`/`NONE_NONE` com rota viva) → apontar
+   o `[network] allow` do projeto.
+
+Controle positivo obrigatório no teste: com egresso saudável a asserção passa;
+o teste tem de falhar de verdade quando o egresso cai — não vale asserção que
+só verifica se o container existe.
+
+### T8.2 — documentar a recuperação
+
+Uma linha resolve, e sem ela o sintoma é indistinguível de "o sandbox
+bloqueou":
+
+```bash
+podman unshare --rootless-netns true
+```
+
+Os containers em execução **recuperam o egresso sem reiniciar** — verificado no
+incidente. Documentar em `docs/domains/sandbox/failure-modes.md` junto com a
+assinatura do problema (`Network is unreachable` vindo do aardvark-dns, blobs
+grandes travando, `NONE_NONE/503` no log do Squid).
+
+---
+
+## T9 — Documentação de build do BlackICE
+
+> Acrescentada por iniciativa própria a partir de um erro real de uso; se não
+> fizer sentido, corte.
+
+O `README` documenta o fluxo **aninhado** (`podman compose` dentro do sandbox).
+Mas há um segundo fluxo legítimo, de fato usado, que não está escrito em lugar
+nenhum: **build do Maven dentro do sandbox, `sudo docker compose` no host** —
+possível porque a worktree fica no mesmo caminho absoluto dos dois lados.
+
+Falta também o pré-requisito que quebra esse fluxo na prática: o
+`apps/backend/src/main/docker/Dockerfile.jvm` é o Dockerfile de **modo JVM** do
+Quarkus e não compila Java — ele só copia `target/quarkus-app/`, que é produzido
+por `mvn package`. Sem esse passo o `docker compose --build` falha com
+`"/target/quarkus-app/quarkus": not found`, e o erro não sugere a causa.
+
+Documentar a ordem: `mvn package` (dentro do sandbox, onde a toolchain já
+existe) → `docker compose up -d --build`.

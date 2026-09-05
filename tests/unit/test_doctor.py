@@ -154,6 +154,7 @@ class TestDoctor(unittest.TestCase):
             output,
         )
 
+    @mock.patch("asb.doctor.check_workspace_egress", return_value=(True, "ws-running: rodando (egresso ok)", ""))
     @mock.patch("asb.doctor.Path.home")
     @mock.patch("asb.doctor.podman.running")
     @mock.patch("asb.doctor.podman.exists")
@@ -161,7 +162,7 @@ class TestDoctor(unittest.TestCase):
     @mock.patch("asb.doctor.shutil.which", return_value="/usr/bin/mock")
     @mock.patch("asb.doctor.subprocess.run")
     def test_doctor_workspace_listing(
-        self, mock_run, mock_which, mock_out, mock_exists, mock_running, mock_home
+        self, mock_run, mock_which, mock_out, mock_exists, mock_running, mock_home, mock_egress
     ):
         mock_home.return_value = self.fake_home
         mock_run.return_value = mock.Mock(stdout="enabled\n")
@@ -193,6 +194,99 @@ class TestDoctor(unittest.TestCase):
         self.assertIn("ws-nocontainer: SEM CONTAINER  ->  asb-agent up", output)
         self.assertIn("ws-running: rodando", output)
         self.assertIn("ws-stopped: parado  ->  asb-agent resume --workspace ws-stopped", output)
+
+    @mock.patch("asb.doctor.check_workspace_egress")
+    @mock.patch("asb.doctor.Path.home")
+    @mock.patch("asb.doctor.podman.running", return_value=True)
+    @mock.patch("asb.doctor.podman.exists", return_value=True)
+    @mock.patch("asb.doctor.podman.out", return_value="podman version 5.0.0")
+    @mock.patch("asb.doctor.shutil.which", return_value="/usr/bin/mock")
+    @mock.patch("asb.doctor.subprocess.run")
+    def test_doctor_fails_when_workspace_egress_fails(
+        self, mock_run, mock_which, mock_out, mock_exists, mock_running, mock_home, mock_egress
+    ):
+        mock_home.return_value = self.fake_home
+        mock_run.return_value = mock.Mock(stdout="enabled\n")
+        state_dir = self.fake_home / ".local" / "state" / "agent-sandbox"
+        origin_file = state_dir / "broken-ws" / "origin"
+        origin_file.parent.mkdir(parents=True)
+        origin_file.write_text("/fake/origin")
+
+        mock_egress.return_value = (
+            False,
+            "broken-ws: uplink rootless morto (Network is unreachable)",
+            "podman unshare --rootless-netns true",
+        )
+
+        out = io.StringIO()
+        with mock.patch("sys.stdout", out):
+            code = doc_mod.doctor(self.fake_root)
+
+        self.assertEqual(code, 1)
+        output = out.getvalue()
+        self.assertIn(
+            "FALTA broken-ws: uplink rootless morto (Network is unreachable)  ->  podman unshare --rootless-netns true",
+            output,
+        )
+
+
+class TestCheckWorkspaceEgress(unittest.TestCase):
+    @mock.patch("asb.doctor.podman.running", return_value=False)
+    def test_proxy_stopped(self, mock_running):
+        ok, label, fix = doc_mod.check_workspace_egress("demo")
+        self.assertFalse(ok)
+        self.assertIn("demo: proxy parado", label)
+        self.assertIn("asb-agent resume --workspace demo", fix)
+
+    @mock.patch("asb.doctor.podman.running", return_value=True)
+    @mock.patch("asb.doctor.podman.require_binary", return_value="/usr/bin/podman")
+    @mock.patch("asb.doctor.subprocess.run")
+    def test_egress_ok(self, mock_run, mock_bin, mock_running):
+        mock_run.return_value = mock.Mock(returncode=0, stdout="OK\n")
+        ok, label, fix = doc_mod.check_workspace_egress("demo")
+        self.assertTrue(ok)
+        self.assertIn("demo: rodando (egresso ok)", label)
+        self.assertEqual(fix, "")
+
+    @mock.patch("asb.doctor.podman.running", return_value=True)
+    @mock.patch("asb.doctor.podman.require_binary", return_value="/usr/bin/podman")
+    @mock.patch("asb.doctor.subprocess.run")
+    def test_egress_uplink_unreachable(self, mock_run, mock_bin, mock_running):
+        mock_run.return_value = mock.Mock(returncode=2, stdout="UNREACHABLE\n")
+        ok, label, fix = doc_mod.check_workspace_egress("demo")
+        self.assertFalse(ok)
+        self.assertIn("demo: uplink rootless morto (Network is unreachable)", label)
+        self.assertEqual(fix, "podman unshare --rootless-netns true")
+
+    @mock.patch("asb.doctor.podman.running", return_value=True)
+    @mock.patch("asb.doctor.podman.require_binary", return_value="/usr/bin/podman")
+    @mock.patch("asb.doctor.subprocess.run")
+    def test_egress_domain_denied(self, mock_run, mock_bin, mock_running):
+        mock_run.return_value = mock.Mock(returncode=3, stdout="DENIED\n")
+        ok, label, fix = doc_mod.check_workspace_egress("demo")
+        self.assertFalse(ok)
+        self.assertIn("demo: dominio github.com bloqueado pelo Squid (TCP_DENIED)", label)
+        self.assertIn("[network] allow", fix)
+
+    @mock.patch("asb.doctor.podman.running", return_value=True)
+    @mock.patch("asb.doctor.podman.require_binary", return_value="/usr/bin/podman")
+    @mock.patch("asb.doctor.subprocess.run")
+    def test_egress_squid_down(self, mock_run, mock_bin, mock_running):
+        mock_run.return_value = mock.Mock(returncode=4, stdout="SQUID_DOWN\n")
+        ok, label, fix = doc_mod.check_workspace_egress("demo")
+        self.assertFalse(ok)
+        self.assertIn("demo: proxy Squid nao responde na porta 3128", label)
+        self.assertIn("asb-agent resume --workspace demo", fix)
+
+    @mock.patch("asb.doctor.podman.running", return_value=True)
+    @mock.patch("asb.doctor.podman.require_binary", return_value="/usr/bin/podman")
+    @mock.patch("asb.doctor.subprocess.run", side_effect=doc_mod.subprocess.TimeoutExpired(cmd="mock", timeout=5))
+    def test_egress_timeout(self, mock_run, mock_bin, mock_running):
+        ok, label, fix = doc_mod.check_workspace_egress("demo")
+        self.assertFalse(ok)
+        self.assertIn("demo: uplink rootless morto (timeout na sonda de egresso)", label)
+        self.assertEqual(fix, "podman unshare --rootless-netns true")
+
 
 
 class TestPull(unittest.TestCase):

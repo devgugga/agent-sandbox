@@ -139,3 +139,15 @@ Each entry records a real failure mode formatted as **Symptom**, **Cause**, and 
 - **Symptom**: `asb-agent up` exits with a non-zero exit code (1), outputs `erro: falha na instalacao de ferramentas mise em: <dir>`, prints the underlying `mise` stderr diagnostics, and suppresses the Orca recipe JSON output. The workspace containers remain running.
 - **Cause**: A runtime declared in `mise.toml` requires binary assets, source code, or cryptographic attestations from an external domain not present in the proxy allowlist (`allowlist-base.txt` or project `.agent-sandbox.toml`).
 - **Fix**: Check the `stderr` output printed by `asb-agent up` to identify the blocked domain. Add the domain to `[network] allow = [...]` in the project's `.agent-sandbox.toml`. Because the workspace containers and networks are preserved on `mise install` failure, the operator can immediately re-run `asb-agent up` to retry without paying the cost of re-provisioning the workspace.
+
+---
+
+## 18. Silent Rootless Podman Network Uplink Failure (`pasta` Failure)
+
+- **Symptom**: Outbound network connections from within the sandbox freeze or fail across all containers while local bridges remain intact. In `podman pull`, small image layers complete while large blobs stall indefinitely (e.g. at 16 KiB) and restart in a loop. In Squid access logs (`/var/log/squid/access.log`), requests fail with `NONE_NONE/500` or `NONE_NONE/503` after long timeouts (60s+). Direct socket probes inside the proxy container show routing tables intact (`default via 10.89.x.1 dev eth1`), but all outbound TCP/DNS requests fail with `Network is unreachable (os error 101)`.
+- **Cause**: The rootless Podman user-namespace network uplink helper (`pasta`) silently stops forwarding external traffic or its user session scope terminates. Because the container-side interfaces and bridges remain up, Podman does not detect the broken uplink on its own.
+- **Fix**: Reconnect the rootless network namespace uplink on the host with:
+  ```bash
+  podman unshare --rootless-netns true
+  ```
+  Running this single command instantly restarts the `pasta` network namespace uplink in place. Running workspace containers immediately recover egress connectivity and resume downloads without needing to be restarted or recreated. Active workspaces can be validated at any time using `asb-agent doctor`.

@@ -26,4 +26,43 @@ echo "-- purge exige confirmacao --"
 assert_fails "purge sem --yes e recusado" \
   "$ROOT/cli/asb-agent" purge --workspace inexistente
 
+echo "-- sonda de egresso de workspace (controle positivo e negativo) --"
+tmp=$(mktemp -d)
+repo="$tmp/repo"
+mkdir -p "$repo"
+git -C "$repo" init -q -b main
+git -C "$repo" config user.email t@e.com
+git -C "$repo" config user.name T
+echo ok > "$repo/README.md"
+touch "$repo/.agent-sandbox.toml"
+git -C "$repo" add -A && git -C "$repo" commit -qm inicial
+
+WS_DOC="test-doctor-probe-$$"
+cleanup() {
+  "$ROOT/cli/asb-agent" down --workspace "$WS_DOC" >/dev/null 2>&1 || true
+  rm -rf "$tmp"
+}
+trap cleanup EXIT
+
+require "workspace de teste sobe para teste de egresso do doctor" \
+  "$ROOT/cli/asb-agent" up --workspace "$WS_DOC" --repo "$repo"
+
+# 1. Controle positivo: egresso saudavel passa e doctor sai 0
+DOC_POS=$("$ROOT/cli/asb-agent" doctor 2>&1); RC_POS=$?
+assert_eq "0" "$RC_POS" "doctor sai 0 com workspace e egresso saudaveis"
+assert_contains "$WS_DOC: rodando (egresso ok)" "$DOC_POS" \
+  "controle positivo: sonda de egresso confirma conectividade de ponta a ponta"
+
+# 2. Controle negativo: desconectar rede externa simula perda de uplink rootless (falha do pasta)
+podman network disconnect "asb-${WS_DOC}-out" "asb-${WS_DOC}-proxy"
+
+DOC_NEG=$("$ROOT/cli/asb-agent" doctor 2>&1); RC_NEG=$?
+assert_eq "1" "$RC_NEG" "doctor falha com codigo 1 quando o egresso cai"
+assert_contains "FALTA $WS_DOC: uplink rootless morto (Network is unreachable)" "$DOC_NEG" \
+  "controle negativo: diagnostico identifica queda de uplink rootless"
+assert_contains "podman unshare --rootless-netns true" "$DOC_NEG" \
+  "controle negativo: diagnostico instrui comando exato de recuperacao do uplink"
+
+"$ROOT/cli/asb-agent" down --workspace "$WS_DOC" >/dev/null 2>&1 || true
+
 report

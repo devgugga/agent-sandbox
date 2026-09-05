@@ -307,12 +307,12 @@ def _up(root: Path, ws: str, repo: Path) -> int:
     install.podman_restart()
 
     mise_dirs = []
-    if (layout.mount / "mise.toml").exists():
-        mise_dirs.append(layout.mount)
+    if (layout.project_root / "mise.toml").exists():
+        mise_dirs.append(layout.project_root)
     else:
-        for p in layout.mount.glob("*/mise.toml"):
+        for p in layout.project_root.glob("*/mise.toml"):
             mise_dirs.append(p.parent)
-        for p in layout.mount.glob("*/*/mise.toml"):
+        for p in layout.project_root.glob("*/*/mise.toml"):
             mise_dirs.append(p.parent)
 
     for d in mise_dirs:

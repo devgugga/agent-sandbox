@@ -18,7 +18,8 @@ registry.npmjs.org
 # O mise e o caminho declarado para ferramentas de projeto (spec §8); ele
 # resolve versoes e baixa binarios daqui. Sem este dominio, um projeto com
 # mise.toml falha no arranque do workspace.
-mise.jdx.dev
+.jdx.dev
+.sigstore.dev
 
 # O Orca instala o relay dele DENTRO do container (~/.orca-remote) e o
 # node-pty compila via node-gyp, que busca os headers do Node aqui. Sem este

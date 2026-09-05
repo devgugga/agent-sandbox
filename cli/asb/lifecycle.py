@@ -4,6 +4,7 @@ from __future__ import annotations
 import getpass
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -11,6 +12,7 @@ from pathlib import Path
 from . import podman
 from .profile import Profile, load_profile
 from .squid import render
+from .staging import build_staging
 from .workspace import Layout, layout_for, prepare_clone, remove_state
 
 IMAGE = "agent-sandbox:latest"
@@ -134,6 +136,11 @@ def _up(root: Path, ws: str, repo: Path) -> int:
         "-v", f"{conf}:/etc/squid/squid.conf:ro,Z",
         PROXY_IMAGE, "squid", "-N", "-f", "/etc/squid/squid.conf")
 
+    stage = layout.state / "staging"
+    shutil.rmtree(stage, ignore_errors=True)
+    staged = build_staging(root / "profiles" / "provision.toml", stage, home)
+    print(f"configuracao: {staged} entrada(s)", file=sys.stderr)
+
     key = ensure_ssh_key()
     agent_args = [
         "run", "-d", "--name", n["agent"], "--restart", "unless-stopped",
@@ -148,6 +155,7 @@ def _up(root: Path, ws: str, repo: Path) -> int:
         "-e", f"HTTP_PROXY=http://{n['proxy']}:{PROXY_PORT}",
         "-e", "NO_PROXY=127.0.0.1,localhost",
         "-v", f"{layout.mount}:{layout.mount}:Z",
+        "-v", f"{stage}:/run/asb-config:ro,Z",
         IMAGE,
     ]
     podman.run(*agent_args)

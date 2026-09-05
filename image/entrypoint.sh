@@ -51,6 +51,21 @@ fi
 
 [ -f /etc/ssh/ssh_host_ed25519_key ] || ssh-keygen -A
 
+# Configuracao do host: chega como mount READ-ONLY e e copiada para o home. Nao
+# se monta direto sobre ~/.claude/settings.json porque os agentes escrevem
+# nesses arquivos durante a sessao. Como a ORIGEM e um mount que o agente nao
+# escreve, nao ha janela de TOCTOU — e por isso sumiram o instalador root, o
+# token por partida e o portao do sshd que o v1 precisava.
+if [ -f /run/asb-config/manifest.tsv ]; then
+  while IFS=$'\t' read -r src dst; do
+    [ -n "$src" ] || continue
+    install -d -o "$ASB_USER" -g "$ASB_USER" "$(dirname "$dst")"
+    rm -rf "$dst"
+    cp -a "/run/asb-config/$src" "$dst"
+    chown -R "$ASB_USER:$ASB_USER" "$dst"
+  done < /run/asb-config/manifest.tsv
+fi
+
 if [ "$#" -gt 0 ]; then
   exec "$@"
 fi

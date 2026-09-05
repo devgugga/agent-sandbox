@@ -8,64 +8,64 @@
 
 [[entry]]
 src = "~/.claude/settings.json"
-dst = "/home/agent/.claude/settings.json"
+dst = "~/.claude/settings.json"
 # hooks e statusLine apontam para caminhos do host que nao existem no
 # container; sem o filtro o agente erra a cada sessao.
 filter = "claude-settings"
 
 [[entry]]
 src = "~/.claude/plugins"
-dst = "/home/agent/.claude/plugins"
+dst = "~/.claude/plugins"
 
 [[entry]]
 src = "~/.claude/skills"
-dst = "/home/agent/.claude/skills"
+dst = "~/.claude/skills"
 
 [[entry]]
 src = "~/.codex/config.toml"
-dst = "/home/agent/.codex/config.toml"
+dst = "~/.codex/config.toml"
+filter = "codex-config"
 
 [[entry]]
 src = "~/.codex/hooks.json"
-dst = "/home/agent/.codex/hooks.json"
+dst = "~/.codex/hooks.json"
 
 # O Codex tem sistema de plugins e skills PROPRIO, separado do Claude.
 [[entry]]
 src = "~/.codex/plugins"
-dst = "/home/agent/.codex/plugins"
+dst = "~/.codex/plugins"
 
 [[entry]]
 src = "~/.codex/skills"
-dst = "/home/agent/.codex/skills"
+dst = "~/.codex/skills"
 
 [[entry]]
 src = "~/.gemini/antigravity-cli/settings.json"
-dst = "/home/agent/.gemini/antigravity-cli/settings.json"
+dst = "~/.gemini/antigravity-cli/settings.json"
 
 # O Antigravity guarda plugins, skills, hooks e MCPs separadamente das
 # preferencias do CLI. Tudo continua numa allowlist explicita: projetos,
 # sessoes e credenciais nunca sao copiados por arrasto.
 [[entry]]
 src = "~/.gemini/config/config.json"
-dst = "/home/agent/.gemini/config/config.json"
+dst = "~/.gemini/config/config.json"
 
 [[entry]]
 src = "~/.gemini/config/hooks.json"
-dst = "/home/agent/.gemini/config/hooks.json"
-filter = "antigravity-hooks"
+dst = "~/.gemini/config/hooks.json"
 
 [[entry]]
 src = "~/.gemini/config/mcp_config.json"
-dst = "/home/agent/.gemini/config/mcp_config.json"
+dst = "~/.gemini/config/mcp_config.json"
 
 [[entry]]
 src = "~/.gemini/config/import_manifest.json"
-dst = "/home/agent/.gemini/config/import_manifest.json"
+dst = "~/.gemini/config/import_manifest.json"
 
 [[entry]]
 src = "~/.gemini/config/plugins"
-dst = "/home/agent/.gemini/config/plugins"
+dst = "~/.gemini/config/plugins"
 
 [[entry]]
 src = "~/.gemini/config/skills"
-dst = "/home/agent/.gemini/config/skills"
+dst = "~/.gemini/config/skills"

@@ -22,10 +22,12 @@ assert_eq "1000" "$(in_image sh -c 'id -u')" "uid do usuario e 1000"
 assert_eq "$HOST_HOME" "$(in_image sh -c 'echo $HOME')" \
   "o home do container e identico ao do host"
 
-for bin in claude codex agy gh git rg jq socat ssh-keygen; do
+for bin in claude codex agy gh git rg jq socat ssh-keygen podman-compose; do
   assert_eq "0" "$(in_image sh -lc "command -v $bin >/dev/null; echo \$?")" \
     "$bin esta no PATH de um shell de login"
 done
+assert_eq "0" "$(in_image bash -lc "podman compose version >/dev/null 2>&1; echo \$?")" \
+  "podman compose funciona via wrapper nativo"
 
 # O sandbox E a fronteira; sudo dentro dele so serviria para escapar dela.
 assert_eq "1" "$(in_image bash -c 'command -v sudo >/dev/null; echo $?')" \

@@ -47,6 +47,33 @@ assert_contains "NET-OK" "$RESOLV_OUT" \
 
 podman exec -u 1000 "$AGENT" bash -lc 'podman rm -f svc >/dev/null; podman network rm appnet >/dev/null'
 
+# Execucao real de podman compose (BlackICE compose.yml com multiplos servicos)
+podman exec -u 1000 "$AGENT" bash -lc '
+mkdir -p /tmp/compose-test && cd /tmp/compose-test
+cat > compose.yml << "EOF"
+version: "3"
+services:
+  srv:
+    image: docker.io/library/alpine:latest
+    command: ["sh", "-c", "while true; do echo COMPOSE-OK | nc -l -p 8080; done"]
+  cli:
+    image: docker.io/library/alpine:latest
+    command: ["sh", "-c", "sleep 60"]
+EOF
+podman compose up -d >/dev/null 2>&1
+'
+
+COMPOSE_OUT=$(podman exec -u 1000 "$AGENT" bash -lc '
+timeout 15 podman exec compose-test_cli_1 nc srv 8080 2>&1 || true
+')
+assert_contains "COMPOSE-OK" "$COMPOSE_OUT" \
+  "podman compose sobe stack multiservico com resolucao por nome funcional"
+
+podman exec -u 1000 "$AGENT" bash -lc '
+cd /tmp/compose-test && podman compose down >/dev/null 2>&1
+rm -rf /tmp/compose-test
+'
+
 # A fronteira nao afrouxa por causa do modo aninhado.
 assert_fails "o agente continua sem egresso direto" \
   podman exec "$AGENT" sh -c 'timeout 5 bash -c "exec 3<>/dev/tcp/1.1.1.1/443"'

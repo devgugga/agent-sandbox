@@ -72,7 +72,7 @@ RUN printf 'agent-sandbox\n' > /etc/agent-sandbox-release
 # abaixo nao sao opcionais: sem elas o podman aninhado falha com
 # "newuidmap: write to uid_map failed: Operation not permitted" — medido.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      podman fuse-overlayfs uidmap passt slirp4netns netavark aardvark-dns iptables libcap2-bin \
+      podman podman-compose fuse-overlayfs uidmap passt slirp4netns netavark aardvark-dns iptables libcap2-bin \
     && rm -rf /var/lib/apt/lists/*
 
 # 1) subuid/subgid para o usuario: dentro do namespace de keep-id do host
@@ -115,6 +115,21 @@ RUN printf '%s\n' \
 RUN printf '%s\n' \
       'unqualified-search-registries = ["docker.io"]' \
       > /etc/containers/registries.conf
+
+# 5) runner de compose (suporte a BlackICE e compose.yml):
+#    O podman 4.3 do Debian nao tem o subcomando `compose` embutido (veio no 4.7+).
+#    O wrapper em /usr/local/bin intercepta `podman compose` e repassa para o
+#    podman-compose nativo do Bookworm, mantendo compatibilidade total.
+RUN printf '%s\n' \
+      '#!/usr/bin/env bash' \
+      'if [ "${1:-}" = "compose" ]; then' \
+      '    shift' \
+      '    exec /usr/bin/podman-compose "$@"' \
+      'fi' \
+      'exec /usr/bin/podman "$@"' \
+      > /usr/local/bin/podman \
+    && chmod 0755 /usr/local/bin/podman \
+    && ln -sf /usr/bin/podman-compose /usr/local/bin/docker-compose
 
 # Contexto de build e a RAIZ do repositorio, para que exista uma unica copia
 # do guarda. No v1 ele vivia em cli/ e em image/, e duas copias do mesmo

@@ -5,6 +5,7 @@ import getpass
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 from . import podman
@@ -150,6 +151,9 @@ def _up(root: Path, ws: str, repo: Path) -> int:
         IMAGE,
     ]
     podman.run(*agent_args)
+    # Idempotente e barato; chamar aqui evita que o operador precise lembrar.
+    from . import install
+    install.podman_restart()
     return emit(ws, layout)
 
 
@@ -191,12 +195,39 @@ def _origin_of(ws: str, home: Path) -> Path | None:
     return Path(marker.read_text().strip()) if marker.is_file() else None
 
 
-def suspend(workspace: str) -> int:
-    raise NotImplementedError("suspend nao implementado ainda")
+def _require_workspace(ws: str) -> tuple[dict[str, str], Path, Path]:
+    n = names(ws)
+    if not podman.exists("container", n["agent"]):
+        raise podman.PodmanError(f"workspace inexistente: {ws} (use 'up')")
+    home = Path(os.path.expanduser("~"))
+    origin = _origin_of(ws, home)
+    if origin is None:
+        raise podman.PodmanError(
+            f"estado ausente para {ws}; recrie o workspace com 'up'")
+    return n, home, origin
 
 
-def resume(root: Path, workspace: str) -> int:
-    raise NotImplementedError("resume nao implementado ainda")
+def suspend(ws: str) -> int:
+    n, _, _ = _require_workspace(ws)
+    for container in (n["agent"], n["proxy"]):
+        if podman.exists("container", container):
+            podman.run("stop", "-t", "5", container, check=False)
+    return 0
+
+
+def resume(root: Path, ws: str) -> int:
+    """Religa o workspace.
+
+    E `podman start`, e so. Nao ha ordem a respeitar: a rede interna nao pode
+    "nao ter subido", entao o agente nunca ganha egresso indevido por partir
+    primeiro. O proxy sobe antes por educacao — para o agente nao passar alguns
+    segundos sem saida — nao por seguranca.
+    """
+    n, home, origin = _require_workspace(ws)
+    for container in (n["proxy"], n["agent"]):
+        if podman.exists("container", container):
+            podman.run("start", container, check=False)
+    return emit(ws, layout_for(origin, ws, home))
 
 
 def pull(workspace: str) -> int:
@@ -212,4 +243,18 @@ def login(root: Path) -> int:
 
 
 def list_workspaces() -> int:
-    raise NotImplementedError("list nao implementado ainda")
+    home = Path(os.path.expanduser("~"))
+    root = home / ".local" / "state" / "agent-sandbox"
+    found = False
+    for state in sorted(root.glob("*/origin")) if root.is_dir() else []:
+        ws = state.parent.name
+        agent = names(ws)["agent"]
+        if not podman.exists("container", agent):
+            status = "sem container"
+        else:
+            status = "rodando" if podman.running(agent) else "parado"
+        print(f"{ws}\t{status}\t{state.read_text().strip()}")
+        found = True
+    if not found:
+        print("nenhum workspace", file=sys.stderr)
+    return 0

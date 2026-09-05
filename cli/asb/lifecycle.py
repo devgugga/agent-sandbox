@@ -454,6 +454,36 @@ def resume(root: Path, ws: str) -> int:
     return emit(ws, layout_for(origin, ws, home))
 
 
+def reload_allowlist(root: Path, ws: str) -> int:
+    """Recarrega a allowlist do proxy sem tocar no container do agente.
+
+    Preserva a porta SSH publicada (evita desconexao de sessoes do Orca).
+    Regenera squid.conf a partir do .agent-sandbox.toml e reinicia o proxy.
+    """
+    n, home, origin = _require_workspace(ws)
+    layout = layout_for(origin, ws, home)
+    config_repo = origin
+    if (layout.project_root / ".agent-sandbox.toml").exists():
+        if not (origin / ".agent-sandbox.toml").exists():
+            config_repo = layout.project_root
+        else:
+            mtime_orig = (origin / ".agent-sandbox.toml").stat().st_mtime
+            mtime_clone = (layout.project_root / ".agent-sandbox.toml").stat().st_mtime
+            if mtime_clone > mtime_orig:
+                config_repo = layout.project_root
+
+    profile = load_profile(config_repo)
+    conf = layout.state / "squid.conf"
+    conf.write_text(render(profile,
+                           root / "image" / "squid" / "allowlist-base.txt",
+                           root / "image" / "squid" / "squid.conf.tmpl"))
+    conf.chmod(0o644)
+    if podman.exists("container", n["proxy"]):
+        podman.run("restart", n["proxy"])
+    print(f"allowlist recarregada para {ws} (proxy reiniciado, agente preservado)")
+    return 0
+
+
 def pull(ws: str) -> int:
     """Traz o trabalho do workspace para o checkout primario, SEM merge.
 
@@ -548,11 +578,17 @@ def login(root: Path) -> int:
                 # "unexpected argument".
                 ("Antigravity", "agy")):
             print(f"--- {label} ---", file=sys.stderr)
+            if label == "Claude Code":
+                print("Aviso: se o Claude Code solicitar 'Quick safety check', use a seta\n"
+                      "para baixo e selecione 'Yes, I trust this folder' (o padrao 'No, exit' aborta o login).\n",
+                      file=sys.stderr)
             # `bash -lc` nao e decoracao: sem shell de login o agy nao esta no
             # PATH e DBUS_SESSION_BUS_ADDRESS esta ausente, que e exatamente
             # como a credencial acaba em texto claro em vez do keyring.
+            # -w garante execucao no HOME do usuario em vez da raiz /.
             subprocess.run([podman.require_binary(), "exec", "-it",
-                            "-u", "1000", name, "bash", "-lc", command])
+                            "-u", "1000", "-w", str(Path.home()), name,
+                            "bash", "-lc", command])
 
         # Verificar por CODIGO DE SAIDA, nunca por grep de "logged in": essa
         # string casa tambem com "not logged in".

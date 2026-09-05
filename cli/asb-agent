@@ -39,6 +39,7 @@ def build_parser() -> argparse.ArgumentParser:
     workspace_command("down", "remove containers e rede; preserva o trabalho")
     workspace_command("suspend", "para os containers do workspace")
     workspace_command("resume", "religa os containers do workspace")
+    workspace_command("reload-allowlist", "recarrega a allowlist do proxy sem tocar no agente")
     workspace_command("pull", "traz o branch do workspace para o checkout")
 
     purge = workspace_command("purge", "remove tambem os arquivos do workspace")
@@ -67,6 +68,8 @@ def main() -> int:
             return lifecycle.suspend(args.workspace)
         if args.command == "resume":
             return lifecycle.resume(ROOT, args.workspace)
+        if args.command == "reload-allowlist":
+            return lifecycle.reload_allowlist(ROOT, args.workspace)
         if args.command == "pull":
             return lifecycle.pull(args.workspace)
         if args.command == "purge":

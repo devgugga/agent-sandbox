@@ -43,7 +43,7 @@ The CLI entrypoint is `cli/asb-agent` (symlinked as `asb`):
 | Comando | O que faz |
 | :--- | :--- |
 | `build` | constroi a imagem base espelhando seu usuario |
-| `login` | autentica os tres agentes; **uma vez por maquina** |
+| `login` | autentica os tres agentes (bootstrap inicial da maquina) |
 | `up` | cria rede, clone e containers; imprime a conexao |
 | `resume` | religa (`podman start`); depois de reboot e automatico |
 | `pull` | traz o branch do workspace para o checkout primario |
@@ -51,9 +51,14 @@ The CLI entrypoint is `cli/asb-agent` (symlinked as `asb`):
 | `purge` | remove tambem os arquivos; exige `--yes` |
 | `doctor` | diz o que falta e o comando exato para corrigir |
 
+> [!TIP]
+> **Autenticação de Agentes (Via Recomendada no Dia a Dia)**:
+> O entrypoint do sandbox conecta `~/.claude/.credentials.json`, `~/.codex/auth.json` e `~/.local/share/keyrings` diretamente ao volume compartilhado `asb-credentials` via symlinks. Por isso, a via mais prática e recomendada é **autenticar diretamente de dentro de qualquer workspace ativo** (via terminal SSH ou sessão interativa). Qualquer credencial gravada dentro do container persiste imediatamente no volume e passa a valer para todos os workspaces. O comando `asb-agent login` serve primariamente para o bootstrap inicial da máquina antes de criar o primeiro workspace.
+
 Additional utility commands:
 - `asb-agent list`: lists active and stopped workspaces and their backing repositories.
 - `asb-agent suspend --workspace <id>`: puts workspace containers to sleep (`podman stop`).
+- `asb-agent reload-allowlist --workspace <id>`: re-renders `squid.conf` from `.agent-sandbox.toml` and restarts the proxy container without touching the agent container or changing its published SSH port.
 - `asb-agent install-guards`: installs the host command wrappers (`asb-claude`, `asb-codex`, `asb-agy`) **and `asb-agent` itself** into `~/.local/bin`, so the CLI runs from any directory instead of only from the checkout. All four are symlinks, never copies: a copy ages silently and starts behaving differently from what this repository says. `asb-agent doctor` verifies each one still points at this checkout — moving the checkout breaks them, and the failure is otherwise silent.
 - `asb-agent install-broker`: configures and starts the filtered Docker read-only broker (requires `sudo`).
 

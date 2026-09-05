@@ -170,6 +170,13 @@ class TestLifecycleHostApi(unittest.TestCase):
         def fake_exists(kind, name):
             return kind == "image"
 
+        orig_exists = Path.exists
+
+        def fake_path_exists(p):
+            if str(p) == "/run/asb-docker/docker.sock":
+                return False
+            return orig_exists(p)
+
         with mock.patch("asb.lifecycle.load_profile", return_value=fake_profile), \
              mock.patch("asb.podman.exists", side_effect=fake_exists), \
              mock.patch("asb.podman.run"), \
@@ -177,9 +184,11 @@ class TestLifecycleHostApi(unittest.TestCase):
              mock.patch("asb.lifecycle.prepare_clone"), \
              mock.patch("asb.lifecycle.layout_for") as mock_layout, \
              mock.patch("pathlib.Path.write_text"), \
-             mock.patch("pathlib.Path.chmod"):
+             mock.patch("pathlib.Path.chmod"), \
+             mock.patch.object(Path, "exists", fake_path_exists):
             mock_layout.return_value.state = Path("/tmp/dummy-asb-state")
             mock_layout.return_value.mount = Path("/tmp/dummy-asb-mount")
+            mock_layout.return_value.project_root = Path("/tmp/dummy-asb-mount")
             with self.assertRaises(podman.PodmanError) as ctx:
                 lifecycle._up(root, "ws-test", root)
             self.assertIn('host_api = "read" pede o broker', str(ctx.exception))

@@ -17,10 +17,10 @@
 | **T8** | **concluída e verificada empiricamente** — `doctor` sonda egresso real (DNS e TCP) em cada workspace ativo com controles positivo e negativo; recuperação (`podman unshare --rootless-netns true`) documentada em `failure-modes.md` |
 | **T9** | **concluída** — pré-requisito `mvn package` do `Dockerfile.jvm` e fluxo híbrido documentados em `BlackICE/infra/README.md` |
 | **T10** | **T10.1 [HUMANO] pendente** (exercitar reboot real com workspace ativo); **T10.2 concluída** (implicações de `Linger=no` documentadas em `failure-modes.md` e `README.md`) |
-| **T11** | **nova** — `test_broker` depende do estado ambiente da máquina |
-| **T12** | **nova** — `asb-agent login` tem armadilha de UX no passo do Claude |
-| **T13** | **nova** — não há como recarregar a allowlist sem recriar o workspace |
-| **T14** | **nova** — inventário de domínios negados aguardando decisão |
+| **T11** | **concluída e verificada empiricamente** — `test_broker.py` hermético com mock de `/run/asb-docker/docker.sock` e `project_root` como `Path` real; 16/16 testes passam independente de broker no host |
+| **T12** | **concluída** — `asb-agent login` executa no `$HOME` (`-w`) com aviso prévio de safety check do Claude; login intra-workspace documentado como via recomendada em `README.md` |
+| **T13** | **concluída e verificada empiricamente** — `asb-agent reload-allowlist --workspace <ws>` implementado, recarrega squid e reinicia proxy sem tocar no agente nem mudar porta SSH (7/7 no `test-reload-allowlist.sh`) |
+| **T14** | **investigada e pronta para decisão** — causa raiz das 777 tentativas ao `dcm4che.org` identificada no `apps/backend/pom.xml` (repositório Maven Maven2); inventário pronto para decisão humana |
 
 Sobre T1, o Gemini escolheu a **Opção A (preservar o workspace)**, que era a
 recomendada. Verificado: `up` sai 1, não emite o JSON da receita e mantém os
@@ -516,6 +516,10 @@ fica um `MagicMock`, e `discover_mise_dirs` o devolve como se fosse diretório.
 instalado **e** sem ele. O broker está instalado nesta máquina agora, então dá
 para exercitar os dois casos de verdade.
 
+**Conclusão e Evidência:**
+- Em `tests/unit/test_broker.py`, `Path.exists` foi mockado para interceptar `/run/asb-docker/docker.sock` e `mock_layout.return_value.project_root` foi configurado como `Path("/tmp/dummy-asb-mount")`.
+- 16/16 testes em `test_broker.py` passam de forma 100% hermética.
+
 ---
 
 ## T12 — `asb-agent login`: armadilha de UX no passo do Claude
@@ -550,6 +554,10 @@ de `~/.claude/.credentials.json` e `~/.local/share/keyrings` para o volume
 todos os workspaces. Documentar isso em `docs/domains/sandbox/README.md` como a
 via recomendada, deixando o `asb-agent login` para o primeiro uso da máquina.
 
+**Conclusão e Evidência:**
+- Em `cli/asb/lifecycle.py`: adicionado `-w str(Path.home())` ao `podman exec` e alerta em `stderr` instruindo a escolher *"Yes, I trust this folder"* no safety check.
+- Em `docs/domains/sandbox/README.md`: documentada a via recomendada de autenticação diretamente de dentro de qualquer workspace ativo, pois o volume `asb-credentials` já persiste as credenciais globalmente.
+
 ---
 
 ## T13 — Não há como recarregar a allowlist sem recriar o workspace
@@ -574,6 +582,12 @@ mudança de uma linha.
 permitido — **e que a porta SSH não mudou**. Essa última asserção é o ponto
 inteiro do comando.
 
+**Conclusão e Evidência:**
+- Adicionado subcomando `asb-agent reload-allowlist --workspace <ws>` em `cli/asb-agent` e `cli/asb/lifecycle.py:reload_allowlist`.
+- Regenera `squid.conf` a partir de `.agent-sandbox.toml` (do repo de origem ou clone do workspace com mtime mais recente) e reinicia `asb-<ws>-proxy` sem tocar no container do agente nem alterar a porta SSH publicada.
+- Teste de integração `tests/test-reload-allowlist.sh` criado e verificado: 7/7 asserções passando (403 antes, reload sai 0, 200 depois, porta SSH inalterada, edição no clone validada).
+- Teste unitário adicionado em `tests/unit/test_lifecycle.py` (`TestReloadAllowlist`).
+
 ---
 
 ## T14 — Inventário de domínios negados aguardando decisão
@@ -583,7 +597,7 @@ humano decidir**; a lista existe para a decisão ser informada.
 
 | Domínio | Tentativas | O que quebra hoje |
 | :--- | ---: | :--- |
-| `www.dcm4che.org` | 777 | algo no BlackICE tenta muito buscar a doc oficial do DICOM |
+| `www.dcm4che.org` | 777 | Maven no Quarkus backend (`apps/backend/pom.xml`) |
 | `registry.access.redhat.com` | 2 | imagem base do backend (`ubi9/openjdk-21-runtime`); build aninhado falha |
 | `dl-cdn.alpinelinux.org` | 2 | `apk` dentro de builds aninhados |
 | `cdn.playwright.dev` + 3 `*.azureedge.net` | 8 | download de browser do Playwright |
@@ -591,17 +605,20 @@ humano decidir**; a lista existe para a decisão ser informada.
 | `repo.gradle.org` | 2 | Gradle |
 | `dl.google.com`, `*.gvt1.com`, `clients2.google.com` | ~80 | auto-updater do Antigravity |
 
-**Recomendações:**
+**Recomendações e Achados da Investigação:**
 
-- `registry.access.redhat.com` provavelmente pertence a `NESTED_REGISTRIES` em
-  `cli/asb/squid.py`, ao lado de docker.io, quay.io e ghcr.io: é registry de
-  container e só faz sentido com `mode = "nested"`.
-- `dl-cdn.alpinelinux.org`, Playwright, `pypi.org` e Gradle são específicos de
-  projeto e pertencem ao `[network] allow` do BlackICE.
-- **Manter o auto-updater do Google bloqueado.** A versão do `agy` é fixada na
-  imagem; permitir auto-update dentro do sandbox contorna esse controle e faz a
-  ferramenta mudar sob os pés do operador.
-- As 777 tentativas ao `dcm4che.org` merecem investigação **antes** de qualquer
-  liberação: descobrir o que está buscando. O subagente `dicom-domain-reviewer`
-  é read-only (`tools: Read, Grep, Glob`) e não faz rede, então a origem é
-  outra.
+- **Origem das 777 tentativas ao `dcm4che.org` identificada:** No arquivo `apps/backend/pom.xml` (linhas 22-28), o projeto BlackICE declara explicitamente:
+  ```xml
+  <repositories>
+      <repository>
+          <id>dcm4che</id>
+          <url>https://www.dcm4che.org/maven2</url>
+      </repository>
+  </repositories>
+  ```
+  Cada resolução de dependência ou build do Maven (`mvn package` / `mvn compile`) consulta esse repositório remoto para cada artefato não encontrado no cache local, gerando centenas de conexões HTTPS bloqueadas pelo Squid.
+- `registry.access.redhat.com` pertence a `NESTED_REGISTRIES` em `cli/asb/squid.py`, ao lado de docker.io, quay.io e ghcr.io: é registry de container e só faz sentido com `mode = "nested"`.
+- `dl-cdn.alpinelinux.org`, Playwright, `pypi.org` e Gradle são específicos de projeto e pertencem ao `[network] allow` do BlackICE.
+- **Manter o auto-updater do Google bloqueado.** A versão do `agy` é fixada na imagem; permitir auto-update dentro do sandbox contorna esse controle e faz a ferramenta mudar sob os pés do operador.
+- Decisão sobre inclusão de `www.dcm4che.org` e demais domínios aguarda deliberação do operador humano.
+

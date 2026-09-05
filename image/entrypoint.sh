@@ -87,6 +87,19 @@ if [ -d /run/asb-credentials ]; then
   chown -R "$ASB_USER:$ASB_USER" /run/asb-credentials
 fi
 
+# O projeto continua apontando para localhost:5432. Sem pod, o agente e o
+# encaminhador estao em namespaces separados, entao um socat local recria o
+# endereco que o projeto espera. Dois saltos triviais; a alternativa seria
+# reescrever a configuracao de cada projeto.
+if [ -n "${ASB_HOST_PORTS:-}" ]; then
+  fwd="asb-${ASB_WORKSPACE}-fwd"
+  echo "$ASB_HOST_PORTS" | tr ',' '\n' | while read -r port; do
+    [ -n "$port" ] || continue
+    setsid socat "TCP-LISTEN:${port},bind=127.0.0.1,fork,reuseaddr" \
+      "TCP:${fwd}:${port}" >/dev/null 2>&1 &
+  done
+fi
+
 if [ "$#" -gt 0 ]; then
   exec "$@"
 fi

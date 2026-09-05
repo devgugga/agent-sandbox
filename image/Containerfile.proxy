@@ -6,7 +6,7 @@
 FROM debian:bookworm-slim
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates squid netcat-openbsd iproute2 dnsutils \
+      ca-certificates squid netcat-openbsd iproute2 dnsutils socat \
     && rm -rf /var/lib/apt/lists/*
 # Config de partida so para o `podman build` ter algo valido; em uso real o
 # CLI gera o arquivo por workspace e o monta read-only por cima.

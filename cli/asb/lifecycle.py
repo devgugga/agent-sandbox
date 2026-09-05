@@ -122,6 +122,44 @@ def _sweep_containers(ws: str) -> None:
             podman.run("rm", "-f", container.strip(), check=False)
 
 
+def start_services(ws: str, profile: Profile) -> None:
+    n = names(ws)
+    for service in profile.services:
+        container = f"asb-{ws}-svc-{service.name}"
+        env = []
+        for key, value in service.env.items():
+            env += ["-e", f"{key}={value}"]
+        # --user 0: imagens sem diretiva USER (postgres, por exemplo) sao
+        # resolvidas por keep-id para o uid mapeado do host, e o initdb falha
+        # em ajustar permissoes dos diretorios da propria imagem.
+        podman.run("run", "-d", "--name", container, "--restart",
+                   "unless-stopped", "--network", n["net"], "--user", "0",
+                   *env, service.image)
+
+
+def start_forwarder(ws: str, profile: Profile) -> None:
+    """Encaminha SO as portas declaradas para o host.
+
+    Nunca faixas privadas: o host participa de uma rede Tailscale, e liberar
+    RFC1918 ou CGNAT entregaria a tailnet inteira ao agente.
+
+    O encaminhador tem perna na rede externa porque so assim alcanca o gateway
+    do host. Ele nao e um proxy de uso geral: roda socat com destinos fixos, e
+    o agente so alcanca as portas listadas.
+    """
+    if not profile.host_ports:
+        return
+    n = names(ws)
+    forwarder = f"{n['net']}-fwd"
+    script = " ".join(
+        f"socat TCP-LISTEN:{port},fork,reuseaddr "
+        f"TCP:host.containers.internal:{port} &" for port in profile.host_ports)
+    podman.run("run", "-d", "--name", forwarder, "--restart", "unless-stopped",
+               "--network", f"{n['net']},{n['out']}", "--user", "900",
+               "--entrypoint", "sh", PROXY_IMAGE,
+               "-c", f"trap 'exit 0' TERM; {script} wait")
+
+
 def _up(root: Path, ws: str, repo: Path) -> int:
     if not podman.exists("image", IMAGE):
         raise podman.PodmanError(
@@ -160,6 +198,9 @@ def _up(root: Path, ws: str, repo: Path) -> int:
         "-v", f"{conf}:/etc/squid/squid.conf:ro,Z",
         PROXY_IMAGE, "squid", "-N", "-f", "/etc/squid/squid.conf")
 
+    start_services(ws, profile)
+    start_forwarder(ws, profile)
+
     stage = layout.state / "staging"
     shutil.rmtree(stage, ignore_errors=True)
     staged = build_staging(root / "profiles" / "provision.toml", stage, home)
@@ -182,6 +223,8 @@ def _up(root: Path, ws: str, repo: Path) -> int:
         "-v", f"{stage}:/run/asb-config:ro,Z",
         "-e", f"ASB_KEYRING_PASS={ensure_keyring_pass().read_text().strip()}",
         "-v", f"{ensure_credentials_volume()}:/run/asb-credentials:Z",
+        "-e", "ASB_HOST_PORTS=" + ",".join(str(p) for p in profile.host_ports),
+        "-e", f"ASB_WORKSPACE={ws}",
         IMAGE,
     ]
     podman.run(*agent_args)
@@ -210,9 +253,7 @@ def down(ws: str) -> int:
     o trabalho do agente, e apagar isso por engano seria irreversivel."""
     n = names(ws)
     home = Path(os.path.expanduser("~"))
-    for container in (n["agent"], n["proxy"]):
-        if podman.exists("container", container):
-            podman.run("rm", "-f", container, check=False)
+    _sweep_containers(ws)
     for network in (n["net"], n["out"]):
         if podman.exists("network", network):
             podman.run("network", "rm", "-f", network, check=False)

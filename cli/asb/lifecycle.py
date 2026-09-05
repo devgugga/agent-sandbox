@@ -28,6 +28,7 @@ PROXY_PORT = 3128
 CONFIG = Path(os.path.expanduser("~")) / ".config" / "agent-sandbox"
 SSH_KEY = CONFIG / "id_ed25519"
 CREDENTIALS_VOLUME = "asb-credentials"
+TOOLCACHE_VOLUME = "asb-toolcache"
 KEYRING_PASS = CONFIG / "keyring.pass"
 
 
@@ -57,6 +58,12 @@ def ensure_credentials_volume() -> str:
     if not podman.exists("volume", CREDENTIALS_VOLUME):
         podman.run("volume", "create", CREDENTIALS_VOLUME)
     return CREDENTIALS_VOLUME
+
+
+def ensure_toolcache_volume() -> str:
+    if not podman.exists("volume", TOOLCACHE_VOLUME):
+        podman.run("volume", "create", TOOLCACHE_VOLUME)
+    return TOOLCACHE_VOLUME
 
 
 def ensure_keyring_pass() -> Path:
@@ -263,6 +270,7 @@ def _up(root: Path, ws: str, repo: Path) -> int:
         "-v", f"{stage}:/run/asb-config:ro,Z",
         "-e", f"ASB_KEYRING_PASS={ensure_keyring_pass().read_text().strip()}",
         "-v", f"{ensure_credentials_volume()}:/run/asb-credentials:Z",
+        "-v", f"{ensure_toolcache_volume()}:/run/asb-toolcache:Z",
         *(["-e", f"DOCKER_HOST=tcp://{n['net']}-docker:2375"]
           if profile.host_api == "read" else []),
         "-e", "ASB_HOST_PORTS=" + ",".join(str(p) for p in profile.host_ports),
@@ -289,6 +297,30 @@ def _up(root: Path, ws: str, repo: Path) -> int:
     # Idempotente e barato; chamar aqui evita que o operador precise lembrar.
     from . import install
     install.podman_restart()
+
+    mise_dirs = []
+    if (layout.mount / "mise.toml").exists():
+        mise_dirs.append(layout.mount)
+    else:
+        for p in layout.mount.glob("*/mise.toml"):
+            mise_dirs.append(p.parent)
+        for p in layout.mount.glob("*/*/mise.toml"):
+            mise_dirs.append(p.parent)
+
+    for d in mise_dirs:
+        print(f"  info executando mise install em {d.name}...", file=sys.stderr)
+        res = podman.run("exec", "-u", "1000", "-w", str(d),
+                         n["agent"], "mise", "install", check=False)
+        rc = getattr(res, "returncode", 0)
+        if rc == 0:
+            print(f"  ok   ferramentas mise instaladas ({d.name})", file=sys.stderr)
+        else:
+            print(f"  aviso: falha ao executar mise install em {d.name} (código {rc})",
+                  file=sys.stderr)
+            stderr = getattr(res, "stderr", None)
+            if stderr:
+                print(stderr.strip(), file=sys.stderr)
+
     return emit(ws, layout)
 
 

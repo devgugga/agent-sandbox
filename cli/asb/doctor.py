@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 
 from . import podman
-from .lifecycle import CREDENTIALS_VOLUME, IMAGE, names
+from .lifecycle import CREDENTIALS_VOLUME, TOOLCACHE_VOLUME, IMAGE, names
 
 
 def _line(ok: bool, label: str, fix: str = "") -> bool:
@@ -43,6 +43,8 @@ def doctor(root: Path) -> int:
                      "asb-agent build")
     healthy &= _line(podman.exists("volume", CREDENTIALS_VOLUME),
                      f"volume {CREDENTIALS_VOLUME}", "asb-agent login")
+    healthy &= _line(podman.exists("volume", TOOLCACHE_VOLUME),
+                     f"volume {TOOLCACHE_VOLUME}", "podman volume create asb-toolcache")
 
     enabled = subprocess.run(
         ["systemctl", "--user", "is-enabled", "podman-restart.service"],

@@ -13,6 +13,7 @@ assert_contains "podman" "$OUT" "verifica o podman"
 assert_contains "python" "$OUT" "verifica a versao do python"
 assert_contains "agent-sandbox:latest" "$OUT" "verifica a imagem base"
 assert_contains "asb-credentials" "$OUT" "verifica o volume de credenciais"
+assert_contains "asb-toolcache" "$OUT" "verifica o volume de toolcache"
 assert_contains "podman-restart" "$OUT" "verifica a restauracao no boot"
 
 # Toda falha precisa nomear o comando exato. "algo esta errado" e inutil as 2h

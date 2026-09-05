@@ -151,3 +151,25 @@ Each entry records a real failure mode formatted as **Symptom**, **Cause**, and 
   podman unshare --rootless-netns true
   ```
   Running this single command instantly restarts the `pasta` network namespace uplink in place. Running workspace containers immediately recover egress connectivity and resume downloads without needing to be restarted or recreated. Active workspaces can be validated at any time using `asb-agent doctor`.
+
+---
+
+## 19. Workspace Not Restored Immediately after Host Reboot (`Linger=no`)
+
+- **Symptom**: *"O workspace sumiu depois do reboot"* / Containers are not running immediately after host system boot when inspecting via headless connection or SSH before user login.
+- **Cause**: By default on systemd Linux installations, user account linger is disabled (`Linger=no`, checked via `loginctl show-user $USER --property=Linger`). Without linger, the user's `systemd --user` session manager — along with its enabled user services such as `podman-restart.service` — initializes **upon interactive login**, not at system kernel boot.
+  - **Desktop with graphical login** (standard interactive developer setup): The operator logs in via the display manager (GDM, SDDM, etc.), which immediately initializes the user's systemd manager and `default.target`, executing `podman-restart.service` and restoring all `unless-stopped` workspace containers before Orca or browser sessions connect.
+  - **Headless server / SSH-only remote workflow**: Containers remain inactive following a reboot until an interactive session is opened by the user.
+- **Fix**:
+  - For standard desktop workstations: No action required. Logging into the desktop graphical session automatically restores all running workspaces.
+  - For headless/remote servers where workspaces must boot unattended before any user logs in: explicitly enable user session linger on the host:
+    ```bash
+    loginctl enable-linger $USER
+    ```
+  > [!IMPORTANT]
+  > **Do not enable linger by default.** Keeping user workspaces alive unattended on an unlogged system alters security posture by maintaining active services and published network ports without an operator present. Enabling linger must be an explicit, conscious operator decision.
+  - After login, verify restored workspace state with:
+    ```bash
+    asb-agent doctor
+    ```
+    or manually restart stopped workspaces with `asb-agent resume --workspace <id>`.

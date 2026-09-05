@@ -12,10 +12,11 @@
 | :--- | :--- |
 | T1, T2, T3, T5, T6, T7 | **concluídas e verificadas empiricamente** (hexmed real: 5 diretórios do mise instalados, `pacs/server` responde `Python 3.8.20`; `test-toolcache.sh` 19/19; 103 testes unitários) |
 | T4.2 | **concluída** — `host_ports` reduzido a 80, 5432, 6379, 8080; 389 e 8843 confirmados fechados |
-| T4.1 | **[HUMANO] pendente** — é o elo que quebra a cadeia; T4.3 continua bloqueado por ela |
+| T4.1 | **[HUMANO] pendente**, porém **menos urgente do que registrado**: `deploy.bk/dcm4chee/.env` não está versionado e está no `.gitignore`, então o agente não recebe a senha do banco pela worktree. É pré-requisito para ligar T4.3, não um buraco aberto hoje |
 | T4.3 | corretamente **não habilitado** |
 | **T8** | **concluída e verificada empiricamente** — `doctor` sonda egresso real (DNS e TCP) em cada workspace ativo com controles positivo e negativo; recuperação (`podman unshare --rootless-netns true`) documentada em `failure-modes.md` |
 | **T9** | **concluída** — pré-requisito `mvn package` do `Dockerfile.jvm` e fluxo híbrido documentados em `BlackICE/infra/README.md` |
+| **T10** | **T10.1 [HUMANO] pendente** (exercitar reboot real com workspace ativo); **T10.2 concluída** (implicações de `Linger=no` documentadas em `failure-modes.md` e `README.md`) |
 
 Sobre T1, o Gemini escolheu a **Opção A (preservar o workspace)**, que era a
 recomendada. Verificado: `up` sai 1, não emite o JSON da receita e mantém os
@@ -390,3 +391,68 @@ por `mvn package`. Sem esse passo o `docker compose --build` falha com
 
 Documentar a ordem: `mvn package` (dentro do sandbox, onde a toolchain já
 existe) → `docker compose up -d --build`.
+
+---
+
+## T10 — Restauração no boot nunca foi exercitada
+
+Era a **reclamação nº 1** da lista original ("o sandbox não sobe depois do
+reboot, quebrando o Orca"). A fiação está correta, mas nenhum reboot aconteceu
+desde que ela foi ligada — então a afirmação "resolvido" hoje é inferência, não
+evidência.
+
+**O que está verificado:**
+
+| Item | Estado |
+| :--- | :--- |
+| Política dos containers | `unless-stopped` |
+| `ExecStart` da unit | `podman start --all --filter should-start-on-boot=true` |
+| `[Install] WantedBy` | `default.target` |
+| Symlink de habilitação | presente |
+
+**O que prova que nunca rodou:**
+
+```
+symlink criado:  Sep 5 00:21
+boot atual:      Sep 4 21:36
+journalctl --user -u podman-restart.service  ->  -- No entries --
+ActiveEnterTimestamp=   (vazio)
+```
+
+A unit foi habilitada **depois** do boot corrente. Não é defeito; é ausência de
+oportunidade.
+
+### T10.1 [HUMANO] — o teste que nenhuma suíte substitui
+
+Com um workspace no ar, reiniciar a máquina e, após o login, rodar:
+
+```bash
+asb-agent doctor
+```
+
+O esperado é o workspace aparecer como `rodando (egresso ok)` sem nenhuma
+intervenção. Registrar o resultado real — inclusive se falhar — em
+`docs/domains/sandbox/failure-modes.md`.
+
+### T10.2 — documentar o que `Linger=no` implica
+
+```
+loginctl show-user $USER --property=Linger  ->  Linger=no
+```
+
+Sem linger, o gerenciador systemd do usuário sobe **no login**, não no boot.
+A consequência precisa estar escrita porque muda o significado de "sobe
+sozinho":
+
+- **Desktop com login gráfico** (o caso do operador, que abre o Orca depois de
+  logar): a restauração acontece no login e o requisito está satisfeito.
+- **Headless / entrar por SSH esperando o sandbox já de pé**: não sobe até
+  alguém logar no console. Aí é preciso `loginctl enable-linger $USER`.
+
+**Não habilitar linger por padrão.** Ele faz os containers do workspace
+seguirem de pé com a máquina ligada e ninguém logado, o que é uma mudança de
+postura — mais superfície ativa sem operador presente — e deve ser escolha
+explícita, não efeito colateral de uma tarefa de documentação.
+
+Documentar as duas situações e o comando, em `failure-modes.md`, junto do
+sintoma "o workspace sumiu depois do reboot".

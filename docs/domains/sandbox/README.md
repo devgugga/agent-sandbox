@@ -98,7 +98,7 @@ host                                          container
    - External DNS is disabled in the agent container by design. Direct DNS queries (`dig`, `nslookup`) fail intentionally.
 
 4. **Reboot recovery**:
-   Workspaces use `--restart=unless-stopped`. On system boot, `podman-restart.service` automatically restarts running containers. To verify health after boot, run `asb-agent doctor`. Workspaces can also be restarted manually at any time with `asb-agent resume --workspace <id>`.
+   Workspaces use `--restart=unless-stopped`. On system boot/login, `podman-restart.service` automatically restarts running containers. Under the default Linux setting (`Linger=no`), user services start upon interactive login (e.g. desktop graphical session); for headless/server setups where workspaces must start unattended before login, enable linger with `loginctl enable-linger $USER`. To verify health after boot, run `asb-agent doctor`. Workspaces can also be restarted manually at any time with `asb-agent resume --workspace <id>`.
 
 5. **Clean teardown**:
    - `asb-agent down --workspace <id>`: removes all containers and internal networks, keeping workspace files and git branches intact.

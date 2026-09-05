@@ -32,26 +32,28 @@ asb_workspace_id() {
 }
 
 # Resultado que o Orca consome. create e resume emitem a MESMA forma: o resume
-# tambem precisa devolver a conexao, porque a porta pode ter mudado.
+# tambem devolve a conexao, porque a porta pode ter mudado.
 asb_recipe_json() {
-  local ws="$1" port="$2"
+  local ws="$1" port="$2" project_root="$3"
   local key="${XDG_CONFIG_HOME:-$HOME/.config}/agent-sandbox/id_ed25519"
   jq -nc \
     --arg label "agent-sandbox-$ws" \
     --arg ws "$ws" \
     --arg key "$key" \
+    --arg root "$project_root" \
+    --arg user "$(id -un)" \
     --argjson port "$port" '
   {
     schemaVersion: 1,
     userData: { workspace: $ws },
     connection: {
       type: "ssh",
-      projectRoot: "/home/agent/workspace",
+      projectRoot: $root,
       target: {
         label: $label,
         host: "127.0.0.1",
         port: $port,
-        username: "agent",
+        username: $user,
         identityFile: $key,
         identitiesOnly: true
       }

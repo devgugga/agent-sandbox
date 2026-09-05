@@ -4,7 +4,10 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$ROOT/recipes/common.sh"
 
-payload=$(cat || true)
+payload=""
+if [ ! -t 0 ]; then
+  payload=$(cat || true)
+fi
 # O Orca aninha o resultado do create em `recipeResult` (ver o exemplo do guia:
 # d.recipeResult?.userData?.resourceId). Ler so `.userData` encontra nada, cai
 # na derivacao por caminho e — quando ela diverge — o pod fica orfao.
@@ -16,4 +19,4 @@ ws=$(printf '%s' "$payload" | jq -r '.recipeResult.userData.workspace // .userDa
 repo="${1:-$PWD}"
 [ -n "$ws" ] || ws=$(asb_workspace_id "$repo")
 [ -n "$ws" ] || { echo "sem workspace para destruir" >&2; exit 0; }
-"$ROOT/cli/agent-sandbox" down --workspace "$ws" >&2
+"$ROOT/cli/asb-agent" down --workspace "$ws" >&2

@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # tests/test-recipe.sh
 set -uo pipefail
-cd "$(dirname "$0")/.."
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT"
 source tests/assert.sh
-REPO=$(mktemp -d); trap 'rm -rf "$REPO"; ./cli/agent-sandbox down --workspace recipe-test >/dev/null 2>&1' EXIT
+REPO=$(mktemp -d); trap 'rm -rf "$REPO"; "$ROOT/cli/asb-agent" down --workspace recipe-test >/dev/null 2>&1; "$ROOT/cli/asb-agent" down --workspace "recipe-check-$$" >/dev/null 2>&1' EXIT
 git -C "$REPO" init -q
 
 echo "== Task 7: receita Orca =="
@@ -57,7 +58,7 @@ echo "$out" | jq -e . >/dev/null && { echo "  ok: JSON valido"; _pass=$((_pass+1
 assert_eq "1" "$(echo "$out" | jq -r .schemaVersion)" "schemaVersion 1"
 assert_eq "ssh" "$(echo "$out" | jq -r .connection.type)" "connection.type ssh"
 assert_eq "127.0.0.1" "$(echo "$out" | jq -r .connection.target.host)" "host loopback"
-assert_eq "agent" "$(echo "$out" | jq -r .connection.target.username)" "username agent"
+assert_eq "$(id -un)" "$(echo "$out" | jq -r .connection.target.username)" "username $(id -un)"
 assert_eq "true" "$(echo "$out" | jq -r .connection.target.identitiesOnly)" "identitiesOnly true"
 assert_eq "null" "$(echo "$out" | jq -r .pairingCode)" "SSH mode nao emite pairingCode"
 
@@ -73,5 +74,18 @@ assert_eq "1" "$(echo "$rout" | wc -l)" "resume emite exatamente UMA linha"
 assert_eq "ssh" "$(echo "$rout" | jq -r .connection.type)" "resume reemite a conexao ssh"
 assert_eq "$(echo "$out" | jq -r .connection.target.port)" "$(echo "$rout" | jq -r .connection.target.port)" \
   "resume devolve a mesma porta que o create"
+
+# O projectRoot vem do CLI, nao e montado no shell: e ele que decide onde a
+# worktree irma do Orca vai cair, e um valor divergente coloca o trabalho do
+# agente fora do que o host enxerga.
+json=$(ORCA_VM_INSTANCE_ID="recipe-check-$$" "$ROOT/recipes/create.sh" "$REPO")
+root=$(printf '%s' "$json" | jq -r .connection.projectRoot)
+assert_contains "$HOME/asb-agent" "$root" \
+  "o projectRoot esta sob ~/asb-agent, visivel no host"
+assert_eq "1" "$(printf '%s' "$json" | jq -r '.schemaVersion')" \
+  "schemaVersion e 1"
+ORCA_VM_INSTANCE_ID="recipe-check-$$" "$ROOT/recipes/destroy.sh" "$REPO"
+assert_eq "1" "$(podman container exists asb-recipe-check-$$-agent; echo $?)" \
+  "destroy nao deixa container para tras"
 
 report

@@ -5,7 +5,10 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$ROOT/recipes/common.sh"
 
-payload=$(cat || true)
+payload=""
+if [ ! -t 0 ]; then
+  payload=$(cat || true)
+fi
 ws=$(printf '%s' "$payload" | jq -r '.recipeResult.userData.workspace // .userData.workspace // empty' 2>/dev/null || true)
 [ -n "$ws" ] || ws=$(asb_workspace_id "${1:-$PWD}")
-"$ROOT/cli/agent-sandbox" suspend --workspace "$ws" >&2
+"$ROOT/cli/asb-agent" suspend --workspace "$ws" >&2

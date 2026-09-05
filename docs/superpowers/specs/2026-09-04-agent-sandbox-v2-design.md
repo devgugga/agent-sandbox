@@ -417,16 +417,25 @@ Um volume nomeado `asb-toolcache`, compartilhado entre workspaces, guarda
 `~/.local/share/mise` e `~/.cache`. O `uv` é instalado uma vez e permanece
 disponível em todos os workspaces, sem rebuild de imagem.
 
-```toml
-[tools]
-extra = ["uv", "go@1.23"]     # escape hatch, só para o que o projeto não declara
-```
+**Por que não há campo de ferramentas em `.agent-sandbox.toml`.** Uma segunda
+lista descrevendo as mesmas ferramentas que o `mise.toml` já declara é uma
+segunda fonte da verdade, e duas listas da mesma coisa divergem — precisamente o
+tipo de invariante que esta reconstrução existe para eliminar (§1.2).
 
-Esquema completo no Anexo (§17).
+O escape hatch já existe e é nativo do mise: **`mise.local.toml`**, mesclado com
+o `mise.toml` versionado e mantido fora do controle de versão. Verificado nesta
+máquina — declarar `jq` no local e `node` no versionado resulta em `mise ls`
+listando os dois, cada um apontando para o arquivo de origem. Serve para
+ferramentas que só você quer, sem impor nada ao repositório compartilhado, e
+funciona igual no host e dentro do sandbox.
+
+Se uma ferramenta é necessária para *rodar o projeto* — o `uv` do backend do
+hexmed, por exemplo — o lugar dela é o `mise.toml` versionado, porque ela também
+falta para qualquer pessoa que clone o repositório, não só para o agente.
 
 **Por que não instalar da rede a cada `up`:** seria lento em uma ferramenta de
-uso diário e acrescentaria um modo de falha novo (cada ferramenta nova exige um
-domínio novo na allowlist, e a falha aparece como "o sandbox não sobe"). O
+uso diário e acrescentaria um modo de falha novo — cada ferramenta nova exigiria
+um domínio novo na allowlist, e a falha apareceria como "o sandbox não sobe". O
 cache compartilhado paga o custo uma vez só.
 
 ---
@@ -684,11 +693,6 @@ mode = "nested"
 # Exige `asb-agent install-broker` executado uma vez com sudo.
 host_api = "read"
 
-[tools]
-# Escape hatch. A fonte da verdade é o mise.toml DO PROJETO (§8);
-# use isto apenas para o que o projeto não declara.
-extra = ["uv", "go@1.23"]
-
 [services]
 # Serviços descartáveis, criados no `up` e destruídos no `down`.
 # Alcançados pelo agente em asb-<ws>-svc-<nome>, pela rede interna.
@@ -705,6 +709,9 @@ ao ajustar permissões dos diretórios da própria imagem com `Operation not
 permitted`. Isso vale mesmo sem pod, porque o mapeamento de usuário permanece.
 
 ### O que saiu do esquema do v1
+
+Não há campo de ferramentas: a fonte da verdade é o `mise.toml` do projeto, e
+o escape hatch é o `mise.local.toml` do próprio mise (§8).
 
 `[sandbox] mode = "isolated" | "attached"` deixa de existir. O modo "anexado" era
 uma chave global que ligava encaminhadores para o host; virou o eixo

@@ -90,6 +90,7 @@ fi
 if [ -d /run/asb-toolcache ]; then
   install -d -o "$ASB_USER" -g "$ASB_USER" \
     /run/asb-toolcache/mise \
+    /run/asb-toolcache/mise/migrations \
     /run/asb-toolcache/cache \
     /run/asb-toolcache/m2 \
     /run/asb-toolcache/uv

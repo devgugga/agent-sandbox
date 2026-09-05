@@ -131,3 +131,11 @@ Each entry records a real failure mode formatted as **Symptom**, **Cause**, and 
 - **Symptom**: Disposable service containers (e.g. `postgres`) fail during initialization with `Operation not permitted` during directory permission adjustments.
 - **Cause**: Container images without a `USER` directive inherit user namespace mappings that prevent internal setup scripts from executing required `chown` operations.
 - **Fix**: Launch service containers explicitly with `--user 0`.
+
+---
+
+## 17. Toolchain Installation Failure during Workspace Startup (`up`)
+
+- **Symptom**: `asb-agent up` exits with a non-zero exit code (1), outputs `erro: falha na instalacao de ferramentas mise em: <dir>`, prints the underlying `mise` stderr diagnostics, and suppresses the Orca recipe JSON output. The workspace containers remain running.
+- **Cause**: A runtime declared in `mise.toml` requires binary assets, source code, or cryptographic attestations from an external domain not present in the proxy allowlist (`allowlist-base.txt` or project `.agent-sandbox.toml`).
+- **Fix**: Check the `stderr` output printed by `asb-agent up` to identify the blocked domain. Add the domain to `[network] allow = [...]` in the project's `.agent-sandbox.toml`. Because the workspace containers and networks are preserved on `mise install` failure, the operator can immediately re-run `asb-agent up` to retry without paying the cost of re-provisioning the workspace.

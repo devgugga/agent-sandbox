@@ -75,4 +75,70 @@ assert_eq "uv-marca" \
 assert_eq "0" "$(podman volume exists asb-toolcache; echo $?)" \
   "o volume asb-toolcache sobreviveu ao down"
 
+echo "-- varredura em multiplos diretorios e falha no up --"
+WS_MULTI="test-toolcache-multi-$$"
+REPO_MULTI=$(mktemp -d)/proj-multi
+mkdir -p "$REPO_MULTI/a/b" "$REPO_MULTI/node_modules/bad" && cd "$REPO_MULTI"
+git init -q -b main . && git config user.email t@e.com && git config user.name T
+cat > mise.toml << 'EOF'
+[tools]
+EOF
+cat > a/mise.toml << 'EOF'
+[tools]
+EOF
+cat > a/b/mise.toml << 'EOF'
+[tools]
+EOF
+cat > node_modules/bad/mise.toml << 'EOF'
+[tools]
+EOF
+git add -A && git commit -qm multi
+cd "$ROOT"
+
+MULTI_OUT=$("$ROOT/cli/asb-agent" up --workspace "$WS_MULTI" --repo "$REPO_MULTI" 2>&1)
+MULTI_RC=$?
+assert_eq "0" "$MULTI_RC" "up multi-diretorio teve sucesso"
+assert_contains "executando mise install em proj-multi" "$MULTI_OUT" "instalou na raiz"
+assert_contains "executando mise install em a" "$MULTI_OUT" "instalou em subdiretorio a"
+assert_contains "executando mise install em b" "$MULTI_OUT" "instalou em subdiretorio a/b"
+if echo "$MULTI_OUT" | grep -q "executando mise install em bad"; then
+  assert_eq "pruned" "executed" "diretorio node_modules deveria ter sido podado"
+else
+  assert_eq "pruned" "pruned" "diretorio node_modules foi podado da varredura"
+fi
+"$ROOT/cli/asb-agent" down --workspace "$WS_MULTI" >/dev/null 2>&1
+rm -rf "$(dirname "$REPO_MULTI")"
+
+echo "-- falha no mise install sai diferente de zero e preserva workspace --"
+WS_FAIL="test-toolcache-fail-$$"
+REPO_FAIL=$(mktemp -d)/proj-fail
+mkdir -p "$REPO_FAIL" && cd "$REPO_FAIL"
+git init -q -b main . && git config user.email t@e.com && git config user.name T
+cat > mise.toml << 'EOF'
+[tools]
+ferramenta_inexistente_12345 = "latest"
+EOF
+git add -A && git commit -qm fail
+cd "$ROOT"
+
+FAIL_RC=0
+FAIL_OUT=$("$ROOT/cli/asb-agent" up --workspace "$WS_FAIL" --repo "$REPO_FAIL" 2>&1) || FAIL_RC=$?
+if [ "$FAIL_RC" -ne 0 ]; then
+  assert_eq "1" "1" "asb-agent up saiu com codigo diferente de zero quando mise install falhou"
+else
+  assert_eq "1" "0" "asb-agent up deveria ter falhado com codigo diferente de zero"
+fi
+
+if echo "$FAIL_OUT" | grep -q '"workspace":'; then
+  assert_eq "sem-json" "com-json" "up nao deve emitir contrato de receita JSON quando falha"
+else
+  assert_eq "sem-json" "sem-json" "up nao emitiu contrato de receita JSON na falha"
+fi
+
+assert_eq "0" "$(podman exec "asb-${WS_FAIL}-agent" true >/dev/null 2>&1; echo $?)" \
+  "workspace foi preservado no ar para inspecao e retry do operador"
+
+"$ROOT/cli/asb-agent" down --workspace "$WS_FAIL" >/dev/null 2>&1
+rm -rf "$(dirname "$REPO_FAIL")"
+
 report

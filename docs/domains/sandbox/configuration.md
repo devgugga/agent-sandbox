@@ -54,7 +54,31 @@ Images without a `USER` directive (such as official `postgres` images) require `
 
 ---
 
-## 2. Worked Examples
+## 2. Toolchain Provisioning & Shared Cache (`asb-toolcache`)
+
+Development runtimes (Java, Node, Python, pnpm, uv, Maven, process-compose) are declared in `mise.toml` files within the project repository rather than configured in `.agent-sandbox.toml`.
+
+### Shared Tool Cache
+To prevent redundant multi-gigabyte downloads across multiple workspaces and task recycles, the sandbox maintains a shared persistent volume: `asb-toolcache`.
+- **Mount Location**: Mounted into the agent container at `/run/asb-toolcache:Z`.
+- **Cached Runtimes**: Transparently symlinked into the agent home directory at startup:
+  - `~/.local/share/mise` -> `/run/asb-toolcache/mise` (installed toolchain binaries)
+  - `~/.cache` -> `/run/asb-toolcache/cache` (pip, npm, and general caches)
+  - `~/.m2` -> `/run/asb-toolcache/m2` (Maven repository cache)
+  - `~/.local/share/uv` -> `/run/asb-toolcache/uv` (uv-managed Python standalone runtimes)
+- **Persistence**: Survives `asb-agent down` and container destruction. Removed only on manual `podman volume rm asb-toolcache`.
+
+### Multi-Directory Discovery & Cold Cache Duration
+During `asb-agent up`:
+1. The runtime discovers all `mise.toml` manifests starting from the project root and scanning subdirectories hierarchically.
+2. Build output and dependency folders are automatically pruned from the search (`.git`, `node_modules`, `target`, `dist`, `build`, `.venv`, `.next`, `__pycache__`).
+3. For each manifest, `mise install -y` is executed non-interactively in the corresponding folder.
+4. **Cold Cache vs Hot Cache**: On the very first `up` for a repository, all toolchains are downloaded through the Squid proxy, which may take several minutes depending on network bandwidth. Subsequent workspaces and recycled containers reuse the cached binaries from `asb-toolcache` in seconds.
+5. If tool installation fails in any directory (e.g. missing allowlist domain), `asb-agent up` exits with code 1, does not emit the Orca JSON handshake, and preserves the workspace so the operator can adjust `.agent-sandbox.toml` and retry `asb-agent up` directly.
+
+---
+
+## 3. Worked Examples
 
 ### Example 1: `hexmed` (Host Services & Filtered Docker Inspection)
 

@@ -185,6 +185,40 @@ def start_forwarder(ws: str, profile: Profile) -> None:
                "-c", f"trap 'exit 0' TERM; {script} wait")
 
 
+PRUNED_DIRS = {
+    ".git",
+    "node_modules",
+    "target",
+    "dist",
+    "build",
+    ".venv",
+    ".next",
+    "__pycache__",
+}
+
+
+def discover_mise_dirs(root: Path) -> list[Path]:
+    """Encontra todos os diretorios que contem mise.toml, podando pastas irrelevantes."""
+    if not root.exists():
+        return []
+    dirs: list[Path] = []
+    if (root / "mise.toml").is_file():
+        dirs.append(root)
+    for item in root.rglob("mise.toml"):
+        p = item.parent
+        if p == root:
+            continue
+        try:
+            rel_parts = p.relative_to(root).parts
+        except ValueError:
+            continue
+        if any(part in PRUNED_DIRS for part in rel_parts):
+            continue
+        dirs.append(p)
+    dirs.sort(key=lambda d: (0 if d == root else 1, len(d.parts), str(d)))
+    return dirs
+
+
 def _up(root: Path, ws: str, repo: Path) -> int:
     if not podman.exists("image", IMAGE):
         raise podman.PodmanError(
@@ -306,16 +340,8 @@ def _up(root: Path, ws: str, repo: Path) -> int:
     from . import install
     install.podman_restart()
 
-    mise_dirs = []
-    if (layout.project_root / "mise.toml").exists():
-        mise_dirs.append(layout.project_root)
-    else:
-        for p in layout.project_root.glob("*/mise.toml"):
-            mise_dirs.append(p.parent)
-        for p in layout.project_root.glob("*/*/mise.toml"):
-            mise_dirs.append(p.parent)
-
-    for d in mise_dirs:
+    mise_errors: list[tuple[Path, int, str]] = []
+    for d in discover_mise_dirs(layout.project_root):
         print(f"  info executando mise install em {d.name}...", file=sys.stderr)
         res = podman.run("exec", "-u", "1000", "-w", str(d),
                          n["agent"], "mise", "install", "-y", check=False)
@@ -323,11 +349,20 @@ def _up(root: Path, ws: str, repo: Path) -> int:
         if rc == 0:
             print(f"  ok   ferramentas mise instaladas ({d.name})", file=sys.stderr)
         else:
-            print(f"  aviso: falha ao executar mise install em {d.name} (código {rc})",
+            stderr = getattr(res, "stderr", "") or ""
+            print(f"  erro falha ao executar mise install em {d.name} (código {rc})",
                   file=sys.stderr)
-            stderr = getattr(res, "stderr", None)
             if stderr:
                 print(stderr.strip(), file=sys.stderr)
+            mise_errors.append((d, rc, stderr))
+
+    if mise_errors:
+        failed_names = ", ".join(d.name for d, _, _ in mise_errors)
+        print(f"\nerro: falha na instalacao de ferramentas mise em: {failed_names}",
+              file=sys.stderr)
+        print("workspace mantido no ar; corrija a allowlist ou mise.toml e "
+              "execute 'asb-agent up' novamente.", file=sys.stderr)
+        return 1
 
     return emit(ws, layout)
 

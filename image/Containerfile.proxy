@@ -1,0 +1,16 @@
+# image/Containerfile.proxy — o unico container do workspace com egresso.
+#
+# Sem nftables: no v2 o isolamento e a topologia da rede, e nao um ruleset que
+# precisa ser reaplicado a cada partida. socat fica para o encaminhador de
+# portas do host (Task 9); ele roda em container proprio, nao aqui.
+FROM debian:bookworm-slim
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates squid netcat-openbsd iproute2 dnsutils \
+    && rm -rf /var/lib/apt/lists/*
+# Config de partida so para o `podman build` ter algo valido; em uso real o
+# CLI gera o arquivo por workspace e o monta read-only por cima.
+COPY image/squid/squid.conf.tmpl /etc/squid/squid.conf.tmpl
+RUN sed 's/__ALLOWLIST__/.example.com/' /etc/squid/squid.conf.tmpl \
+      > /etc/squid/squid.conf \
+    && chown -R 900:900 /var/spool/squid /var/log/squid 2>/dev/null || true

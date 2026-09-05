@@ -318,7 +318,7 @@ def _up(root: Path, ws: str, repo: Path) -> int:
     for d in mise_dirs:
         print(f"  info executando mise install em {d.name}...", file=sys.stderr)
         res = podman.run("exec", "-u", "1000", "-w", str(d),
-                         n["agent"], "mise", "install", check=False)
+                         n["agent"], "mise", "install", "-y", check=False)
         rc = getattr(res, "returncode", 0)
         if rc == 0:
             print(f"  ok   ferramentas mise instaladas ({d.name})", file=sys.stderr)

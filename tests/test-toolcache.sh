@@ -40,12 +40,15 @@ assert_eq "0" "$(podman exec "$A" sh -c "test -L '$HOME/.cache'; echo \$?")" \
   "~/.cache e um link para o volume"
 assert_eq "0" "$(podman exec "$A" sh -c "test -L '$HOME/.m2'; echo \$?")" \
   "~/.m2 e um link para o volume"
+assert_eq "0" "$(podman exec "$A" sh -c "test -L '$HOME/.local/share/uv'; echo \$?")" \
+  "~/.local/share/uv e um link para o volume"
 
 # Escreve marcadores no toolcache via caminhos do usuario
-podman exec "$A" sh -c "mkdir -p '$HOME/.local/share/mise' '$HOME/.cache' '$HOME/.m2' && \
+podman exec "$A" sh -c "mkdir -p '$HOME/.local/share/mise' '$HOME/.cache' '$HOME/.m2' '$HOME/.local/share/uv' && \
   echo 'mise-cache-marca' > '$HOME/.local/share/mise/marker' && \
   echo 'cache-marca' > '$HOME/.cache/marker' && \
-  echo 'm2-marca' > '$HOME/.m2/marker'"
+  echo 'm2-marca' > '$HOME/.m2/marker' && \
+  echo 'uv-marca' > '$HOME/.local/share/uv/marker'"
 
 "$ROOT/cli/asb-agent" down --workspace "$WS_A" >/dev/null
 
@@ -64,6 +67,9 @@ assert_eq "cache-marca" \
 assert_eq "m2-marca" \
   "$(podman exec "$B" sh -c "cat '$HOME/.m2/marker'")" \
   "o diretorio ~/.m2 sobreviveu ao down e chegou ao workspace novo"
+assert_eq "uv-marca" \
+  "$(podman exec "$B" sh -c "cat '$HOME/.local/share/uv/marker'")" \
+  "o diretorio ~/.local/share/uv sobreviveu ao down e chegou ao workspace novo"
 
 "$ROOT/cli/asb-agent" down --workspace "$WS_B" >/dev/null
 assert_eq "0" "$(podman volume exists asb-toolcache; echo $?)" \

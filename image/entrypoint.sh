@@ -91,13 +91,15 @@ if [ -d /run/asb-toolcache ]; then
   install -d -o "$ASB_USER" -g "$ASB_USER" \
     /run/asb-toolcache/mise \
     /run/asb-toolcache/cache \
-    /run/asb-toolcache/m2
+    /run/asb-toolcache/m2 \
+    /run/asb-toolcache/uv
   install -d -o "$ASB_USER" -g "$ASB_USER" "$ASB_HOME/.local/share"
-  rm -rf "$ASB_HOME/.local/share/mise" "$ASB_HOME/.cache" "$ASB_HOME/.m2"
+  rm -rf "$ASB_HOME/.local/share/mise" "$ASB_HOME/.cache" "$ASB_HOME/.m2" "$ASB_HOME/.local/share/uv"
   ln -sfn /run/asb-toolcache/mise "$ASB_HOME/.local/share/mise"
   ln -sfn /run/asb-toolcache/cache "$ASB_HOME/.cache"
   ln -sfn /run/asb-toolcache/m2 "$ASB_HOME/.m2"
-  chown -h "$ASB_USER:$ASB_USER" "$ASB_HOME/.local/share/mise" "$ASB_HOME/.cache" "$ASB_HOME/.m2"
+  ln -sfn /run/asb-toolcache/uv "$ASB_HOME/.local/share/uv"
+  chown -h "$ASB_USER:$ASB_USER" "$ASB_HOME/.local/share/mise" "$ASB_HOME/.cache" "$ASB_HOME/.m2" "$ASB_HOME/.local/share/uv"
   chown -R "$ASB_USER:$ASB_USER" /run/asb-toolcache
 fi
 

@@ -5,7 +5,7 @@
 # ATENCAO: isto NAO cobre o reboot da maquina. O Orca guarda o runtime como
 # "running" no registro dele e, depois de religar, so disca na porta que ja
 # tinha — sem chamar resume. Quem cobre o reboot e a unidade de usuario do
-# systemd: `agent-sandbox install-autostart`.
+# systemd: `podman-restart.service` (habilitado via `asb-agent doctor`).
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$ROOT/recipes/common.sh"

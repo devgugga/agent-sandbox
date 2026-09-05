@@ -1,78 +1,66 @@
 #!/usr/bin/env bash
-# tests/test-transaction.sh — `up` atomico e imagem auth obrigatoria.
+# tests/test-transaction.sh — criacao transacional e rollback via _sweep_containers
 set -uo pipefail
-cd "$(dirname "$0")/.."
-source tests/assert.sh
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT/tests/assert.sh"
 
 echo "== criacao transacional =="
 
 tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
-mkdir -p "$tmp/bin" "$tmp/repo"
-git -C "$tmp/repo" init -q
+repo="$tmp/repo"
+mkdir -p "$repo"
+git -C "$repo" init -q -b main
+git -C "$repo" config user.email t@e.com
+git -C "$repo" config user.name T
+echo ok > "$repo/README.md"
+git -C "$repo" add -A && git -C "$repo" commit -qm inicial
 
-cat > "$tmp/bin/podman" <<'SH'
-#!/usr/bin/env bash
-printf '%s\n' "$*" >> "$ASB_TEST_PODMAN_LOG"
-case "$1 ${2:-} ${3:-}" in
-  "image exists agent-sandbox-auth")
-    [ "${ASB_TEST_MODE:-}" != missing-auth ]
-    exit $?
-    ;;
-  "pod exists "*) [ "${ASB_TEST_MODE:-}" = existing ]; exit $? ;;
-  "port "*) printf '127.0.0.1:42022\n'; exit 0 ;;
-  "cp "*) [ "${ASB_TEST_MODE:-}" != copy-fails ]; exit $? ;;
-esac
-exit 0
-SH
-chmod +x "$tmp/bin/podman"
+WS_ROLLBACK="test-tx-rb-$$"
 
-log="$tmp/missing-auth.log"
-if HOME="$tmp/home-a" XDG_CONFIG_HOME="$tmp/home-a/.config" \
-    PATH="$tmp/bin:$PATH" ASB_TEST_PODMAN_LOG="$log" \
-    ASB_TEST_MODE=missing-auth ./cli/agent-sandbox up \
-      --workspace no-auth --repo "$tmp/repo" >/dev/null 2>&1; then
-  missing_rc=0
+cleanup() {
+  "$ROOT/cli/asb-agent" down --workspace "$WS_ROLLBACK" >/dev/null 2>&1 || true
+  rm -rf "$tmp"
+}
+trap cleanup EXIT
+
+# 1. Forcar falha no up com servico cuja imagem nao existe.
+# O proxy e as redes sobem antes; quando o servico falha, o bloco except
+# de up dispara _sweep_containers e remove as redes.
+cat > "$repo/.agent-sandbox.toml" <<'EOF'
+[services.bad]
+image = "invalid-local-image-that-does-not-exist:never"
+EOF
+
+if "$ROOT/cli/asb-agent" up --workspace "$WS_ROLLBACK" --repo "$repo" >/dev/null 2>&1; then
+  rc=0
 else
-  missing_rc=$?
+  rc=$?
 fi
-assert_eq "1" "$missing_rc" "up recusa imagem sem autenticacao"
-assert_eq "" "$(grep -F 'pod create' "$log" 2>/dev/null)" \
-  "recusa acontece antes de criar o pod"
+assert_fails "up falha quando servico tem imagem invalida" [ "$rc" -eq 0 ]
 
-mkdir -p "$tmp/home-existing/.config/agent-sandbox/pods/asb-existing"
-printf 'preservar\n' > "$tmp/home-existing/.config/agent-sandbox/pods/asb-existing/sentinel"
-log="$tmp/existing.log"
-if HOME="$tmp/home-existing" XDG_CONFIG_HOME="$tmp/home-existing/.config" \
-    PATH="$tmp/bin:$PATH" ASB_TEST_PODMAN_LOG="$log" ASB_TEST_MODE=existing \
-    ./cli/agent-sandbox up --workspace existing --repo "$tmp/repo" \
-      >/dev/null 2>&1; then
-  existing_rc=0
-else
-  existing_rc=$?
-fi
-assert_eq "1" "$existing_rc" "up recusa substituir workspace existente"
-assert_eq "preservar" "$(cat "$tmp/home-existing/.config/agent-sandbox/pods/asb-existing/sentinel" 2>/dev/null)" \
-  "recusa preserva o estado do workspace existente"
-assert_eq "" "$(grep -F 'pod rm -f asb-existing' "$log" || true)" \
-  "recusa nao remove o pod existente"
+# 2. Assegurar que _sweep_containers removeu todos os containers asb-<ws>-*
+surviving_containers=$(podman ps -a --filter "name=^asb-${WS_ROLLBACK}-" --format '{{.Names}}')
+assert_eq "" "$surviving_containers" "nenhum container asb-<ws>-* sobrevive a falha forcada"
 
-mkdir -p "$tmp/home-b/.gemini/antigravity-cli"
-printf '{}\n' > "$tmp/home-b/.gemini/antigravity-cli/settings.json"
-log="$tmp/copy-fails.log"
-if HOME="$tmp/home-b" XDG_CONFIG_HOME="$tmp/home-b/.config" \
-    PATH="$tmp/bin:$PATH" ASB_TEST_PODMAN_LOG="$log" \
-    ASB_TEST_MODE=copy-fails ASB_PROXY_READY_ATTEMPTS=1 \
-    ./cli/agent-sandbox up --workspace rollback --repo "$tmp/repo" \
-      >/dev/null 2>&1; then
-  copy_rc=0
+# 3. Assegurar que nenhuma rede asb-<ws> ou asb-<ws>-out sobrevive
+surviving_networks=$(podman network ls --filter "name=^asb-${WS_ROLLBACK}" --format '{{.Name}}')
+assert_eq "" "$surviving_networks" "nenhuma rede asb-<ws> sobrevive a falha forcada"
+
+# 4. Um up que falhou no meio nao impede repeticao no mesmo workspace:
+# no v1 ficavam restos que faziam a repeticao falhar com "workspace ja existe".
+cat > "$repo/.agent-sandbox.toml" <<'EOF'
+# perfil valido
+EOF
+
+if "$ROOT/cli/asb-agent" up --workspace "$WS_ROLLBACK" --repo "$repo" >/dev/null 2>&1; then
+  retry_rc=0
 else
-  copy_rc=$?
+  retry_rc=$?
 fi
-assert_eq "1" "$copy_rc" "falha de copia aborta o up"
-assert_contains "pod rm -f asb-rollback" "$(cat "$log")" \
-  "rollback remove o pod parcial"
-assert_eq "" "$(test -e "$tmp/home-b/.config/agent-sandbox/pods/asb-rollback" && echo existe)" \
-  "rollback remove o estado parcial"
+assert_eq "0" "$retry_rc" "repetir up apos rollback sucede sem erro de workspace existente"
+assert_eq "0" "$(podman container exists "asb-${WS_ROLLBACK}-agent"; echo $?)" \
+  "o container do agente existe apos up bem-sucedido"
+
+"$ROOT/cli/asb-agent" down --workspace "$WS_ROLLBACK" >/dev/null 2>&1
 
 report

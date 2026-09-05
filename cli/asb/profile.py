@@ -46,6 +46,7 @@ class Service:
 class Profile:
     allow: tuple[str, ...] = ()
     host_ports: tuple[int, ...] = ()
+    publish_ports: tuple[tuple[int, int], ...] = ()
     container_mode: str = "none"
     host_api: str = "none"
     services: tuple[Service, ...] = ()
@@ -80,6 +81,52 @@ def _ports(raw: dict) -> tuple[int, ...]:
             raise ProfileError(f"[docker] host_ports: {port} fora de 1-65535")
         ports.append(port)
     return tuple(ports)
+
+
+def _publish_ports(raw: dict) -> tuple[tuple[int, int], ...]:
+    value = raw.get("docker", {}).get("publish_ports", [])
+    if not isinstance(value, list):
+        raise ProfileError("[docker] publish_ports precisa ser uma lista")
+    pairs = []
+    for item in value:
+        if isinstance(item, bool):
+            raise ProfileError(
+                f"[docker] publish_ports: {item!r} nao e uma porta valida")
+        if isinstance(item, int):
+            if not 1 <= item <= 65535:
+                raise ProfileError(
+                    f"[docker] publish_ports: {item} fora de 1-65535")
+            pairs.append((item, item))
+        elif isinstance(item, str):
+            parts = item.split(":")
+            if len(parts) == 2:
+                try:
+                    host_p = int(parts[0])
+                    cont_p = int(parts[1])
+                except ValueError:
+                    raise ProfileError(
+                        f"[docker] publish_ports: {item!r} formato invalido (esperado host:container)")
+                if not (1 <= host_p <= 65535 and 1 <= cont_p <= 65535):
+                    raise ProfileError(
+                        f"[docker] publish_ports: {item!r} portas fora de 1-65535")
+                pairs.append((host_p, cont_p))
+            elif len(parts) == 1:
+                try:
+                    p = int(parts[0])
+                except ValueError:
+                    raise ProfileError(
+                        f"[docker] publish_ports: {item!r} formato invalido")
+                if not 1 <= p <= 65535:
+                    raise ProfileError(
+                        f"[docker] publish_ports: {item!r} porta fora de 1-65535")
+                pairs.append((p, p))
+            else:
+                raise ProfileError(
+                    f"[docker] publish_ports: {item!r} formato invalido (esperado host:container)")
+        else:
+            raise ProfileError(
+                f"[docker] publish_ports: item {item!r} precisa ser inteiro ou string")
+    return tuple(pairs)
 
 
 def _choice(raw: dict, key: str, allowed: tuple[str, ...], default: str) -> str:
@@ -123,6 +170,7 @@ def load_profile(repo: Path) -> Profile:
     return Profile(
         allow=_strings(raw, "network", "allow"),
         host_ports=_ports(raw),
+        publish_ports=_publish_ports(raw),
         container_mode=_choice(raw, "mode", CONTAINER_MODES, "none"),
         host_api=_choice(raw, "host_api", HOST_API_LEVELS, "none"),
         services=_services(raw),

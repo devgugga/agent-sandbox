@@ -20,6 +20,7 @@ class TestDefaults(unittest.TestCase):
         profile = load_profile(Path(tempfile.mkdtemp()))
         self.assertEqual(profile.allow, ())
         self.assertEqual(profile.host_ports, ())
+        self.assertEqual(profile.publish_ports, ())
         self.assertEqual(profile.container_mode, "none")
         self.assertEqual(profile.host_api, "none")
         self.assertEqual(profile.services, ())
@@ -65,6 +66,25 @@ class TestDockerAxes(unittest.TestCase):
     def test_non_integer_port_is_rejected(self):
         with self.assertRaises(ProfileError):
             load_profile(repo_with('[docker]\nhost_ports = ["5432"]\n'))
+
+    def test_publish_ports_integers_and_strings(self):
+        profile = load_profile(repo_with(
+            '[docker]\npublish_ports = [8081, "18080:80"]\n'))
+        self.assertEqual(profile.publish_ports, ((8081, 8081), (18080, 80)))
+
+    def test_publish_ports_invalid_string_format_rejected(self):
+        with self.assertRaises(ProfileError):
+            load_profile(repo_with('[docker]\npublish_ports = ["invalid"]\n'))
+
+    def test_publish_ports_outside_range_rejected(self):
+        with self.assertRaises(ProfileError):
+            load_profile(repo_with('[docker]\npublish_ports = [70000]\n'))
+        with self.assertRaises(ProfileError):
+            load_profile(repo_with('[docker]\npublish_ports = ["70000:80"]\n'))
+
+    def test_publish_ports_boolean_rejected(self):
+        with self.assertRaises(ProfileError):
+            load_profile(repo_with('[docker]\npublish_ports = [true]\n'))
 
 
 class TestServices(unittest.TestCase):

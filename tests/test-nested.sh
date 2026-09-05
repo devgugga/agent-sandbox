@@ -9,7 +9,7 @@ REPO=$(mktemp -d)/proj
 mkdir -p "$REPO" && cd "$REPO"
 git init -q -b main . && git config user.email t@e.com && git config user.name T
 echo ok > README.md
-printf '[docker]\nmode = "nested"\n' > .agent-sandbox.toml
+printf '[docker]\nmode = "nested"\npublish_ports = ["18080:80"]\n' > .agent-sandbox.toml
 git add -A && git commit -qm inicial
 cd "$ROOT"
 
@@ -46,6 +46,15 @@ assert_contains "NET-OK" "$RESOLV_OUT" \
   "redes definidas pelo usuario e resolucao por nome entre containers funcionam"
 
 podman exec -u 1000 "$AGENT" bash -lc 'podman rm -f svc >/dev/null; podman network rm appnet >/dev/null'
+
+# Publicacao de portas para o host e bind em porta privilegiada (< 1024) no modo aninhado
+podman exec -u 1000 "$AGENT" bash -lc '
+podman run -d --name web-priv -p 80:8080 docker.io/library/alpine:latest sh -c "while true; do printf '\''HTTP/1.1 200 OK\r\nContent-Length: 12\r\n\r\nPRIV-PORT-OK'\'' | nc -l -p 8080; done" >/dev/null
+'
+PUB_OUT=$(curl -s -m 5 http://127.0.0.1:18080/ 2>&1 || true)
+assert_contains "PRIV-PORT-OK" "$PUB_OUT" \
+  "servico aninhado escutando em porta 80 e alcancavel pelo host via 127.0.0.1:18080"
+podman exec -u 1000 "$AGENT" bash -lc 'podman rm -f web-priv >/dev/null'
 
 # Execucao real de podman compose (BlackICE compose.yml com multiplos servicos)
 podman exec -u 1000 "$AGENT" bash -lc '

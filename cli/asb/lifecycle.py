@@ -252,12 +252,17 @@ def _up(root: Path, ws: str, repo: Path) -> int:
     print(f"configuracao: {staged} entrada(s)", file=sys.stderr)
 
     key = ensure_ssh_key()
+    published = []
+    for host_p, cont_p in profile.publish_ports:
+        published.extend(["-p", f"127.0.0.1:{host_p}:{cont_p}"])
+
     agent_args = [
         "run", "-d", "--name", n["agent"],
         "--label", f"asb.workspace={ws}",
         "--restart", "unless-stopped",
         "--network", n["net"],
         "-p", "127.0.0.1::22",
+        *published,
         # Sem keep-id o uid 1000 do host mapeia para 0 aqui dentro, o
         # repositorio montado aparece como root e o agente nao consegue
         # escrever no proprio workspace.
@@ -281,6 +286,8 @@ def _up(root: Path, ws: str, repo: Path) -> int:
         # /dev/fuse para o fuse-overlayfs, /dev/net/tun para o netavark/slirp;
         # label=disable porque o SELinux do host nao rotula o que o podman de dentro cria.
         # unmask=/proc/* permite o mount proc do crun sem expor /sys/firmware.
+        # net.ipv4.ip_unprivileged_port_start=0 permite que containers aninhados
+        # (ex: Traefik do BlackICE em 80:80) escutem em portas privilegiadas (< 1024).
         volume = f"{n['net']}-containers"
         if not podman.exists("volume", volume):
             podman.run("volume", "create", volume)
@@ -289,6 +296,7 @@ def _up(root: Path, ws: str, repo: Path) -> int:
             "--device", "/dev/net/tun",
             "--security-opt", "label=disable",
             "--security-opt", "unmask=/proc/*",
+            "--sysctl", "net.ipv4.ip_unprivileged_port_start=0",
             # Armazenamento das imagens aninhadas fora da camada gravavel: um
             # `down` seguido de `up` nao rebaixa tudo de novo.
             "-v", f"{volume}:{home}/.local/share/containers:Z",

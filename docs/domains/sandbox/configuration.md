@@ -19,6 +19,10 @@ allow = ["pypi.org", "files.pythonhosted.org", ".sentry.io"]
 # Apenas as declaradas. Nunca faixas.
 host_ports = [5432, 6379]
 
+# Portas do SANDBOX publicadas em 127.0.0.1 no HOST para acesso pelo navegador/operador.
+# Suporta inteiros diretos ([8081]) ou mapeamentos explícitos (["18080:80"]).
+publish_ports = ["18080:80", 8081]
+
 # Runtime de containers DENTRO do sandbox (§6.2).
 #   "none"   (padrão) — sem containers aninhados
 #   "nested"          — Podman rootless dentro do sandbox
@@ -104,6 +108,8 @@ allow = [
 [docker]
 # Run rootless Podman inside the sandbox without privileges on the host
 mode = "nested"
+# Publish ports to 127.0.0.1 on the host for browser access (Traefik 80 -> 18080, dashboard 8081)
+publish_ports = ["18080:80", 8081]
 ```
 
 **How it operates:**

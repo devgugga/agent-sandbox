@@ -7,9 +7,14 @@ no boot em silencio.
 """
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
+
+BROKER_SCRIPT = Path("/usr/local/lib/asb-docker-broker.py")
+BROKER_UNIT = Path("/etc/systemd/system/asb-docker-broker.service")
+DOCKER_SOCKETS = ("/var/run/docker.sock", "/run/docker.sock")
 
 
 def podman_restart() -> int:
@@ -42,4 +47,36 @@ def guards(root: Path) -> int:
 
 
 def broker(root: Path) -> int:
-    raise NotImplementedError("install-broker nao implementado ainda")
+    """Instala o broker so-leitura. Requer sudo, uma vez.
+
+    O script e COPIADO para /usr/local/lib: a unidade nao pode apontar para
+    este checkout, senao mover a pasta quebraria o servico em silencio — o
+    mesmo erro que o v1 cometeu com o ExecStart do restore (spec §16.1).
+    """
+    source = root / "broker" / "asb-docker-broker.py"
+    docker_sock = next((s for s in DOCKER_SOCKETS if Path(s).exists()), None)
+    if docker_sock is None:
+        print("socket do Docker nao encontrado; nada a instalar. O eixo "
+              "host_api fica indisponivel; os outros dois seguem normais.",
+              file=sys.stderr)
+        return 1
+
+    unit = (root / "broker" / "asb-docker-broker.service.tmpl").read_text()
+    unit = (unit.replace("__PYTHON__", sys.executable)
+                .replace("__SCRIPT__", str(BROKER_SCRIPT))
+                .replace("__DOCKER_SOCK__", docker_sock)
+                .replace("__UID__", str(os.getuid())))
+
+    print(f"instalando o broker (socket real: {docker_sock}).", file=sys.stderr)
+    print("Isso concede LEITURA de Docker sem senha ao seu usuario: ps, logs, "
+          "inspect. Mutacao recebe 403 e nao e configuravel.", file=sys.stderr)
+    subprocess.run(["sudo", "install", "-m", "0755", str(source),
+                    str(BROKER_SCRIPT)], check=True)
+    subprocess.run(["sudo", "tee", str(BROKER_UNIT)], input=unit, text=True,
+                   check=True, stdout=subprocess.DEVNULL)
+    subprocess.run(["sudo", "systemctl", "daemon-reload"], check=True)
+    subprocess.run(["sudo", "systemctl", "enable", "--now",
+                    "asb-docker-broker.service"], check=True)
+    print("broker instalado. Habilite por projeto com [docker] host_api = "
+          '"read" no .agent-sandbox.toml.', file=sys.stderr)
+    return 0

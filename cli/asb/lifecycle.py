@@ -201,6 +201,22 @@ def _up(root: Path, ws: str, repo: Path) -> int:
     start_services(ws, profile)
     start_forwarder(ws, profile)
 
+    if profile.host_api == "read":
+        broker_sock = Path("/run/asb-docker/docker.sock")
+        if not broker_sock.exists():
+            raise podman.PodmanError(
+                'host_api = "read" pede o broker; execute '
+                "'asb-agent install-broker' (usa sudo, uma vez)")
+        # Container proprio, SEM rede externa: quem fala com o socket do
+        # Docker nao ganha egresso de tabela junto.
+        podman.run(
+            "run", "-d", "--name", f"{n['net']}-docker", "--restart",
+            "unless-stopped", "--network", n["net"], "--user", "900",
+            "-v", f"{broker_sock}:/var/run/docker.sock:Z",
+            "--entrypoint", "sh", PROXY_IMAGE, "-c",
+            "socat TCP-LISTEN:2375,fork,reuseaddr "
+            "UNIX-CONNECT:/var/run/docker.sock")
+
     stage = layout.state / "staging"
     shutil.rmtree(stage, ignore_errors=True)
     staged = build_staging(root / "profiles" / "provision.toml", stage, home)
@@ -223,6 +239,8 @@ def _up(root: Path, ws: str, repo: Path) -> int:
         "-v", f"{stage}:/run/asb-config:ro,Z",
         "-e", f"ASB_KEYRING_PASS={ensure_keyring_pass().read_text().strip()}",
         "-v", f"{ensure_credentials_volume()}:/run/asb-credentials:Z",
+        *(["-e", f"DOCKER_HOST=tcp://{n['net']}-docker:2375"]
+          if profile.host_api == "read" else []),
         "-e", "ASB_HOST_PORTS=" + ",".join(str(p) for p in profile.host_ports),
         "-e", f"ASB_WORKSPACE={ws}",
         IMAGE,

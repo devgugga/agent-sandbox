@@ -1,0 +1,21 @@
+[Unit]
+Description=Socket do Docker filtrado e so-leitura para o agent-sandbox
+After=docker.service
+Wants=docker.service
+
+[Service]
+Type=simple
+ExecStart=__PYTHON__ __SCRIPT__
+Environment=ASB_DOCKER_SOCK=__DOCKER_SOCK__
+Environment=ASB_BROKER_SOCK=/run/asb-docker/docker.sock
+Environment=ASB_BROKER_UID=__UID__
+Restart=on-failure
+RestartSec=2s
+RuntimeDirectory=asb-docker
+NoNewPrivileges=yes
+ProtectHome=yes
+ProtectSystem=strict
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target

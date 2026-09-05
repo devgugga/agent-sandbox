@@ -14,7 +14,13 @@ from . import podman
 from .profile import Profile, load_profile
 from .squid import render
 from .staging import build_staging
-from .workspace import Layout, layout_for, prepare_clone, remove_state
+from .workspace import (
+    Layout,
+    layout_for,
+    prepare_clone,
+    remove_state,
+    remove_workspace,
+)
 
 IMAGE = "agent-sandbox:latest"
 PROXY_IMAGE = "agent-sandbox-proxy:latest"
@@ -341,12 +347,48 @@ def resume(root: Path, ws: str) -> int:
     return emit(ws, layout_for(origin, ws, home))
 
 
-def pull(workspace: str) -> int:
-    raise NotImplementedError("pull nao implementado ainda")
+def pull(ws: str) -> int:
+    """Traz o trabalho do workspace para o checkout primario, SEM merge.
+
+    O operador testa e faz o push. Se precisar de ajuste, o workspace continua
+    vivo, o agente commita mais, e um novo pull traz a diferenca — e por isso
+    que o merge nao acontece aqui.
+    """
+    home = Path(os.path.expanduser("~"))
+    origin = _origin_of(ws, home)
+    if origin is None:
+        raise podman.PodmanError(f"workspace desconhecido: {ws}")
+    layout = layout_for(origin, ws, home)
+    branch = subprocess.run(
+        ["git", "-C", str(layout.project_root), "rev-parse",
+         "--abbrev-ref", "HEAD"],
+        capture_output=True, text=True, check=True).stdout.strip()
+    subprocess.run(["git", "-C", str(origin), "fetch",
+                    str(layout.project_root), f"{branch}:refs/asb/{ws}/{branch}"],
+                   check=True)
+    print(f"buscado em {origin}: refs/asb/{ws}/{branch}\n"
+          f"  revise:  git -C {origin} log refs/asb/{ws}/{branch}\n"
+          f"  integre: git -C {origin} merge refs/asb/{ws}/{branch}",
+          file=sys.stderr)
+    return 0
 
 
-def purge(workspace: str, confirmed: bool = False) -> int:
-    raise NotImplementedError("purge nao implementado ainda")
+def purge(ws: str, confirmed: bool) -> int:
+    """Remove tambem os ARQUIVOS do workspace. Irreversivel, logo explicito."""
+    home = Path(os.path.expanduser("~"))
+    origin = _origin_of(ws, home)
+    if origin is None:
+        raise podman.PodmanError(f"workspace desconhecido: {ws}")
+    layout = layout_for(origin, ws, home)
+    if not confirmed:
+        raise podman.PodmanError(
+            f"purge apaga {layout.mount}, incluindo commits que ainda nao "
+            f"voltaram para o host. Rode 'asb-agent pull --workspace {ws}' "
+            "antes, e repita com --yes se for isso mesmo.")
+    down(ws)
+    remove_workspace(layout)
+    print(f"removido: {layout.mount}", file=sys.stderr)
+    return 0
 
 
 def login(root: Path) -> int:

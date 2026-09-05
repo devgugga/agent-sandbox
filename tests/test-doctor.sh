@@ -1,78 +1,28 @@
 #!/usr/bin/env bash
-# tests/test-doctor.sh — diagnostico observavel e fail-closed.
+# tests/test-doctor.sh — diagnostico do ambiente.
 set -uo pipefail
-cd "$(dirname "$0")/.."
-source tests/assert.sh
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+source "$ROOT/tests/assert.sh"
 
 echo "== doctor =="
+OUT=$("$ROOT/cli/asb-agent" doctor 2>&1); RC=$?
 
-tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
-home="$tmp/home"
-config="$home/.config/agent-sandbox"
-mkdir -p "$tmp/bin" "$config/pods/asb-demo"
-printf 'key\n' > "$config/id_ed25519"
-printf 'pub\n' > "$config/id_ed25519.pub"
-printf 'pass\n' > "$config/keyring.pass"
-printf 'config\n' > "$config/pods/asb-demo/squid.conf"
-chmod 0600 "$config/id_ed25519" "$config/keyring.pass"
+require "doctor produz saida" sh -c '[ -n "'"$(printf %s "$OUT" | head -c 1)"'" ]'
 
-cat > "$tmp/bin/podman" <<'SH'
-#!/usr/bin/env bash
-case "$1 ${2:-} ${3:-}" in
-  "image exists agent-sandbox-auth")
-    [ "${ASB_TEST_MODE:-}" != missing-auth ]
-    exit $?
-    ;;
-  "image exists agent-sandbox-base") exit 0 ;;
-  "image exists agent-sandbox-net") [ "${ASB_TEST_MODE:-}" != missing-net ]; exit $? ;;
-  "pod ls "*) printf 'asb-demo\n'; exit 0 ;;
-esac
-case "$*" in
-  *"filter name=asb-demo-agent"*)
-    [ "${ASB_TEST_MODE:-}" = stopped ] || printf 'agent-id\n'
-    exit 0
-    ;;
-  *"filter name=asb-demo-squid"*) printf 'squid-id\n'; exit 0 ;;
-  *"inspect --format "*"asb-demo-agent"*) printf 'localhost/agent-sandbox-auth:latest\n'; exit 0 ;;
-  *"exec --user 900 asb-demo-squid"*)
-    [ "${ASB_TEST_MODE:-}" != bad-proxy ]
-    exit $?
-    ;;
-  *"nft list table inet asb"*) exit 0 ;;
-esac
-exit 0
-SH
-chmod +x "$tmp/bin/podman"
+assert_contains "podman" "$OUT" "verifica o podman"
+assert_contains "python" "$OUT" "verifica a versao do python"
+assert_contains "agent-sandbox:latest" "$OUT" "verifica a imagem base"
+assert_contains "asb-credentials" "$OUT" "verifica o volume de credenciais"
+assert_contains "podman-restart" "$OUT" "verifica a restauracao no boot"
 
-run_doctor() {
-  HOME="$home" XDG_CONFIG_HOME="$home/.config" PATH="$tmp/bin:$PATH" \
-    ASB_TEST_MODE="$1" ./cli/agent-sandbox doctor 2>&1
-}
+# Toda falha precisa nomear o comando exato. "algo esta errado" e inutil as 2h
+# da manha, e e o requisito da §16.1.
+if [ "$RC" -ne 0 ]; then
+  assert_contains "asb-agent" "$OUT" "toda falha nomeia um comando a executar"
+fi
 
-healthy=$(run_doctor healthy)
-healthy_rc=$?
-assert_eq "0" "$healthy_rc" "doctor aprova ambiente saudavel"
-assert_contains "OK" "$healthy" "doctor entrega diagnostico legivel"
-
-missing=$(run_doctor missing-auth)
-missing_rc=$?
-assert_eq "1" "$missing_rc" "doctor reprova imagem auth ausente"
-assert_contains "agent-sandbox-auth" "$missing" "doctor identifica a causa auth"
-
-bad_proxy=$(run_doctor bad-proxy)
-bad_proxy_rc=$?
-assert_eq "1" "$bad_proxy_rc" "doctor reprova proxy sem conectividade"
-assert_contains "proxy" "$bad_proxy" "doctor identifica a causa de rede"
-
-stopped=$(run_doctor stopped)
-stopped_rc=$?
-assert_eq "1" "$stopped_rc" "doctor nao declara pod parado como saudavel"
-assert_contains "suspenso" "$stopped" "doctor informa saude nao verificavel"
-
-missing_net=$(run_doctor missing-net)
-missing_net_rc=$?
-assert_eq "1" "$missing_net_rc" "doctor exige a imagem da fronteira de rede"
-assert_contains "agent-sandbox-net" "$missing_net" "doctor identifica imagem de rede ausente"
+echo "-- purge exige confirmacao --"
+assert_fails "purge sem --yes e recusado" \
+  "$ROOT/cli/asb-agent" purge --workspace inexistente
 
 report

@@ -1,0 +1,273 @@
+"""Testes de cli/asb/doctor.py e pull/purge em cli/asb/lifecycle.py."""
+from __future__ import annotations
+
+import io
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "cli"))
+
+from asb import doctor as doc_mod  # noqa: E402
+from asb import lifecycle  # noqa: E402
+from asb.podman import PodmanError  # noqa: E402
+
+
+class TestDoctor(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.fake_root = Path(self.tmp.name) / "checkout"
+        self.fake_home = Path(self.tmp.name) / "home"
+        self.fake_root.mkdir(parents=True)
+        self.fake_home.mkdir(parents=True)
+
+        # Fake guards
+        guard_bin = self.fake_root / "cli" / "asb-guard"
+        guard_bin.parent.mkdir(parents=True)
+        guard_bin.write_text("#!/bin/sh\n")
+
+        bin_dir = self.fake_home / ".local" / "bin"
+        bin_dir.mkdir(parents=True)
+        for agent in ("claude", "codex", "agy"):
+            (bin_dir / f"asb-{agent}").symlink_to(guard_bin)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    @mock.patch("asb.doctor.Path.home")
+    @mock.patch("asb.doctor.podman.running", return_value=False)
+    @mock.patch("asb.doctor.podman.exists", return_value=True)
+    @mock.patch("asb.doctor.podman.out", return_value="podman version 5.0.0")
+    @mock.patch("asb.doctor.shutil.which", return_value="/usr/bin/mock")
+    @mock.patch("asb.doctor.subprocess.run")
+    def test_doctor_all_healthy(
+        self, mock_run, mock_which, mock_out, mock_exists, mock_running, mock_home
+    ):
+        mock_home.return_value = self.fake_home
+        mock_run.return_value = mock.Mock(stdout="enabled\n")
+
+        out = io.StringIO()
+        with mock.patch("sys.stdout", out):
+            code = doc_mod.doctor(self.fake_root)
+
+        self.assertEqual(code, 0)
+        output = out.getvalue()
+        self.assertIn("podman instalado", output)
+        self.assertIn("podman 5.0.0 (>= 4.0)", output)
+        self.assertIn("git instalado", output)
+        self.assertIn("imagem agent-sandbox:latest", output)
+        self.assertIn("volume asb-credentials", output)
+        self.assertIn("podman-restart.service habilitado", output)
+        self.assertIn("guarda asb-claude aponta para este checkout", output)
+
+    @mock.patch("asb.doctor.Path.home")
+    @mock.patch("asb.doctor.podman.exists", return_value=True)
+    @mock.patch("asb.doctor.podman.out", return_value="podman version 5.0.0")
+    @mock.patch("asb.doctor.shutil.which")
+    @mock.patch("asb.doctor.subprocess.run")
+    def test_doctor_missing_podman(
+        self, mock_run, mock_which, mock_out, mock_exists, mock_home
+    ):
+        mock_home.return_value = self.fake_home
+        mock_which.side_effect = lambda cmd: None if cmd == "podman" else "/usr/bin/git"
+        mock_run.return_value = mock.Mock(stdout="enabled\n")
+
+        out = io.StringIO()
+        with mock.patch("sys.stdout", out):
+            code = doc_mod.doctor(self.fake_root)
+
+        self.assertEqual(code, 1)
+        output = out.getvalue()
+        self.assertIn("FALTA podman instalado  ->  instale o podman (>= 4.0)", output)
+
+    @mock.patch("asb.doctor.Path.home")
+    @mock.patch("asb.doctor.podman.exists", return_value=True)
+    @mock.patch("asb.doctor.podman.out", return_value="podman version 3.4.4")
+    @mock.patch("asb.doctor.shutil.which", return_value="/usr/bin/mock")
+    @mock.patch("asb.doctor.subprocess.run")
+    def test_doctor_old_podman(
+        self, mock_run, mock_which, mock_out, mock_exists, mock_home
+    ):
+        mock_home.return_value = self.fake_home
+        mock_run.return_value = mock.Mock(stdout="enabled\n")
+
+        out = io.StringIO()
+        with mock.patch("sys.stdout", out):
+            code = doc_mod.doctor(self.fake_root)
+
+        self.assertEqual(code, 1)
+        output = out.getvalue()
+        self.assertIn(
+            "FALTA podman 3.4.4 (>= 4.0)  ->  atualize: --internal e resolucao por nome exigem 4+",
+            output,
+        )
+
+    @mock.patch("asb.doctor.Path.home")
+    @mock.patch("asb.doctor.podman.running", return_value=False)
+    @mock.patch("asb.doctor.podman.exists")
+    @mock.patch("asb.doctor.podman.out", return_value="podman version 5.0.0")
+    @mock.patch("asb.doctor.shutil.which", return_value="/usr/bin/mock")
+    @mock.patch("asb.doctor.subprocess.run")
+    def test_doctor_missing_image_and_volume(
+        self, mock_run, mock_which, mock_out, mock_exists, mock_running, mock_home
+    ):
+        mock_home.return_value = self.fake_home
+        mock_run.return_value = mock.Mock(stdout="enabled\n")
+        mock_exists.return_value = False
+
+        out = io.StringIO()
+        with mock.patch("sys.stdout", out):
+            code = doc_mod.doctor(self.fake_root)
+
+        self.assertEqual(code, 1)
+        output = out.getvalue()
+        self.assertIn("FALTA imagem agent-sandbox:latest  ->  asb-agent build", output)
+        self.assertIn("FALTA volume asb-credentials  ->  asb-agent login", output)
+
+    @mock.patch("asb.doctor.Path.home")
+    @mock.patch("asb.doctor.podman.running", return_value=False)
+    @mock.patch("asb.doctor.podman.exists", return_value=True)
+    @mock.patch("asb.doctor.podman.out", return_value="podman version 5.0.0")
+    @mock.patch("asb.doctor.shutil.which", return_value="/usr/bin/mock")
+    @mock.patch("asb.doctor.subprocess.run")
+    def test_doctor_guards_invalid(
+        self, mock_run, mock_which, mock_out, mock_exists, mock_running, mock_home
+    ):
+        mock_home.return_value = self.fake_home
+        mock_run.return_value = mock.Mock(stdout="enabled\n")
+
+        # Break a guard
+        claude_link = self.fake_home / ".local" / "bin" / "asb-claude"
+        claude_link.unlink()
+        claude_link.symlink_to(Path("/other/path"))
+
+        out = io.StringIO()
+        with mock.patch("sys.stdout", out):
+            code = doc_mod.doctor(self.fake_root)
+
+        self.assertEqual(code, 1)
+        output = out.getvalue()
+        self.assertIn(
+            "FALTA guarda asb-claude aponta para este checkout  ->  asb-agent install-guards",
+            output,
+        )
+
+    @mock.patch("asb.doctor.Path.home")
+    @mock.patch("asb.doctor.podman.running")
+    @mock.patch("asb.doctor.podman.exists")
+    @mock.patch("asb.doctor.podman.out", return_value="podman version 5.0.0")
+    @mock.patch("asb.doctor.shutil.which", return_value="/usr/bin/mock")
+    @mock.patch("asb.doctor.subprocess.run")
+    def test_doctor_workspace_listing(
+        self, mock_run, mock_which, mock_out, mock_exists, mock_running, mock_home
+    ):
+        mock_home.return_value = self.fake_home
+        mock_run.return_value = mock.Mock(stdout="enabled\n")
+
+        # Create 3 workspace states: ws-running, ws-stopped, ws-nocontainer
+        state_dir = self.fake_home / ".local" / "state" / "agent-sandbox"
+        for ws in ("ws-running", "ws-stopped", "ws-nocontainer"):
+            origin_file = state_dir / ws / "origin"
+            origin_file.parent.mkdir(parents=True)
+            origin_file.write_text("/fake/origin")
+
+        def fake_exists(kind, name):
+            if kind == "container" and name == "asb-ws-nocontainer-agent":
+                return False
+            return True
+
+        def fake_running(name):
+            return name == "asb-ws-running-agent"
+
+        mock_exists.side_effect = fake_exists
+        mock_running.side_effect = fake_running
+
+        out = io.StringIO()
+        with mock.patch("sys.stdout", out):
+            code = doc_mod.doctor(self.fake_root)
+
+        self.assertEqual(code, 0)
+        output = out.getvalue()
+        self.assertIn("ws-nocontainer: SEM CONTAINER  ->  asb-agent up", output)
+        self.assertIn("ws-running: rodando", output)
+        self.assertIn("ws-stopped: parado  ->  asb-agent resume --workspace ws-stopped", output)
+
+
+class TestPull(unittest.TestCase):
+    @mock.patch("asb.lifecycle._origin_of", return_value=None)
+    def test_pull_unknown_workspace_raises(self, mock_origin):
+        with self.assertRaises(PodmanError) as ctx:
+            lifecycle.pull("unknown-ws")
+        self.assertIn("workspace desconhecido: unknown-ws", str(ctx.exception))
+
+    @mock.patch("asb.lifecycle._origin_of")
+    @mock.patch("asb.lifecycle.subprocess.run")
+    def test_pull_fetches_into_namespaced_ref(self, mock_run, mock_origin):
+        with tempfile.TemporaryDirectory() as tmp:
+            origin = Path(tmp) / "origin"
+            origin.mkdir()
+            mock_origin.return_value = origin
+
+            mock_run.return_value = mock.Mock(stdout="feat/awesome\n")
+
+            err = io.StringIO()
+            with mock.patch("sys.stderr", err):
+                code = lifecycle.pull("test-ws")
+
+            self.assertEqual(code, 0)
+            mock_run.assert_has_calls([
+                mock.call(
+                    ["git", "-C", mock.ANY, "rev-parse", "--abbrev-ref", "HEAD"],
+                    capture_output=True, text=True, check=True
+                ),
+                mock.call(
+                    ["git", "-C", str(origin), "fetch", mock.ANY,
+                     "feat/awesome:refs/asb/test-ws/feat/awesome"],
+                    check=True
+                ),
+            ])
+            self.assertIn("buscado em", err.getvalue())
+            self.assertIn("refs/asb/test-ws/feat/awesome", err.getvalue())
+
+
+class TestPurge(unittest.TestCase):
+    @mock.patch("asb.lifecycle._origin_of", return_value=None)
+    def test_purge_unknown_workspace_raises(self, mock_origin):
+        with self.assertRaises(PodmanError) as ctx:
+            lifecycle.purge("unknown-ws", confirmed=True)
+        self.assertIn("workspace desconhecido: unknown-ws", str(ctx.exception))
+
+    @mock.patch("asb.lifecycle._origin_of")
+    def test_purge_unconfirmed_raises(self, mock_origin):
+        with tempfile.TemporaryDirectory() as tmp:
+            origin = Path(tmp) / "origin"
+            origin.mkdir()
+            mock_origin.return_value = origin
+
+            with self.assertRaises(PodmanError) as ctx:
+                lifecycle.purge("test-ws", confirmed=False)
+            self.assertIn("purge apaga", str(ctx.exception))
+            self.assertIn("asb-agent pull --workspace test-ws", str(ctx.exception))
+            self.assertIn("--yes", str(ctx.exception))
+
+    @mock.patch("asb.lifecycle.remove_workspace")
+    @mock.patch("asb.lifecycle.down")
+    @mock.patch("asb.lifecycle._origin_of")
+    def test_purge_confirmed_calls_down_and_remove(
+        self, mock_origin, mock_down, mock_remove
+    ):
+        with tempfile.TemporaryDirectory() as tmp:
+            origin = Path(tmp) / "origin"
+            origin.mkdir()
+            mock_origin.return_value = origin
+
+            err = io.StringIO()
+            with mock.patch("sys.stderr", err):
+                code = lifecycle.purge("test-ws", confirmed=True)
+
+            self.assertEqual(code, 0)
+            mock_down.assert_called_once_with("test-ws")
+            mock_remove.assert_called_once()
+            self.assertIn("removido:", err.getvalue())

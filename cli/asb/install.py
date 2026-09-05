@@ -42,22 +42,28 @@ def podman_restart() -> int:
     return 0
 
 
-def guards(root: Path) -> int:
-    """Instala os nomes que vao no campo Command do Orca.
+def _link(link: Path, dest: Path) -> None:
+    """Symlink para o checkout, nunca copia: uma copia envelhece em silencio e
+    o agente passa a se comportar diferente do que este repositorio diz."""
+    if link.is_symlink() or link.exists():
+        link.unlink()
+    link.symlink_to(dest)
+    print(f"instalado: {link}", file=sys.stderr)
 
-    Symlinks para o checkout, nunca copias: uma copia envelhece em silencio e
-    o agente passa a se comportar diferente do que este repositorio diz.
-    """
+
+def guards(root: Path) -> int:
+    """Instala os nomes que vao no campo Command do Orca, e o proprio CLI."""
     target = Path.home() / ".local" / "bin"
     target.mkdir(parents=True, exist_ok=True)
     for agent in ("claude", "codex", "agy"):
-        link = target / f"asb-{agent}"
-        if link.is_symlink() or link.exists():
-            link.unlink()
-        link.symlink_to(root / "cli" / "asb-guard")
-        print(f"instalado: {link}", file=sys.stderr)
+        _link(target / f"asb-{agent}", root / "cli" / "asb-guard")
+    # Sem o CLI no PATH o operador so consegue opera-lo de dentro do checkout.
+    # O entrypoint ja resolve o proprio caminho com Path(__file__).resolve(),
+    # que segue o symlink — o link era a unica peca faltando.
+    _link(target / "asb-agent", root / "cli" / "asb-agent")
     print("Em Orca -> Settings -> Agents, troque o campo Command:\n"
-          "  claude -> asb-claude | codex -> asb-codex | agy -> asb-agy",
+          "  claude -> asb-claude | codex -> asb-codex | agy -> asb-agy\n"
+          "asb-agent passa a rodar de qualquer diretorio.",
           file=sys.stderr)
     return 0
 

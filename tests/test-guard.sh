@@ -43,9 +43,19 @@ case "$out" in
 esac
 
 # Dentro da imagem o guarda tem de ser transparente, senao o agente nem inicia.
-out=$(podman run --rm --entrypoint sh agent-sandbox-base -c 'asb-claude --version' 2>&1)
+#
+# IMG traz tag explicita e --pull=never. Sem os dois, uma imagem ausente faz o
+# podman procurar o nome no Docker Hub: o teste passaria a exercitar a imagem
+# de um terceiro em vez da nossa, ou falharia por rede em vez de por politica.
+# O nome antigo "agent-sandbox-base" ficou aqui depois que a imagem virou
+# "agent-sandbox", e so nao explodiu enquanto sobrou um resto de build local.
+IMG=agent-sandbox:latest
+require "a imagem $IMG existe localmente" \
+  podman run --rm --pull=never --entrypoint sh "$IMG" -c true
+
+out=$(podman run --rm --pull=never --entrypoint sh "$IMG" -c 'asb-claude --version' 2>&1)
 assert_contains "Claude Code" "$out" "transparente dentro do sandbox"
-out=$(podman run --rm --entrypoint sh agent-sandbox-base -c 'test -f /etc/agent-sandbox-release && echo presente' 2>&1)
+out=$(podman run --rm --pull=never --entrypoint sh "$IMG" -c 'test -f /etc/agent-sandbox-release && echo presente' 2>&1)
 assert_contains "presente" "$out" "marcador do sandbox na imagem"
 
 # Com caminho identico, o comando de hook do Orca ja e valido dentro do

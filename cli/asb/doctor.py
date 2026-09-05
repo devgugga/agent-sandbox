@@ -187,6 +187,15 @@ def doctor(root: Path) -> int:
                          f"guarda asb-{agent} aponta para este checkout",
                          "asb-agent install-guards")
 
+    # Sem este link o CLI so roda de dentro do checkout. O v1 nao tinha essa
+    # limitacao, e a ausencia dele e silenciosa: o operador so descobre quando
+    # digita `asb-agent` em outro diretorio e nao acontece nada.
+    cli_link = guards / "asb-agent"
+    cli_target = (root / "cli" / "asb-agent").resolve()
+    healthy &= _line(cli_link.is_symlink() and cli_link.resolve() == cli_target,
+                     "asb-agent aponta para este checkout",
+                     "asb-agent install-guards")
+
     broker = Path("/run/asb-docker/docker.sock")
     _line(broker.is_socket(),
           'broker do Docker (opcional; so para host_api = "read")',

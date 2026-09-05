@@ -54,7 +54,7 @@ The CLI entrypoint is `cli/asb-agent` (symlinked as `asb`):
 Additional utility commands:
 - `asb-agent list`: lists active and stopped workspaces and their backing repositories.
 - `asb-agent suspend --workspace <id>`: puts workspace containers to sleep (`podman stop`).
-- `asb-agent install-guards`: installs host command wrappers (`asb-claude`, `asb-codex`, `asb-agy`) into `~/.local/bin`.
+- `asb-agent install-guards`: installs the host command wrappers (`asb-claude`, `asb-codex`, `asb-agy`) **and `asb-agent` itself** into `~/.local/bin`, so the CLI runs from any directory instead of only from the checkout. All four are symlinks, never copies: a copy ages silently and starts behaving differently from what this repository says. `asb-agent doctor` verifies each one still points at this checkout — moving the checkout breaks them, and the failure is otherwise silent.
 - `asb-agent install-broker`: configures and starts the filtered Docker read-only broker (requires `sudo`).
 
 ---

@@ -32,6 +32,9 @@ class TestDoctor(unittest.TestCase):
         bin_dir.mkdir(parents=True)
         for agent in ("claude", "codex", "agy"):
             (bin_dir / f"asb-{agent}").symlink_to(guard_bin)
+        cli_bin = self.fake_root / "cli" / "asb-agent"
+        cli_bin.write_text("#!/usr/bin/env python3\n")
+        (bin_dir / "asb-agent").symlink_to(cli_bin)
 
     def tearDown(self):
         self.tmp.cleanup()
@@ -61,6 +64,28 @@ class TestDoctor(unittest.TestCase):
         self.assertIn("volume asb-credentials", output)
         self.assertIn("podman-restart.service habilitado", output)
         self.assertIn("guarda asb-claude aponta para este checkout", output)
+
+    @mock.patch("asb.doctor.Path.home")
+    @mock.patch("asb.doctor.podman.running", return_value=False)
+    @mock.patch("asb.doctor.podman.exists", return_value=True)
+    @mock.patch("asb.doctor.podman.out", return_value="podman version 5.0.0")
+    @mock.patch("asb.doctor.shutil.which", return_value="/usr/bin/mock")
+    @mock.patch("asb.doctor.subprocess.run")
+    def test_doctor_acusa_asb_agent_fora_do_path(
+        self, mock_run, mock_which, mock_out, mock_exists, mock_running, mock_home
+    ):
+        """Sem o link o CLI so roda de dentro do checkout, e isso fica mudo."""
+        mock_home.return_value = self.fake_home
+        mock_run.return_value = mock.Mock(stdout="enabled\n")
+        (self.fake_home / ".local" / "bin" / "asb-agent").unlink()
+
+        out = io.StringIO()
+        with mock.patch("sys.stdout", out):
+            code = doc_mod.doctor(self.fake_root)
+
+        self.assertEqual(code, 1)
+        self.assertIn("asb-agent aponta para este checkout", out.getvalue())
+        self.assertIn("FALTA", out.getvalue())
 
     @mock.patch("asb.doctor.Path.home")
     @mock.patch("asb.doctor.podman.exists", return_value=True)

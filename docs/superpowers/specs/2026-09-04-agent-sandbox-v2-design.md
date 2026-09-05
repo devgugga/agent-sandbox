@@ -130,9 +130,9 @@ mecânica do problema #2.
 | D1 | **Isolamento por topologia de rede**, não por firewall aplicado | F1: a rede `--internal` é reconstruída pelo Podman a cada partida. Não há regra a perder, nem ordem a respeitar, nem prova a fazer. Elimina o invariante da §1.2. |
 | D2 | **Sem pod.** Containers independentes numa rede nomeada | O pod existia para compartilhar o netns com o init container do firewall. Sem firewall, o pod não tem função — e some junto o `--userns` no pod, a distinção infra/membros e o `pod start` que subia tudo de uma vez. |
 | D3 | **Um container por nível de confiança** | O proxy passa a ter perna na rede externa: qualquer processo nele tem egresso. Fundir squid, filtro de Docker e forwarders faria "acesso a Docker" implicar "egresso irrestrito". |
-| D4 | **Caminho idêntico host↔container**, usuário `v`, uid 1000, home `/home/v` | F7: a worktree irmã precisa cair numa pasta montada. Idêntico (não só montado) também elimina a reescrita de caminhos de hooks do Orca. |
+| D4 | **Caminho idêntico host↔container**: o usuário do container espelha o do host (mesmo nome, uid 1000, mesmo `$HOME`) | F7: a worktree irmã precisa cair numa pasta montada. Idêntico (não só montado) também elimina a reescrita de caminhos de hooks do Orca. |
 | D5 | **Credenciais em volume nomeado**, não em imagem derivada | Imagem derivada acopla login a rebuild de imagem (problema #1) e produz `agent-sandbox-auth-prev3`. Volume sobrevive a rebuild, a `down` e a reboot. |
-| D6 | **Python 3 da stdlib, arquivo único, zero dependências** | `tomllib` é stdlib; YAML exigiria PyYAML instalado no host. O programa só orquestra `podman`: binário estático não compra nada, e um passo de build atrapalha correção emergencial. Robustez vem de menos invariantes (§1.2), não de tipagem. |
+| D6 | **Python 3 da stdlib, sem dependências e sem passo de build** | `tomllib` é stdlib; YAML exigiria PyYAML instalado no host. O programa só orquestra `podman`: binário estático não compra nada, e um passo de build atrapalha correção emergencial. Robustez vem de menos invariantes (§1.2), não de tipagem. O CLI é um **pacote de módulos focados** (`cli/asb/`), não um arquivo só: um módulo de ~1300 linhas seria exatamente a peça difícil de manter que esta reconstrução existe para evitar. Continua rodando direto do checkout, sem instalar nada. |
 | D7 | **Acesso a Docker é eixo configurável por projeto**, default fechado | As necessidades diferem por projeto e projetos futuros não são conhecidos. `host_ports`, `mode` e `host_api` são independentes. |
 | D8 | **Nunca montar `/var/run/docker.sock` cru no sandbox** | F5: é root do host. Anularia a fronteira inteira. Não é construído nem como opt-in. |
 | D9 | **`podman-restart.service` no lugar de restauração customizada** | F4: unidade oficial, já ordenada após a rede. Substitui `restore-all`, a espera por rota/DNS, a unidade customizada e o código de saída 2. |
@@ -195,12 +195,21 @@ sucesso.
 
 ### 5.1 Layout
 
+O usuário do container **espelha o do host**: mesmo nome, uid 1000, mesmo
+`$HOME`. Nesta máquina isso é `v` e `/home/v`; em outra, o que o host tiver.
+Os dois entram como `--build-arg` (`ASB_USER`, `ASB_HOME`) em `asb-agent
+build`, derivados de `id -un` e `$HOME`. **Nada é fixado em código** — um nome
+de usuário assado na imagem quebraria a §16 no primeiro host diferente, e o
+sintoma seriam caminhos que não batem, difícil de diagnosticar.
+
 ```
 host                                          container
-~/asb-agent/hexmed-stack/mvp-closure/    ←→   /home/v/asb-agent/hexmed-stack/mvp-closure/
+~/asb-agent/hexmed-stack/mvp-closure/    ←→   $HOME/asb-agent/hexmed-stack/mvp-closure/
    ├─ hexmed-stack/          clone com hardlinks — este é o projectRoot
    └─ hexmed-stack-<Nome>/   worktree irmã criada pelo Orca (F7), visível no host
 ```
+
+(`$HOME` acima é o mesmo caminho nos dois lados; nesta máquina, `/home/v`.)
 
 `~/Data/Projects/<proj>` (o checkout primário, com o `.git` de origem) **nunca é
 montado**. O agente enxerga apenas a própria worktree.

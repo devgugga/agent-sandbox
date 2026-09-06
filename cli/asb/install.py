@@ -8,6 +8,7 @@ no boot em silencio.
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -15,6 +16,7 @@ from pathlib import Path
 BROKER_SCRIPT = Path("/usr/local/lib/asb-docker-broker.py")
 BROKER_UNIT = Path("/etc/systemd/system/asb-docker-broker.service")
 DOCKER_SOCKETS = ("/var/run/docker.sock", "/run/docker.sock")
+PODMAN_RESTART_UNIT = Path("/usr/lib/systemd/user/podman-restart.service")
 
 
 def podman_restart() -> int:
@@ -29,12 +31,36 @@ def podman_restart() -> int:
     Sem linger de proposito: o Orca so roda apos o login, entao uma unidade que
     parte no login e cedo o bastante.
     """
-    unit = Path("/usr/lib/systemd/user/podman-restart.service")
-    if not unit.is_file():
+    if not PODMAN_RESTART_UNIT.is_file():
         print("podman-restart.service nao encontrado; sem restauracao "
               "automatica no boot. Use 'asb-agent resume' apos religar.",
               file=sys.stderr)
         return 1
+
+    podman_bin = shutil.which("podman")
+    if not podman_bin:
+        print("podman nao encontrado no PATH", file=sys.stderr)
+        return 1
+
+    true_bin = shutil.which("true")
+    if not true_bin:
+        print("true nao encontrado no PATH", file=sys.stderr)
+        return 1
+
+    dropin = (
+        Path.home()
+        / ".config"
+        / "systemd"
+        / "user"
+        / "podman-restart.service.d"
+        / "agent-sandbox.conf"
+    )
+    dropin.parent.mkdir(parents=True, exist_ok=True)
+    dropin.write_text(
+        f"[Service]\nExecStartPre={podman_bin} unshare --rootless-netns {true_bin}\n"
+    )
+
+    subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
     subprocess.run(["systemctl", "--user", "enable", "podman-restart.service"],
                    check=True)
     print("restauracao no boot habilitada (podman-restart.service)",

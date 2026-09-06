@@ -1,0 +1,10 @@
+# Never recursively index Graphify's own generated corpus
+graphify-out/
+
+# Local diagnostics, backups and temporary files
+*.graphify-bak
+*.graphify.log
+
+# Claude mirrors canonical project-scoped skill in .agents/.
+# Indexing both creates duplicate knowledge communities.
+.claude/skills/graphify/

@@ -153,6 +153,133 @@ class TestReloadAllowlist(unittest.TestCase):
             mock_load.assert_called_once_with(origin)
 
 
+class TestLifecycleOrdering(unittest.TestCase):
+    def test_up_ensures_rootless_netns_before_proxy_run(self):
+        from unittest import mock
+        from cli.asb.lifecycle import _up
+        from cli.asb.profile import Profile
+        from cli.asb.workspace import Layout
+
+        events: list[str] = []
+
+        def fake_run(*args, **kwargs):
+            if len(args) >= 4 and args[0] == "run" and "--name" in args:
+                idx = args.index("--name") + 1
+                if args[idx] == "asb-test-ws-proxy":
+                    events.append("podman run proxy")
+            return mock.MagicMock(returncode=0)
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            fake_root = tmp / "repo-root"
+            fake_state = tmp / "state"
+            fake_mount = tmp / "mount"
+            fake_repo = tmp / "origin"
+            for d in (fake_root, fake_state, fake_mount, fake_repo):
+                d.mkdir(parents=True)
+            fake_layout = Layout(
+                ws="test-ws",
+                project="proj",
+                mount=fake_mount,
+                project_root=fake_mount / "proj",
+                state=fake_state,
+            )
+            fake_key = tmp / "key"
+            fake_key.write_text("dummy")
+            (tmp / "key.pub").write_text("ssh-ed25519 AAA dummy")
+            fake_pass = tmp / "keyring.pass"
+            fake_pass.write_text("secret")
+
+            fake_profile = Profile(
+                services=[],
+                host_ports=[],
+                publish_ports=[],
+                host_api="none",
+                container_mode="standard",
+                allow=[],
+            )
+
+            def fake_exists(kind: str, name: str) -> bool:
+                if kind == "container" and name == "asb-test-ws-agent":
+                    return False
+                return True
+
+            with mock.patch("cli.asb.lifecycle.podman.exists", side_effect=fake_exists), \
+                 mock.patch("cli.asb.lifecycle.podman.ensure_rootless_netns", side_effect=lambda: events.append("ensure_rootless_netns")), \
+                 mock.patch("cli.asb.lifecycle.podman.run", side_effect=fake_run), \
+                 mock.patch("cli.asb.lifecycle.load_profile", return_value=fake_profile), \
+                 mock.patch("cli.asb.lifecycle.layout_for", return_value=fake_layout), \
+                 mock.patch("cli.asb.lifecycle.prepare_clone"), \
+                 mock.patch("cli.asb.lifecycle.render", return_value="acl allow ..."), \
+                 mock.patch("cli.asb.lifecycle.build_staging", return_value=0), \
+                 mock.patch("cli.asb.lifecycle.ensure_ssh_key", return_value=fake_key), \
+                 mock.patch("cli.asb.lifecycle.ensure_keyring_pass", return_value=fake_pass), \
+                 mock.patch("cli.asb.lifecycle.ensure_credentials_volume", return_value="cred-vol"), \
+                 mock.patch("cli.asb.lifecycle.ensure_toolcache_volume", return_value="tool-vol"), \
+                 mock.patch("cli.asb.lifecycle.discover_mise_dirs", return_value=[]), \
+                 mock.patch("cli.asb.lifecycle.emit", return_value=0), \
+                 mock.patch("cli.asb.install.podman_restart"):
+                rc = _up(fake_root, "test-ws", fake_repo)
+                self.assertEqual(rc, 0)
+
+            self.assertIn("ensure_rootless_netns", events)
+            self.assertIn("podman run proxy", events)
+            self.assertLess(
+                events.index("ensure_rootless_netns"),
+                events.index("podman run proxy"),
+            )
+
+    def test_resume_ensures_rootless_netns_before_proxy_start(self):
+        from unittest import mock
+        from cli.asb.lifecycle import resume
+        from cli.asb.workspace import Layout
+
+        events: list[str] = []
+
+        def fake_run(*args, **kwargs):
+            if len(args) >= 2 and args[0] == "start" and args[1] == "asb-test-ws-proxy":
+                events.append("podman start proxy")
+            return mock.MagicMock(returncode=0)
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            fake_root = tmp / "repo-root"
+            fake_state = tmp / "state"
+            fake_mount = tmp / "mount"
+            fake_origin = tmp / "origin"
+            for d in (fake_root, fake_state, fake_mount, fake_origin):
+                d.mkdir(parents=True)
+            fake_layout = Layout(
+                ws="test-ws",
+                project="proj",
+                mount=fake_mount,
+                project_root=fake_mount / "proj",
+                state=fake_state,
+            )
+            fake_names = {
+                "net": "asb-test-ws",
+                "out": "asb-test-ws-out",
+                "agent": "asb-test-ws-agent",
+                "proxy": "asb-test-ws-proxy",
+            }
+
+            with mock.patch("cli.asb.lifecycle._require_workspace", return_value=(fake_names, tmp / "home", fake_origin)), \
+                 mock.patch("cli.asb.lifecycle.podman.ensure_rootless_netns", side_effect=lambda: events.append("ensure_rootless_netns")), \
+                 mock.patch("cli.asb.lifecycle.podman.exists", return_value=True), \
+                 mock.patch("cli.asb.lifecycle.podman.run", side_effect=fake_run), \
+                 mock.patch("cli.asb.lifecycle.podman.out", return_value=""), \
+                 mock.patch("cli.asb.lifecycle.layout_for", return_value=fake_layout), \
+                 mock.patch("cli.asb.lifecycle.emit", return_value=0):
+                rc = resume(fake_root, "test-ws")
+                self.assertEqual(rc, 0)
+
+            self.assertIn("ensure_rootless_netns", events)
+            self.assertIn("podman start proxy", events)
+            self.assertLess(
+                events.index("ensure_rootless_netns"),
+                events.index("podman start proxy"),
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

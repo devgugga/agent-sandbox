@@ -228,6 +228,7 @@ def _up(root: Path, ws: str, repo: Path) -> int:
         raise podman.PodmanError(
             f"workspace ja existe: {ws} (use 'resume', ou 'down' primeiro)")
 
+    podman.ensure_rootless_netns()
     build_proxy(root)
     home = Path(os.path.expanduser("~"))
     profile = load_profile(repo)
@@ -441,6 +442,7 @@ def resume(root: Path, ws: str) -> int:
     broker) tambem sao religados.
     """
     n, home, origin = _require_workspace(ws)
+    podman.ensure_rootless_netns()
     if podman.exists("container", n["proxy"]):
         podman.run("start", n["proxy"], check=False)
     containers = podman.out(

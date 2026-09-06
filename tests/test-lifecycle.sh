@@ -46,6 +46,7 @@ OUT2=$("$ROOT/cli/asb-agent" resume --workspace "$WS") || {
 PORT_DEPOIS=$(printf '%s' "$OUT2" | python3 -c 'import json,sys; print(json.load(sys.stdin)["port"])')
 
 require "o agente responde apos o resume" podman exec "$AGENT" true
+require "CONNECT funciona apos o resume" connect_ok
 
 # A porta e resolvida na CRIACAO e gravada no spec do container. O Orca guarda
 # a que o create devolveu e disca nela para sempre — inclusive apos reboot.

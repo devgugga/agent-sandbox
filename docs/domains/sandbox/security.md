@@ -15,6 +15,7 @@ The sandbox is designed around strict containment boundaries enforced by rootles
 3. **The host Docker socket (`/var/run/docker.sock`) is NEVER mounted directly.** Unfiltered Docker socket access is equivalent to root on the host. When Docker access is enabled, it is exclusively routed through a read-only HTTP broker (`host_api = "read"`).
 4. **The agent container has NO direct network egress, NO `CAP_NET_ADMIN`, and NO `sudo`.** Network egress is blocked at the network topology level (`--internal` network without a default route).
 5. **The primary checkout (`~/Data/Projects/<proj>`) is never mounted.** The sandbox operates on a hardlink clone with isolated worktrees under `~/asb-agent/<proj>/<ws>/`.
+6. **The Secret Service daemon runs as a strictly isolated singleton (`asb-keyring`).** It has `--network none` (zero network interfaces or egress), no workspace mounts, and mounts the host passphrase strictly as read-only (`ro,Z`). Client containers never receive the passphrase.
 
 ---
 
@@ -55,17 +56,24 @@ The agent container has **no external DNS resolution**. Name resolution occurs e
 
 ---
 
-## 4. Credential Isolation & The Antigravity Keyring
+## 4. Credential Isolation & The Singleton Secret Service
 
-Agent model credentials are authenticated once per machine (`asb-agent login`) and stored in a dedicated named volume (`asb-credentials`):
+Agent model credentials are authenticated once per machine (`asb-agent login`) and managed through a combination of dedicated named volumes (`asb-credentials`, `asb-keyring-runtime`) and the singleton service container (`asb-keyring`):
 
 | Agent | Storage Format | Protection Mechanism |
 | :--- | :--- | :--- |
-| Claude Code | `claude.json` | Linked into `$HOME/.claude/.credentials.json` |
-| OpenAI Codex | `codex-auth.json` | Linked into `$HOME/.codex/auth.json` |
-| Google Antigravity | `keyrings/` | Secret Service D-Bus encrypted keyring |
+| Claude Code | Secret Service / `claude.json` fallback | Queried via D-Bus session bus; fallback linked into `$HOME/.claude/.credentials.json` |
+| OpenAI Codex | `codex-auth.json` | Plaintext token file linked into `$HOME/.codex/auth.json` on `asb-credentials` |
+| Google Antigravity | `keyrings/` | GNOME Keyring encrypted via Secret Service D-Bus API |
 
-### Keyring Passphrase Protection
-Antigravity stores its OAuth tokens in the GNOME Keyring. The keyring is encrypted using a 32-byte cryptographically secure random passphrase generated at `~/.config/agent-sandbox/keyring.pass` (file mode `0600`).
-- The passphrase is **never baked into any container image**.
-- A copy of the container image or volume stolen or moved to another machine cannot decrypt the keyring without the host's `keyring.pass`.
+### Secret Service Daemon Isolation (`asb-keyring`)
+To eliminate multi-daemon concurrency race conditions and session drops, exactly one container (`asb-keyring`) runs GNOME Keyring and D-Bus session bus:
+- **Zero Network (`--network none`)**: `asb-keyring` has no network interfaces beyond loopback. It has no external egress, no internal workspace bridge attachment, and cannot establish outbound connections.
+- **No Workspace Mounts**: `asb-keyring` has no access to workspace files, host directories, Docker sockets, or SSH keys.
+- **Single Owner of Keyring Files**: Sole writer to `/run/asb-credentials/keyrings`. Client containers do not mount the `keyrings/` directory directly, preventing corruption.
+- **Passphrase Protection**: The 32-byte cryptographically secure random passphrase (`~/.config/agent-sandbox/keyring.pass`, file mode `0600`) is mounted strictly read-only into `/run/asb-keyring-pass:ro,Z`.
+  - The passphrase is **never baked into any container image**.
+  - The passphrase is **never passed as an environment variable** (never visible in `podman inspect`).
+  - Workspace client containers do not mount the passphrase and do not receive `ASB_KEYRING_PASS`.
+  - A copy of the container image or volume stolen or moved to another machine cannot decrypt the keyring without the host's `keyring.pass`.
+- **D-Bus Session Bus Over Private Unix Socket**: `asb-keyring` publishes its D-Bus session socket inside named Podman volume `asb-keyring-runtime` at `/run/asb-keyring/bus`. Workspace clients mount this volume as read-only (`:ro,z`) and communicate via `DBUS_SESSION_BUS_ADDRESS=unix:path=/run/asb-keyring/bus`. The socket is strictly local to container namespaces and is never exposed over TCP or host network ports.

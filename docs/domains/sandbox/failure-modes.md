@@ -185,3 +185,23 @@ Each entry records a real failure mode formatted as **Symptom**, **Cause**, and 
     asb-agent doctor
     ```
     or manually restart stopped workspaces with `asb-agent resume --workspace <id>`.
+
+---
+
+## 20. Multi-Daemon Keyring Concurrency & Session Loss (False Green Login)
+
+- **Symptom**: `asb-agent login` passes successfully in its temporary container, but subsequent commands in workspace containers (`asb-claude`, `asb-agy`, or interactive sessions) prompt for authentication again or report missing credentials ("perdi a sessão"). Re-running login temporarily succeeds only to fail again in workspaces.
+- **Cause**: Prior to the singleton architecture, each container (the ephemeral login container and every workspace container) launched its own isolated `dbus-daemon` and `gnome-keyring-daemon` against the shared `keyrings/` storage on the `asb-credentials` volume. When `asb-agent login` wrote credentials, it verified them against its own in-container daemon before terminating. A newly launched workspace container started a separate daemon instance, which does not safely detect or reload encrypted records written by another daemon instance over shared files. Furthermore, concurrent workspaces running multiple daemons simultaneously risked race conditions and database corruption. (Codex was unaffected because it stores its token directly in `codex-auth.json`).
+- **Fix**: Centralized Secret Service ownership into a global singleton container (`asb-keyring`):
+  1. **Singleton Daemon**: Exactly one `asb-keyring` container runs with `--network none`, `--restart unless-stopped`, and uid 1000. It has no workspace mounts and is the sole owner and writer of the `keyrings/` database. Passphrase is mounted strictly read-only (`ro,Z`) and never exposed in environment variables.
+  2. **Shared D-Bus Session Socket**: `asb-keyring` publishes `/run/asb-keyring/bus` into the `asb-keyring-runtime` volume. All client containers (ephemeral login and workspace agents) mount `asb-keyring-runtime` as read-only (`:ro,z`) and connect using `DBUS_SESSION_BUS_ADDRESS=unix:path=/run/asb-keyring/bus`. Neither clients nor login containers run local D-Bus or GNOME Keyring daemons.
+  3. **Migrating Old Workspaces**: Containers created prior to the singleton architecture do not mount `asb-keyring-runtime` and lack the session bus address. Because volume mounts cannot be dynamically attached to existing containers, old workspaces must be recreated:
+     ```bash
+     # Crucial: pull local workspace changes first to protect unmerged work!
+     asb-agent pull --workspace <ws>
+     asb-agent down --workspace <ws>
+     asb-agent up --workspace <ws> --repo <repo>
+     ```
+  4. **Diagnostics and Recovery**:
+     - Verify keyring service health using `asb-agent doctor`. It checks container status, socket readiness, and verifies `org.freedesktop.secrets` responsiveness on the session bus.
+     - To recover a stopped or unhealthy keyring service, run `asb-agent login`. If schema corruption or incompatible versions occur, remove the container with `podman rm -f asb-keyring` and run `asb-agent login`.

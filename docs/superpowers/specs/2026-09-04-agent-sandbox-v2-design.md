@@ -336,6 +336,9 @@ existe forma honesta de chamar isso de contenção. Quem precisar disso usa
 
 ### 7.1 Credenciais em volume
 
+> [!NOTE]
+> **Nota de substituição (2026-09-06)**: A arquitetura de daemons de keyring por container descrita nesta seção foi substituída pela arquitetura de Secret Service Singleton documentada em [`docs/superpowers/specs/2026-09-06-singleton-secret-service-design.md`](./2026-09-06-singleton-secret-service-design.md). O gerenciamento do GNOME Keyring e D-Bus agora é centralizado no container singleton `asb-keyring`, conectando containers clientes e workspaces via socket Unix compartilhado em volume `asb-keyring-runtime`.
+
 Volume nomeado `asb-credentials`, compartilhado entre workspaces, montado
 apenas nos caminhos de credencial:
 

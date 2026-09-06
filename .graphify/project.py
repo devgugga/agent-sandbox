@@ -136,7 +136,7 @@ def _is_project_config(path: Path, root: Path) -> bool:
 def _tracked_files(root: Path) -> list[Path]:
     try:
         completed = subprocess.run(
-            ["git", "-C", str(root), "ls-files", "-z", "--cached"],
+            ["git", "-C", str(root), "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
             check=True,
             capture_output=True,
         )
@@ -169,6 +169,12 @@ def _sanitize_native_result(result: dict, root: Path) -> None:
         result["deleted_files"] = [
             path
             for path in result["deleted_files"]
+            if not _is_excluded(Path(path), root)
+        ]
+    if "excluded_files" in result:
+        result["excluded_files"] = [
+            path
+            for path in result["excluded_files"]
             if not _is_excluded(Path(path), root)
         ]
 
@@ -208,13 +214,15 @@ def detect_project(root: Path) -> dict:
     """Run native detection and add safe, tracked agent-sandbox configuration."""
     root = root.resolve()
     result = detect(root)
+    native_code_paths = set(result.get("files", {}).get("code", []))
     _sanitize_native_result(result, root)
     configs = _additional_configs(root, _all_detected_paths(result))
     documents = result.setdefault("files", {}).setdefault("document", [])
     documents.extend(str(path) for path in configs)
     documents.sort()
     result["total_files"] = sum(len(paths) for paths in result["files"].values())
-    result["total_words"] = result.get("total_words", 0) + _word_count(configs)
+    uncounted_configs = [path for path in configs if str(path) not in native_code_paths]
+    result["total_words"] = result.get("total_words", 0) + _word_count(uncounted_configs)
     result["project_config_files"] = [str(path) for path in configs]
     return result
 
@@ -229,6 +237,7 @@ def detect_incremental_project(root: Path, manifest_path: str | None = None) -> 
         result = detect_incremental(root)
         manifest = load_manifest(root=root)
 
+    native_code_paths = set(result.get("files", {}).get("code", []))
     _sanitize_native_result(result, root)
     existing = _all_detected_paths(result)
     configs = _additional_configs(root, existing)
@@ -261,11 +270,20 @@ def detect_incremental_project(root: Path, manifest_path: str | None = None) -> 
         path
         for path in result.get("deleted_files", [])
         if str(Path(path).resolve()) not in current_configs
+        and not _is_excluded(Path(path), root)
     ]
+    if "excluded_files" in result:
+        result["excluded_files"] = [
+            path
+            for path in result["excluded_files"]
+            if str(Path(path).resolve()) not in current_configs
+            and not _is_excluded(Path(path), root)
+        ]
     result["new_total"] = sum(
         len(paths) for paths in result.get("new_files", {}).values()
     )
     result["total_files"] = sum(len(paths) for paths in result["files"].values())
-    result["total_words"] = result.get("total_words", 0) + _word_count(configs)
+    uncounted_configs = [path for path in configs if str(path) not in native_code_paths]
+    result["total_words"] = result.get("total_words", 0) + _word_count(uncounted_configs)
     result["project_config_files"] = config_strings
     return result

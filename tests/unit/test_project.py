@@ -93,6 +93,7 @@ class ProjectDetectionTest(unittest.TestCase):
             },
             "unchanged_files": {"code": [], "document": []},
             "deleted_files": [str(containerfile), str(self.root / ".env")],
+            "excluded_files": [str(containerfile), str(self.root / ".env")],
             "new_total": 0,
             "total_files": 0,
             "total_words": 0,
@@ -120,7 +121,9 @@ class ProjectDetectionTest(unittest.TestCase):
         self.assertNotIn(str(containerfile), result["new_files"]["document"])
         self.assertIn(str(containerfile), result["unchanged_files"]["document"])
         self.assertNotIn(str(containerfile), result["deleted_files"])
+        self.assertNotIn(str(containerfile), result["excluded_files"])
         self.assertNotIn(str(self.root / ".env"), result["deleted_files"])
+        self.assertNotIn(str(self.root / ".env"), result["excluded_files"])
 
         new_docs_str = "\n".join(result["new_files"]["document"])
         self.assertNotIn("graphify-out", new_docs_str)
@@ -209,6 +212,37 @@ class ProjectDetectionTest(unittest.TestCase):
         f2 = self._write("f2.txt", "four five\n")
         missing = self.root / "missing.txt"
         self.assertEqual(5, project._word_count([f1, f2, missing]))
+
+    def test_untracked_working_tree_configs_detected(self) -> None:
+        self._write(".gitignore", "ignored.sh\n")
+        subprocess.run(["git", "-C", str(self.root), "add", ".gitignore"], check=True)
+        subprocess.run(["git", "-C", str(self.root), "commit", "-m", "init"], check=True)
+
+        # Create untracked working-tree assets
+        untracked_cfg = self._write("recipes/create.sh", "#!/usr/bin/env bash\necho untracked\n").resolve()
+        ignored_file = self._write("ignored.sh", "#!/bin/bash\n").resolve()
+
+        tracked = project._tracked_files(self.root)
+        self.assertIn(untracked_cfg, tracked)
+        self.assertNotIn(ignored_file, tracked)
+
+    def test_word_count_not_double_counted_for_rerouted_code(self) -> None:
+        sh_path = self._write("recipes/create.sh", "one two three four five\n").resolve()
+        subprocess.run(["git", "-C", str(self.root), "add", "-f", "."], check=True)
+
+        native = {
+            "files": {
+                "code": [str(sh_path)],
+                "document": [],
+            },
+            "total_files": 1,
+            "total_words": 5,
+        }
+        with patch.object(project, "detect", return_value=native):
+            result = project.detect_project(self.root)
+
+        self.assertIn(str(sh_path), result["files"]["document"])
+        self.assertEqual(5, result["total_words"])
 
 
 if __name__ == "__main__":

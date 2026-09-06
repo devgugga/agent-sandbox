@@ -8,6 +8,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from . import podman
@@ -29,6 +30,9 @@ CONFIG = Path(os.path.expanduser("~")) / ".config" / "agent-sandbox"
 SSH_KEY = CONFIG / "id_ed25519"
 CREDENTIALS_VOLUME = os.environ.get("ASB_CREDENTIALS_VOLUME", "asb-credentials")
 TOOLCACHE_VOLUME = "asb-toolcache"
+KEYRING_CONTAINER = "asb-keyring"
+KEYRING_RUNTIME_VOLUME = "asb-keyring-runtime"
+KEYRING_BUS = "/run/asb-keyring/bus"
 KEYRING_PASS = CONFIG / "keyring.pass"
 
 
@@ -50,7 +54,7 @@ def ensure_ssh_key() -> Path:
     CONFIG.chmod(0o700)
     subprocess.run(["ssh-keygen", "-t", "ed25519", "-N", "", "-f", str(SSH_KEY),
                     "-C", "agent-sandbox"], check=True,
-                   stdout=subprocess.DEVNULL)
+                    stdout=subprocess.DEVNULL)
     return SSH_KEY
 
 
@@ -72,14 +76,103 @@ def ensure_keyring_pass() -> Path:
     outra maquina carrega um keyring cifrado que nao abre — verificado no v1:
     com a passphrase errada o agy falha enquanto o claude continua respondendo,
     provando que a falha e do keyring e nao geral."""
-    if KEYRING_PASS.exists():
-        return KEYRING_PASS
-    CONFIG.mkdir(parents=True, exist_ok=True)
-    CONFIG.chmod(0o700)
-    KEYRING_PASS.write_text(
+    pass_file = Path(os.environ["ASB_KEYRING_PASS_FILE"]) if "ASB_KEYRING_PASS_FILE" in os.environ else KEYRING_PASS
+    if pass_file.exists():
+        return pass_file
+    pass_file.parent.mkdir(parents=True, exist_ok=True)
+    pass_file.parent.chmod(0o700)
+    pass_file.write_text(
         base64.b64encode(os.urandom(32)).decode().strip())
-    KEYRING_PASS.chmod(0o600)
-    return KEYRING_PASS
+    pass_file.chmod(0o600)
+    return pass_file
+
+
+def ensure_keyring_runtime_volume() -> str:
+    vol = os.environ.get("ASB_KEYRING_RUNTIME_VOLUME", KEYRING_RUNTIME_VOLUME)
+    if not podman.exists("volume", vol):
+        podman.run("volume", "create", vol)
+    return vol
+
+
+def _wait_for_keyring_readiness(container: str, timeout: float = 5.0) -> None:
+    deadline = time.time() + timeout
+    while time.time() <= deadline:
+        if podman.running(container):
+            sock_check = podman.run(
+                "exec", "-u", "1000", container,
+                "test", "-S", KEYRING_BUS,
+                check=False,
+            )
+            sock_rc = getattr(sock_check, "returncode", 0) if sock_check is not None else 0
+            if sock_rc == 0:
+                secrets_check = podman.run(
+                    "exec", "-u", "1000", container,
+                    "dbus-send", "--session",
+                    "--dest=org.freedesktop.DBus",
+                    "--type=method_call",
+                    "--print-reply",
+                    "/org/freedesktop/DBus",
+                    "org.freedesktop.DBus.GetNameOwner",
+                    "string:org.freedesktop.secrets",
+                    check=False,
+                )
+                secrets_rc = getattr(secrets_check, "returncode", 0) if secrets_check is not None else 0
+                if secrets_rc == 0:
+                    return
+        time.sleep(0.05)
+    raise podman.PodmanError(
+        f"servico de keyring '{container}' nao respondeu dentro de {timeout}s; "
+        "execute 'asb-agent login' para inicializar autenticacao"
+    )
+
+
+def ensure_keyring_service(timeout: float = 5.0) -> str:
+    """Garante o servico global de keyring (singleton).
+
+    Cria e/ou inicia o container asb-keyring com rede isolada (--network none),
+    reinicializacao automatica (--restart unless-stopped), permissao uid 1000,
+    e volumes compartilhados de runtime e credenciais.
+    """
+    container = os.environ.get("ASB_KEYRING_CONTAINER", KEYRING_CONTAINER)
+    if podman.exists("container", container):
+        schema = podman.out(
+            "container", "inspect", container,
+            "--format", '{{index .Config.Labels "asb.keyring.schema"}}',
+        ).strip()
+        if schema != "1":
+            raise podman.PodmanError(
+                f"container '{container}' possui schema incompativel ({schema or 'desconhecido'}). "
+                f"Remova-o com 'podman rm -f {container}' e recrie workspaces com 'asb-agent down' e 'asb-agent up'."
+            )
+        if not podman.running(container):
+            podman.run("start", container)
+        _wait_for_keyring_readiness(container, timeout=timeout)
+        return container
+
+    if not podman.exists("image", IMAGE):
+        raise podman.PodmanError(
+            f"imagem {IMAGE} ausente; execute 'asb-agent build'")
+
+    pass_file = ensure_keyring_pass()
+    cred_vol = ensure_credentials_volume()
+    run_vol = ensure_keyring_runtime_volume()
+
+    podman.run(
+        "run", "-d", "--name", container,
+        "--label", "asb.keyring.schema=1",
+        "--network", "none",
+        "--restart", "unless-stopped",
+        "--user", "1000",
+        "--userns", "keep-id:uid=1000,gid=1000",
+        "-v", f"{pass_file}:/run/asb-keyring-pass:ro,Z",
+        "-v", f"{cred_vol}:/run/asb-credentials:z",
+        "-v", f"{run_vol}:/run/asb-keyring:z",
+        "-e", f"DBUS_SESSION_BUS_ADDRESS=unix:path={KEYRING_BUS}",
+        "--entrypoint", "/usr/local/bin/start-keyring.sh",
+        IMAGE,
+    )
+    _wait_for_keyring_readiness(container, timeout=timeout)
+    return container
 
 
 def build_proxy(root: Path) -> None:
@@ -292,6 +385,8 @@ def _up(root: Path, ws: str, repo: Path) -> int:
     for host_p, cont_p in profile.publish_ports:
         published.extend(["-p", f"127.0.0.1:{host_p}:{cont_p}"])
 
+    ensure_keyring_service()
+
     agent_args = [
         "run", "-d", "--name", n["agent"],
         "--label", f"asb.workspace={ws}",
@@ -309,8 +404,9 @@ def _up(root: Path, ws: str, repo: Path) -> int:
         "-e", "NO_PROXY=127.0.0.1,localhost",
         "-v", f"{layout.mount}:{layout.mount}:Z",
         "-v", f"{stage}:/run/asb-config:ro,Z",
-        "-e", f"ASB_KEYRING_PASS={ensure_keyring_pass().read_text().strip()}",
-        "-v", f"{ensure_credentials_volume()}:/run/asb-credentials:Z",
+        "-v", f"{ensure_keyring_runtime_volume()}:/run/asb-keyring:ro,z",
+        "-e", f"DBUS_SESSION_BUS_ADDRESS=unix:path={KEYRING_BUS}",
+        "-v", f"{ensure_credentials_volume()}:/run/asb-credentials:z",
         "-v", f"{ensure_toolcache_volume()}:/run/asb-toolcache:Z",
         *(["-e", f"DOCKER_HOST=tcp://{n['net']}-docker:2375"]
           if profile.host_api == "read" else []),
@@ -444,6 +540,7 @@ def resume(root: Path, ws: str) -> int:
     """
     n, home, origin = _require_workspace(ws)
     podman.ensure_rootless_netns()
+    ensure_keyring_service()
     if podman.exists("container", n["proxy"]):
         podman.run("start", n["proxy"], check=False)
     containers = podman.out(
@@ -549,20 +646,17 @@ def login(root: Path) -> int:
     if not podman.exists("image", IMAGE):
         raise podman.PodmanError(
             f"imagem {IMAGE} ausente; execute 'asb-agent build'")
-    ensure_credentials_volume()
-    passphrase = ensure_keyring_pass().read_text().strip()
+    ensure_keyring_service()
     name = "asb-login"
     if podman.exists("container", name):
         podman.run("rm", "-f", name, check=False)
 
-    # Com o ENTRYPOINT REAL, nao --entrypoint sleep: e o entrypoint que sobe o
-    # D-Bus, destrava o keyring e popula /etc/profile.d. Com sleep nada disso
-    # acontece e o agy guarda a credencial em ARQUIVO TEXTO em silencio.
     podman.run(
         "run", "-d", "--name", name,
         "--userns", "keep-id:uid=1000,gid=1000",
-        "-e", f"ASB_KEYRING_PASS={passphrase}",
-        "-v", f"{ensure_credentials_volume()}:/run/asb-credentials:Z",
+        "-v", f"{ensure_keyring_runtime_volume()}:/run/asb-keyring:ro,z",
+        "-e", f"DBUS_SESSION_BUS_ADDRESS=unix:path={KEYRING_BUS}",
+        "-v", f"{ensure_credentials_volume()}:/run/asb-credentials:z",
         IMAGE)
     try:
         print("\nEntre em cada agente. Use SEMPRE fluxos de device-auth: o "

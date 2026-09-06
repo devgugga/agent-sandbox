@@ -73,7 +73,7 @@ echo "== 2. Iniciar serviço global sob nome único =="
 start_service
 
 # Aguarda brevemente se o serviço precisa de tempo para inicializar
-wait_for 3 podman exec -u 1000 "$SERVICE_CONTAINER" test -S /run/asb-keyring/bus || true
+wait_for 5 podman exec -u 1000 "$SERVICE_CONTAINER" test -S /run/asb-keyring/bus || true
 
 assert_eq "running" \
   "$(podman inspect "$SERVICE_CONTAINER" --format '{{.State.Status}}' 2>/dev/null || echo 'missing')" \
@@ -117,7 +117,7 @@ podman rm -f "$CLIENT_A" "$CLIENT_B" >/dev/null 2>&1 || true
 podman restart "$SERVICE_CONTAINER" >/dev/null 2>&1 || {
   podman start "$SERVICE_CONTAINER" >/dev/null 2>&1 || true
 }
-wait_for 3 podman exec -u 1000 "$SERVICE_CONTAINER" test -S /run/asb-keyring/bus || true
+wait_for 5 podman exec -u 1000 "$SERVICE_CONTAINER" test -S /run/asb-keyring/bus || true
 
 start_client "$CLIENT_C"
 require "cliente C está ativo" podman exec "$CLIENT_C" true

@@ -15,7 +15,7 @@ RUN test -n "$ASB_USER" && test -n "$ASB_HOME" \
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates curl git openssh-server ripgrep jq socat \
       netcat-openbsd python3 build-essential procps less nano bubblewrap \
-      gnome-keyring libsecret-tools dbus-x11 \
+      gnome-keyring libsecret-tools dbus-daemon dbus-bin dbus-x11 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \

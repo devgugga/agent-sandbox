@@ -144,13 +144,25 @@ Each entry records a real failure mode formatted as **Symptom**, **Cause**, and 
 
 ## 18. Silent Rootless Podman Network Uplink Failure (`pasta` Failure)
 
-- **Symptom**: Outbound network connections from within the sandbox freeze or fail across all containers while local bridges remain intact. In `podman pull`, small image layers complete while large blobs stall indefinitely (e.g. at 16 KiB) and restart in a loop. In Squid access logs (`/var/log/squid/access.log`), requests fail with `NONE_NONE/500` or `NONE_NONE/503` after long timeouts (60s+). Direct socket probes inside the proxy container show routing tables intact (`default via 10.89.x.1 dev eth1`), but all outbound TCP/DNS requests fail with `Network is unreachable (os error 101)`.
-- **Cause**: The rootless Podman user-namespace network uplink helper (`pasta`) silently stops forwarding external traffic or its user session scope terminates. Because the container-side interfaces and bridges remain up, Podman does not detect the broken uplink on its own.
-- **Fix**: Reconnect the rootless network namespace uplink on the host with:
-  ```bash
-  podman unshare --rootless-netns true
-  ```
-  Running this single command instantly restarts the `pasta` network namespace uplink in place. Running workspace containers immediately recover egress connectivity and resume downloads without needing to be restarted or recreated. Active workspaces can be validated at any time using `asb-agent doctor`.
+- **Symptom**: Outbound network connections from within the sandbox freeze or fail across all containers while local bridges remain intact. Following a host reboot, containers restored by `podman-restart.service` remain marked as `running` while the shared rootless user network namespace lacks a functional `pasta` process (`container running + uplink rootless morto`). In this state, Squid accepts local connections from the agent on port 3128, but replies with `NONE_NONE/500` or `NONE_NONE/503` because it cannot reach external destinations. AI agents (Claude Code, OpenAI Codex, Google Antigravity) then exhibit timeout or connection abort symptoms that mimic authentication failures or upstream provider outages. In `podman pull`, small image layers complete while large blobs stall indefinitely (e.g. at 16 KiB) and restart in a loop. Direct socket probes inside the proxy container show routing tables intact (`default via 10.89.x.1 dev eth1`), but all outbound TCP/DNS requests fail with `Network is unreachable (os error 101)`.
+- **Cause**: The rootless Podman user-namespace network uplink helper (`pasta`) silently stops forwarding external traffic or its user session scope terminates upon host reboot or suspend. Because container-side interfaces and bridges remain up, Podman does not detect the broken uplink on its own and restores or leaves containers running without an active uplink.
+- **Fix**: The architecture provides automated recovery across the operational lifecycle and maintains explicit diagnostics:
+  1. **Automated Workspace Lifecycle (`up` & `resume`)**: Both `asb-agent up` and `asb-agent resume` explicitly invoke `podman.ensure_rootless_netns()` (`podman unshare --rootless-netns $(command -v true)`) before creating or starting the Squid proxy container, ensuring the user network namespace uplink is functional before any container dependent on external egress begins communicating.
+  2. **Automated User Login / Reboot Recovery (`systemd` drop-in)**: `install.podman_restart()` installs a systemd user drop-in at:
+     ```text
+     ~/.config/systemd/user/podman-restart.service.d/agent-sandbox.conf
+     ```
+     containing:
+     ```ini
+     [Service]
+     ExecStartPre=/usr/bin/podman unshare --rootless-netns /usr/bin/true
+     ```
+     followed by `systemctl --user daemon-reload` and enabling `podman-restart.service`. This drop-in forces systemd to initialize the rootless netns before Podman attempts to restart containers on user session login (or system boot if linger is enabled). The configuration adheres to §16 by referencing absolute host binary paths rather than repository checkout paths.
+  3. **Diagnostic & Manual Recovery (`asb-agent doctor`)**: `asb-agent doctor` probes active workspaces with live DNS and TCP checks to distinguish a blocked allowlist from a dead rootless uplink (`ws: uplink rootless morto`). For unmanaged sessions or manual intervention, reconnecting the rootless network namespace uplink on the host with:
+     ```bash
+     podman unshare --rootless-netns true
+     ```
+     instantly restarts the `pasta` network namespace uplink in place without requiring container restarts or recreation. Active workspaces can be validated at any time using `asb-agent doctor`.
 
 ---
 

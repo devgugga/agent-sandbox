@@ -45,7 +45,7 @@ The CLI entrypoint is `cli/asb-agent` (symlinked as `asb`):
 | `build` | constroi a imagem base espelhando seu usuario |
 | `login` | autentica os tres agentes (bootstrap inicial da maquina) |
 | `up` | cria rede, clone e containers; imprime a conexao |
-| `resume` | religa (`podman start`); depois de reboot e automatico |
+| `resume` | religa (prepara uplink rootless e podman start); automatico apos reboot |
 | `pull` | traz o branch do workspace para o checkout primario |
 | `down` | remove containers e rede; **preserva seus arquivos** |
 | `purge` | remove tambem os arquivos; exige `--yes` |
@@ -90,7 +90,7 @@ host                                          container
 ## 4. What to Do on Failure
 
 1. **Run `asb-agent doctor`**:
-   Checks rootless Podman, Python version, base container image, credentials volume, and systemd `podman-restart.service`. If anything is missing, it outputs the exact command to fix it.
+   Checks rootless Podman, Python version, base container image, credentials volume, systemd `podman-restart.service`, and active workspace rootless network uplink health. If anything is missing or an uplink is dead, it outputs the exact command to fix it (`podman unshare --rootless-netns true`).
 
 2. **Workspace fails during startup (`asb-agent up`)**:
    `up` is transactional. If a failure occurs during initialization, `_sweep_containers` automatically rolls back: all `asb-<ws>-*` containers and `asb-<ws>` networks are cleaned up. Your workspace files under `~/asb-agent/<proj>/<ws>/` are preserved. Check stderr for configuration errors (e.g. uninstalled broker or invalid image name).
@@ -104,7 +104,7 @@ host                                          container
    - External DNS is disabled in the agent container by design. Direct DNS queries (`dig`, `nslookup`) fail intentionally.
 
 4. **Reboot recovery**:
-   Workspaces use `--restart=unless-stopped`. On system boot/login, `podman-restart.service` automatically restarts running containers. Under the default Linux setting (`Linger=no`), user services start upon interactive login (e.g. desktop graphical session); for headless/server setups where workspaces must start unattended before login, enable linger with `loginctl enable-linger $USER`. To verify health after boot, run `asb-agent doctor`. Workspaces can also be restarted manually at any time with `asb-agent resume --workspace <id>`.
+   Workspaces use `--restart=unless-stopped`. On system boot/login, `podman-restart.service` automatically restarts running containers. To ensure the shared rootless network namespace is functional before container restoration, `asb-agent` installs a systemd user drop-in (`~/.config/systemd/user/podman-restart.service.d/agent-sandbox.conf`) configuring `ExecStartPre=podman unshare --rootless-netns <true>`. Under the default Linux setting (`Linger=no`), user services start upon interactive login (e.g. desktop graphical session); for headless/server setups where workspaces must start unattended before login, enable linger with `loginctl enable-linger $USER`. To verify health after boot, run `asb-agent doctor`. Workspaces can also be restarted manually at any time with `asb-agent resume --workspace <id>`, which automatically ensures the rootless netns uplink is active before starting the proxy.
 
 5. **Clean teardown**:
    - `asb-agent down --workspace <id>`: removes all containers and internal networks, keeping workspace files and git branches intact.

@@ -89,6 +89,46 @@ require "cliente B está ativo" podman exec "$CLIENT_B" true
 assert_eq "0" \
   "$(podman exec -u 1000 "$CLIENT_A" test -S /run/asb-keyring/bus >/dev/null 2>&1 && echo 0 || echo 1)" \
   "socket D-Bus /run/asb-keyring/bus está acessível no cliente A"
+assert_eq "0" \
+  "$(podman exec -u 1000 "$CLIENT_B" test -S /run/asb-keyring/bus >/dev/null 2>&1 && echo 0 || echo 1)" \
+  "socket D-Bus /run/asb-keyring/bus está acessível no cliente B"
+
+# Controle positivo: o serviço singleton possui dbus-daemon e gnome-keyring-daemon
+require "serviço singleton possui dbus-daemon" podman exec "$SERVICE_CONTAINER" pgrep -f dbus-daemon
+require "serviço singleton possui gnome-keyring-daemon" podman exec "$SERVICE_CONTAINER" pgrep -f gnome-keyring-daemon
+
+# Clientes NAO possuem daemons locais de Secret Service
+assert_fails "cliente A nao possui processo dbus-daemon proprio" \
+  podman exec "$CLIENT_A" pgrep -f dbus-daemon
+assert_fails "cliente A nao possui processo gnome-keyring-daemon proprio" \
+  podman exec "$CLIENT_A" pgrep -f gnome-keyring-daemon
+assert_fails "cliente B nao possui processo dbus-daemon proprio" \
+  podman exec "$CLIENT_B" pgrep -f dbus-daemon
+assert_fails "cliente B nao possui processo gnome-keyring-daemon proprio" \
+  podman exec "$CLIENT_B" pgrep -f gnome-keyring-daemon
+
+# Clientes recebem DBUS_SESSION_BUS_ADDRESS em exec, login shell e /etc/environment
+assert_eq "unix:path=/run/asb-keyring/bus" \
+  "$(podman exec -u 1000 "$CLIENT_A" sh -c 'echo "$DBUS_SESSION_BUS_ADDRESS"')" \
+  "cliente A recebe DBUS_SESSION_BUS_ADDRESS em exec"
+assert_eq "unix:path=/run/asb-keyring/bus" \
+  "$(podman exec -u 1000 "$CLIENT_A" bash -l -c 'echo "$DBUS_SESSION_BUS_ADDRESS"')" \
+  "cliente A recebe DBUS_SESSION_BUS_ADDRESS em shell de login"
+assert_contains "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/asb-keyring/bus" \
+  "$(podman exec "$CLIENT_A" cat /etc/environment)" \
+  "cliente A possui DBUS_SESSION_BUS_ADDRESS em /etc/environment"
+
+# Clientes NAO criam link para ~/.local/share/keyrings
+assert_fails "cliente A nao possui link para ~/.local/share/keyrings" \
+  podman exec -u 1000 "$CLIENT_A" sh -c 'test -L "$HOME/.local/share/keyrings"'
+assert_fails "cliente B nao possui link para ~/.local/share/keyrings" \
+  podman exec -u 1000 "$CLIENT_B" sh -c 'test -L "$HOME/.local/share/keyrings"'
+
+# Clientes mantêm links de credenciais isoladas (claude e codex)
+assert_eq "0" "$(podman exec -u 1000 "$CLIENT_A" sh -c 'test -L "$HOME/.claude/.credentials.json"; echo $?')" \
+  "cliente A mantem link de credencial do Claude"
+assert_eq "0" "$(podman exec -u 1000 "$CLIENT_A" sh -c 'test -L "$HOME/.codex/auth.json"; echo $?')" \
+  "cliente A mantem link de credencial do Codex"
 
 echo "== 4. Gravar item fictício com secret-tool no cliente A =="
 store_rc=0
@@ -130,5 +170,11 @@ assert_fails "nenhuma variavel ASB_KEYRING_PASS no ambiente do cliente C" \
   sh -c "podman inspect '$CLIENT_C' --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -Fq 'ASB_KEYRING_PASS'"
 assert_fails "passphrase nao aparece em podman inspect do cliente C" \
   sh -c "podman inspect '$CLIENT_C' | grep -Fq '$PASS_CONTENT'"
+assert_fails "cliente C nao possui processo dbus-daemon proprio" \
+  podman exec "$CLIENT_C" pgrep -f dbus-daemon
+assert_fails "cliente C nao possui processo gnome-keyring-daemon proprio" \
+  podman exec "$CLIENT_C" pgrep -f gnome-keyring-daemon
+assert_fails "cliente C nao possui link para ~/.local/share/keyrings" \
+  podman exec -u 1000 "$CLIENT_C" sh -c 'test -L "$HOME/.local/share/keyrings"'
 
 report

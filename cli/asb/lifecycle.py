@@ -79,8 +79,10 @@ def ensure_keyring_pass() -> Path:
     pass_file = Path(os.environ["ASB_KEYRING_PASS_FILE"]) if "ASB_KEYRING_PASS_FILE" in os.environ else KEYRING_PASS
     if pass_file.exists():
         return pass_file
+    parent_existed = pass_file.parent.exists()
     pass_file.parent.mkdir(parents=True, exist_ok=True)
-    pass_file.parent.chmod(0o700)
+    if pass_file.parent == CONFIG or not parent_existed:
+        pass_file.parent.chmod(0o700)
     pass_file.write_text(
         base64.b64encode(os.urandom(32)).decode().strip())
     pass_file.chmod(0o600)
@@ -95,15 +97,15 @@ def ensure_keyring_runtime_volume() -> str:
 
 
 def _wait_for_keyring_readiness(container: str, timeout: float = 5.0) -> None:
-    deadline = time.time() + timeout
-    while time.time() <= deadline:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() <= deadline:
         if podman.running(container):
             sock_check = podman.run(
                 "exec", "-u", "1000", container,
                 "test", "-S", KEYRING_BUS,
                 check=False,
             )
-            sock_rc = getattr(sock_check, "returncode", 0) if sock_check is not None else 0
+            sock_rc = getattr(sock_check, "returncode", 1) if sock_check is not None else 1
             if sock_rc == 0:
                 secrets_check = podman.run(
                     "exec", "-u", "1000", container,
@@ -116,7 +118,7 @@ def _wait_for_keyring_readiness(container: str, timeout: float = 5.0) -> None:
                     "string:org.freedesktop.secrets",
                     check=False,
                 )
-                secrets_rc = getattr(secrets_check, "returncode", 0) if secrets_check is not None else 0
+                secrets_rc = getattr(secrets_check, "returncode", 1) if secrets_check is not None else 1
                 if secrets_rc == 0:
                     return
         time.sleep(0.05)

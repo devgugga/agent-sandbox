@@ -40,6 +40,22 @@ class TestAuthLifecycle(unittest.TestCase):
                 self.assertEqual(p2, keyring_pass)
                 self.assertEqual(keyring_pass.read_text().strip(), content1)
 
+    def test_ensure_keyring_pass_external_path_preserves_parent_permissions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            external_dir = Path(tmp) / "shared-dir"
+            external_dir.mkdir(mode=0o755)
+            external_dir.chmod(0o755)
+            pass_file = external_dir / "test-keyring.pass"
+            with mock.patch.dict("os.environ", {"ASB_KEYRING_PASS_FILE": str(pass_file)}):
+                self.assertFalse(pass_file.exists())
+                p = lifecycle.ensure_keyring_pass()
+                self.assertEqual(p, pass_file)
+                self.assertTrue(pass_file.exists())
+                # Passphrase file must be 0600
+                self.assertEqual(pass_file.stat().st_mode & 0o777, 0o600)
+                # Parent directory permissions must NOT have been changed to 0700
+                self.assertEqual(external_dir.stat().st_mode & 0o777, 0o755)
+
     def test_ensure_credentials_volume_creates_when_missing(self):
         with mock.patch("asb.podman.exists", return_value=False) as mock_exists, \
              mock.patch("asb.podman.run") as mock_run:

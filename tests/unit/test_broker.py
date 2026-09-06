@@ -216,7 +216,8 @@ class TestLifecycleHostApi(unittest.TestCase):
              mock.patch("asb.lifecycle.layout_for") as mock_layout, \
              mock.patch("asb.lifecycle.build_staging", return_value=0), \
              mock.patch("asb.lifecycle.ensure_ssh_key"), \
-             mock.patch("asb.lifecycle.ensure_keyring_pass"), \
+             mock.patch("asb.lifecycle.ensure_keyring_service"), \
+             mock.patch("asb.lifecycle.ensure_keyring_runtime_volume", return_value="asb-keyring-runtime"), \
              mock.patch("asb.lifecycle.ensure_credentials_volume", return_value="asb-credentials"), \
              mock.patch("asb.install.podman_restart"), \
              mock.patch("pathlib.Path.exists", return_value=True), \

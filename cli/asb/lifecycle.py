@@ -96,36 +96,68 @@ def ensure_keyring_runtime_volume() -> str:
     return vol
 
 
+def check_keyring_service(container: str | None = None) -> tuple[bool, str, str]:
+    """Verifica a saude do servico de keyring singleton sem mutacao.
+
+    Distingue:
+      1. container ausente: 'container asb-keyring'
+      2. container parado: 'asb-keyring parado'
+      3. socket ausente: 'socket do Secret Service (asb-keyring)'
+      4. Secret Service sem resposta: 'Secret Service sem resposta (asb-keyring)'
+      5. saudavel: 'Secret Service (asb-keyring)'
+    Toda falha indica a mesma correcao: 'asb-agent login'.
+    """
+    name = container or os.environ.get("ASB_KEYRING_CONTAINER", KEYRING_CONTAINER)
+    if shutil.which("podman") is None:
+        return False, f"container {name}", "asb-agent login"
+
+    try:
+        if not podman.exists("container", name):
+            return False, f"container {name}", "asb-agent login"
+        if not podman.running(name):
+            return False, f"{name} parado", "asb-agent login"
+
+        sock_check = podman.run(
+            "exec", "-u", "1000", name,
+            "test", "-S", KEYRING_BUS,
+            check=False,
+        )
+        sock_rc = getattr(sock_check, "returncode", 1) if sock_check is not None else 1
+        if sock_rc != 0:
+            return False, f"socket do Secret Service ({name})", "asb-agent login"
+
+        secrets_check = podman.run(
+            "exec", "-u", "1000", name,
+            "dbus-send", "--session",
+            "--dest=org.freedesktop.DBus",
+            "--type=method_call",
+            "--print-reply",
+            "/org/freedesktop/DBus",
+            "org.freedesktop.DBus.GetNameOwner",
+            "string:org.freedesktop.secrets",
+            check=False,
+        )
+        secrets_rc = getattr(secrets_check, "returncode", 1) if secrets_check is not None else 1
+        if secrets_rc != 0:
+            return False, f"Secret Service sem resposta ({name})", "asb-agent login"
+
+        return True, f"Secret Service ({name})", ""
+    except podman.PodmanError:
+        return False, f"container {name}", "asb-agent login"
+
+
 def _wait_for_keyring_readiness(container: str, timeout: float = 5.0) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() <= deadline:
-        if podman.running(container):
-            sock_check = podman.run(
-                "exec", "-u", "1000", container,
-                "test", "-S", KEYRING_BUS,
-                check=False,
-            )
-            sock_rc = getattr(sock_check, "returncode", 1) if sock_check is not None else 1
-            if sock_rc == 0:
-                secrets_check = podman.run(
-                    "exec", "-u", "1000", container,
-                    "dbus-send", "--session",
-                    "--dest=org.freedesktop.DBus",
-                    "--type=method_call",
-                    "--print-reply",
-                    "/org/freedesktop/DBus",
-                    "org.freedesktop.DBus.GetNameOwner",
-                    "string:org.freedesktop.secrets",
-                    check=False,
-                )
-                secrets_rc = getattr(secrets_check, "returncode", 1) if secrets_check is not None else 1
-                if secrets_rc == 0:
-                    return
+        ok, _, _ = check_keyring_service(container)
+        if ok:
+            return
         time.sleep(0.05)
     raise podman.PodmanError(
         f"servico de keyring '{container}' nao respondeu dentro de {timeout}s; "
         "execute 'asb-agent login' para inicializar autenticacao"
     )
+
 
 
 def ensure_keyring_service(timeout: float = 5.0) -> str:

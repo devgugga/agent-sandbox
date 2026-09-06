@@ -245,6 +245,150 @@ class TestLoginKeyringIntegration(unittest.TestCase):
         self.assertIn(f"DBUS_SESSION_BUS_ADDRESS=unix:path={lifecycle.KEYRING_BUS}", run_args_captured)
         self.assertFalse(any("ASB_KEYRING_PASS" in str(a) for a in run_args_captured))
 
+    def test_login_cleanup_removes_asb_login_without_touching_keyring_container(self):
+        removed_containers = []
+
+        def fake_podman_run(*args, **kwargs):
+            if len(args) >= 3 and args[0] == "rm" and "-f" in args:
+                idx = args.index("-f") + 1
+                removed_containers.append(args[idx])
+            return mock.MagicMock(returncode=0)
+
+        with mock.patch("asb.lifecycle.podman.exists", side_effect=lambda kind, name: True if (kind == "image" or name == "asb-login") else False), \
+             mock.patch("asb.lifecycle.ensure_keyring_service"), \
+             mock.patch("asb.lifecycle.ensure_keyring_runtime_volume", return_value="asb-keyring-runtime"), \
+             mock.patch("asb.lifecycle.ensure_credentials_volume", return_value="asb-credentials"), \
+             mock.patch("asb.lifecycle.podman.run", side_effect=fake_podman_run), \
+             mock.patch("asb.lifecycle.podman.require_binary", return_value="podman"), \
+             mock.patch("subprocess.run", return_value=mock.MagicMock(returncode=0)):
+            rc = lifecycle.login(Path("/fake/root"))
+            self.assertEqual(rc, 0)
+
+        self.assertIn("asb-login", removed_containers)
+        self.assertNotIn(lifecycle.KEYRING_CONTAINER, removed_containers)
+        self.assertNotIn("asb-keyring", removed_containers)
+
+    def test_login_failure_still_cleans_up_asb_login_and_preserves_keyring(self):
+        removed_containers = []
+
+        def fake_podman_run(*args, **kwargs):
+            if len(args) >= 3 and args[0] == "rm" and "-f" in args:
+                idx = args.index("-f") + 1
+                removed_containers.append(args[idx])
+            return mock.MagicMock(returncode=0)
+
+        # Fail one of the LOGIN_CHECKS
+        def fake_subproc_run(cmd, *args, **kwargs):
+            if any("timeout" in str(c) for c in cmd):
+                return mock.MagicMock(returncode=1)
+            return mock.MagicMock(returncode=0)
+
+        with mock.patch("asb.lifecycle.podman.exists", side_effect=lambda kind, name: True if (kind == "image" or name == "asb-login") else False), \
+             mock.patch("asb.lifecycle.ensure_keyring_service"), \
+             mock.patch("asb.lifecycle.ensure_keyring_runtime_volume", return_value="asb-keyring-runtime"), \
+             mock.patch("asb.lifecycle.ensure_credentials_volume", return_value="asb-credentials"), \
+             mock.patch("asb.lifecycle.podman.run", side_effect=fake_podman_run), \
+             mock.patch("asb.lifecycle.podman.require_binary", return_value="podman"), \
+             mock.patch("subprocess.run", side_effect=fake_subproc_run):
+            with self.assertRaises(lifecycle.podman.PodmanError):
+                lifecycle.login(Path("/fake/root"))
+
+        self.assertIn("asb-login", removed_containers)
+        self.assertNotIn(lifecycle.KEYRING_CONTAINER, removed_containers)
+
+    def test_login_executes_real_login_checks_inside_asb_login(self):
+        executed_commands = []
+
+        def fake_subproc_run(cmd, *args, **kwargs):
+            executed_commands.append(list(cmd))
+            return mock.MagicMock(returncode=0)
+
+        with mock.patch("asb.lifecycle.podman.exists", side_effect=lambda kind, name: True if (kind == "image" or name == "asb-login") else False), \
+             mock.patch("asb.lifecycle.ensure_keyring_service"), \
+             mock.patch("asb.lifecycle.ensure_keyring_runtime_volume", return_value="asb-keyring-runtime"), \
+             mock.patch("asb.lifecycle.ensure_credentials_volume", return_value="asb-credentials"), \
+             mock.patch("asb.lifecycle.podman.run"), \
+             mock.patch("asb.lifecycle.podman.require_binary", return_value="podman"), \
+             mock.patch("subprocess.run", side_effect=fake_subproc_run):
+            rc = lifecycle.login(Path("/fake/root"))
+            self.assertEqual(rc, 0)
+
+        # Each check in LOGIN_CHECKS must have been run against asb-login with timeout
+        for label, check_cmd in lifecycle.LOGIN_CHECKS:
+            matched = False
+            for cmd in executed_commands:
+                if "asb-login" in cmd and check_cmd in cmd and "timeout" in cmd:
+                    matched = True
+                    break
+            self.assertTrue(matched, f"check '{label}' ({check_cmd}) was not executed on asb-login")
+
+
+class TestCheckKeyringService(unittest.TestCase):
+    def test_check_keyring_service_container_missing(self):
+        with mock.patch("asb.lifecycle.podman.exists", return_value=False):
+            ok, label, fix = lifecycle.check_keyring_service()
+            self.assertFalse(ok)
+            self.assertEqual(label, "container asb-keyring")
+            self.assertEqual(fix, "asb-agent login")
+
+    def test_check_keyring_service_container_stopped(self):
+        with mock.patch("asb.lifecycle.podman.exists", return_value=True), \
+             mock.patch("asb.lifecycle.podman.running", return_value=False):
+            ok, label, fix = lifecycle.check_keyring_service()
+            self.assertFalse(ok)
+            self.assertEqual(label, "asb-keyring parado")
+            self.assertEqual(fix, "asb-agent login")
+
+    def test_check_keyring_service_socket_missing(self):
+        def fake_run(*args, **kwargs):
+            if "test" in args:
+                return mock.MagicMock(returncode=1)
+            return mock.MagicMock(returncode=0)
+
+        with mock.patch("asb.lifecycle.podman.exists", return_value=True), \
+             mock.patch("asb.lifecycle.podman.running", return_value=True), \
+             mock.patch("asb.lifecycle.podman.run", side_effect=fake_run):
+            ok, label, fix = lifecycle.check_keyring_service()
+            self.assertFalse(ok)
+            self.assertEqual(label, "socket do Secret Service (asb-keyring)")
+            self.assertEqual(fix, "asb-agent login")
+
+    def test_check_keyring_service_unresponsive(self):
+        def fake_run(*args, **kwargs):
+            if "test" in args:
+                return mock.MagicMock(returncode=0)
+            if "dbus-send" in args:
+                return mock.MagicMock(returncode=1)
+            return mock.MagicMock(returncode=0)
+
+        with mock.patch("asb.lifecycle.podman.exists", return_value=True), \
+             mock.patch("asb.lifecycle.podman.running", return_value=True), \
+             mock.patch("asb.lifecycle.podman.run", side_effect=fake_run):
+            ok, label, fix = lifecycle.check_keyring_service()
+            self.assertFalse(ok)
+            self.assertEqual(label, "Secret Service sem resposta (asb-keyring)")
+            self.assertEqual(fix, "asb-agent login")
+
+    def test_check_keyring_service_healthy(self):
+        def fake_run(*args, **kwargs):
+            return mock.MagicMock(returncode=0)
+
+        with mock.patch("asb.lifecycle.podman.exists", return_value=True), \
+             mock.patch("asb.lifecycle.podman.running", return_value=True), \
+             mock.patch("asb.lifecycle.podman.run", side_effect=fake_run):
+            ok, label, fix = lifecycle.check_keyring_service()
+            self.assertTrue(ok)
+            self.assertEqual(label, "Secret Service (asb-keyring)")
+            self.assertEqual(fix, "")
+
+    def test_check_keyring_service_custom_container(self):
+        with mock.patch.dict("os.environ", {"ASB_KEYRING_CONTAINER": "custom-keyring"}), \
+             mock.patch("asb.lifecycle.podman.exists", return_value=False):
+            ok, label, fix = lifecycle.check_keyring_service()
+            self.assertFalse(ok)
+            self.assertEqual(label, "container custom-keyring")
+            self.assertEqual(fix, "asb-agent login")
+
 
 class TestVerificacaoDeLogin(unittest.TestCase):
     """A verificacao do login tem de EXERCITAR autenticacao.

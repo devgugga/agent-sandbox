@@ -14,6 +14,7 @@ assert_contains "python" "$OUT" "verifica a versao do python"
 assert_contains "agent-sandbox:latest" "$OUT" "verifica a imagem base"
 assert_contains "asb-credentials" "$OUT" "verifica o volume de credenciais"
 assert_contains "asb-toolcache" "$OUT" "verifica o volume de toolcache"
+assert_contains "asb-keyring" "$OUT" "verifica o container de Secret Service"
 assert_contains "podman-restart" "$OUT" "verifica a restauracao no boot"
 
 # Toda falha precisa nomear o comando exato. "algo esta errado" e inutil as 2h
@@ -52,6 +53,8 @@ DOC_POS=$("$ROOT/cli/asb-agent" doctor 2>&1); RC_POS=$?
 assert_eq "0" "$RC_POS" "doctor sai 0 com workspace e egresso saudaveis"
 assert_contains "$WS_DOC: rodando (egresso ok)" "$DOC_POS" \
   "controle positivo: sonda de egresso confirma conectividade de ponta a ponta"
+assert_contains "Secret Service (asb-keyring)" "$DOC_POS" \
+  "controle positivo: Secret Service singleton saudavel"
 
 # 2. Controle negativo: desconectar rede externa simula perda de uplink rootless (falha do pasta)
 podman network disconnect "asb-${WS_DOC}-out" "asb-${WS_DOC}-proxy"

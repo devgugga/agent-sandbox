@@ -51,9 +51,10 @@ class TestDoctor(unittest.TestCase):
         mock_home.return_value = self.fake_home
         mock_run.return_value = mock.Mock(stdout="enabled\n")
 
-        out = io.StringIO()
-        with mock.patch("sys.stdout", out):
-            code = doc_mod.doctor(self.fake_root)
+        with mock.patch("asb.doctor.check_keyring_service", return_value=(True, "Secret Service (asb-keyring)", "")):
+            out = io.StringIO()
+            with mock.patch("sys.stdout", out):
+                code = doc_mod.doctor(self.fake_root)
 
         self.assertEqual(code, 0)
         output = out.getvalue()
@@ -62,6 +63,7 @@ class TestDoctor(unittest.TestCase):
         self.assertIn("git instalado", output)
         self.assertIn("imagem agent-sandbox:latest", output)
         self.assertIn("volume asb-credentials", output)
+        self.assertIn("Secret Service (asb-keyring)", output)
         self.assertIn("podman-restart.service habilitado", output)
         self.assertIn("guarda asb-claude aponta para este checkout", output)
 
@@ -210,9 +212,10 @@ class TestDoctor(unittest.TestCase):
         mock_exists.side_effect = fake_exists
         mock_running.side_effect = fake_running
 
-        out = io.StringIO()
-        with mock.patch("sys.stdout", out):
-            code = doc_mod.doctor(self.fake_root)
+        with mock.patch("asb.doctor.check_keyring_service", return_value=(True, "Secret Service (asb-keyring)", "")):
+            out = io.StringIO()
+            with mock.patch("sys.stdout", out):
+                code = doc_mod.doctor(self.fake_root)
 
         self.assertEqual(code, 0)
         output = out.getvalue()
@@ -422,3 +425,153 @@ class TestToolDrift(unittest.TestCase):
         self.assertIn("0.46.0", label)
         self.assertIn("0.48.1", label)
         self.assertEqual("asb-agent build", fix)
+
+
+class TestDoctorSecretService(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.fake_root = Path(self.tmp.name) / "checkout"
+        self.fake_home = Path(self.tmp.name) / "home"
+        self.fake_root.mkdir(parents=True)
+        self.fake_home.mkdir(parents=True)
+
+        guard_bin = self.fake_root / "cli" / "asb-guard"
+        guard_bin.parent.mkdir(parents=True)
+        guard_bin.write_text("#!/bin/sh\n")
+
+        bin_dir = self.fake_home / ".local" / "bin"
+        bin_dir.mkdir(parents=True)
+        for agent in ("claude", "codex", "agy"):
+            (bin_dir / f"asb-{agent}").symlink_to(guard_bin)
+        cli_bin = self.fake_root / "cli" / "asb-agent"
+        cli_bin.write_text("#!/usr/bin/env python3\n")
+        (bin_dir / "asb-agent").symlink_to(cli_bin)
+
+    def tearDown(self):
+        self.tmp.cleanup()
+
+    @mock.patch("asb.doctor.Path.home")
+    @mock.patch("asb.doctor.podman.running", return_value=False)
+    @mock.patch("asb.doctor.podman.exists", return_value=True)
+    @mock.patch("asb.doctor.podman.out", return_value="podman version 5.0.0")
+    @mock.patch("asb.doctor.shutil.which", return_value="/usr/bin/mock")
+    @mock.patch("asb.doctor.subprocess.run")
+    def test_doctor_secret_service_healthy(
+        self, mock_run, mock_which, mock_out, mock_exists, mock_running, mock_home
+    ):
+        mock_home.return_value = self.fake_home
+        mock_run.return_value = mock.Mock(stdout="enabled\n")
+
+        with mock.patch("asb.doctor.check_keyring_service", return_value=(True, "Secret Service (asb-keyring)", "")):
+            out = io.StringIO()
+            with mock.patch("sys.stdout", out):
+                code = doc_mod.doctor(self.fake_root)
+
+            self.assertEqual(code, 0)
+            self.assertIn("ok   Secret Service (asb-keyring)", out.getvalue())
+
+    @mock.patch("asb.doctor.Path.home")
+    @mock.patch("asb.doctor.podman.running", return_value=False)
+    @mock.patch("asb.doctor.podman.exists", return_value=True)
+    @mock.patch("asb.doctor.podman.out", return_value="podman version 5.0.0")
+    @mock.patch("asb.doctor.shutil.which", return_value="/usr/bin/mock")
+    @mock.patch("asb.doctor.subprocess.run")
+    def test_doctor_secret_service_container_missing(
+        self, mock_run, mock_which, mock_out, mock_exists, mock_running, mock_home
+    ):
+        mock_home.return_value = self.fake_home
+        mock_run.return_value = mock.Mock(stdout="enabled\n")
+
+        with mock.patch("asb.doctor.check_keyring_service", return_value=(False, "container asb-keyring", "asb-agent login")):
+            out = io.StringIO()
+            with mock.patch("sys.stdout", out):
+                code = doc_mod.doctor(self.fake_root)
+
+            self.assertEqual(code, 1)
+            self.assertIn("FALTA container asb-keyring  ->  asb-agent login", out.getvalue())
+
+    @mock.patch("asb.doctor.Path.home")
+    @mock.patch("asb.doctor.podman.running", return_value=False)
+    @mock.patch("asb.doctor.podman.exists", return_value=True)
+    @mock.patch("asb.doctor.podman.out", return_value="podman version 5.0.0")
+    @mock.patch("asb.doctor.shutil.which", return_value="/usr/bin/mock")
+    @mock.patch("asb.doctor.subprocess.run")
+    def test_doctor_secret_service_container_stopped(
+        self, mock_run, mock_which, mock_out, mock_exists, mock_running, mock_home
+    ):
+        mock_home.return_value = self.fake_home
+        mock_run.return_value = mock.Mock(stdout="enabled\n")
+
+        with mock.patch("asb.doctor.check_keyring_service", return_value=(False, "asb-keyring parado", "asb-agent login")):
+            out = io.StringIO()
+            with mock.patch("sys.stdout", out):
+                code = doc_mod.doctor(self.fake_root)
+
+            self.assertEqual(code, 1)
+            self.assertIn("FALTA asb-keyring parado  ->  asb-agent login", out.getvalue())
+
+    @mock.patch("asb.doctor.Path.home")
+    @mock.patch("asb.doctor.podman.running", return_value=False)
+    @mock.patch("asb.doctor.podman.exists", return_value=True)
+    @mock.patch("asb.doctor.podman.out", return_value="podman version 5.0.0")
+    @mock.patch("asb.doctor.shutil.which", return_value="/usr/bin/mock")
+    @mock.patch("asb.doctor.subprocess.run")
+    def test_doctor_secret_service_socket_missing(
+        self, mock_run, mock_which, mock_out, mock_exists, mock_running, mock_home
+    ):
+        mock_home.return_value = self.fake_home
+        mock_run.return_value = mock.Mock(stdout="enabled\n")
+
+        with mock.patch("asb.doctor.check_keyring_service", return_value=(False, "socket do Secret Service (asb-keyring)", "asb-agent login")):
+            out = io.StringIO()
+            with mock.patch("sys.stdout", out):
+                code = doc_mod.doctor(self.fake_root)
+
+            self.assertEqual(code, 1)
+            self.assertIn("FALTA socket do Secret Service (asb-keyring)  ->  asb-agent login", out.getvalue())
+
+    @mock.patch("asb.doctor.Path.home")
+    @mock.patch("asb.doctor.podman.running", return_value=False)
+    @mock.patch("asb.doctor.podman.exists", return_value=True)
+    @mock.patch("asb.doctor.podman.out", return_value="podman version 5.0.0")
+    @mock.patch("asb.doctor.shutil.which", return_value="/usr/bin/mock")
+    @mock.patch("asb.doctor.subprocess.run")
+    def test_doctor_secret_service_unresponsive(
+        self, mock_run, mock_which, mock_out, mock_exists, mock_running, mock_home
+    ):
+        mock_home.return_value = self.fake_home
+        mock_run.return_value = mock.Mock(stdout="enabled\n")
+
+        with mock.patch("asb.doctor.check_keyring_service", return_value=(False, "Secret Service sem resposta (asb-keyring)", "asb-agent login")):
+            out = io.StringIO()
+            with mock.patch("sys.stdout", out):
+                code = doc_mod.doctor(self.fake_root)
+
+            self.assertEqual(code, 1)
+            self.assertIn("FALTA Secret Service sem resposta (asb-keyring)  ->  asb-agent login", out.getvalue())
+
+    @mock.patch("asb.doctor.Path.home")
+    @mock.patch("asb.doctor.podman.running", return_value=False)
+    @mock.patch("asb.doctor.podman.exists", return_value=True)
+    @mock.patch("asb.doctor.podman.out", return_value="podman version 5.0.0")
+    @mock.patch("asb.doctor.shutil.which", return_value="/usr/bin/mock")
+    @mock.patch("asb.doctor.subprocess.run")
+    def test_doctor_never_starts_or_mutates_secret_service(
+        self, mock_run, mock_which, mock_out, mock_exists, mock_running, mock_home
+    ):
+        mock_home.return_value = self.fake_home
+        mock_run.return_value = mock.Mock(stdout="enabled\n")
+
+        with mock.patch("asb.podman.run") as mock_podman_run:
+            out = io.StringIO()
+            with mock.patch("sys.stdout", out):
+                doc_mod.doctor(self.fake_root)
+
+            # Doctor must never start or create containers
+            for call in mock_podman_run.call_args_list:
+                args = list(call[0])
+                self.assertNotIn("start", args)
+                self.assertNotIn("create", args)
+                if "run" in args:
+                    self.assertNotIn("-d", args)
+

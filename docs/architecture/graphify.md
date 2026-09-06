@@ -30,7 +30,7 @@ Key architectural boundaries:
 
 ## 3. Setup & Verification
 
-The repository includes an idempotent setup script at [`.graphify/setup.sh`](file:///home/v/Data/Projects/agent-sandbox/.graphify/setup.sh):
+The repository includes an idempotent setup script at [`.graphify/setup.sh`](../../.graphify/setup.sh):
 
 ```bash
 # Verify installation and environment integrity without modifying state
@@ -49,7 +49,7 @@ The setup script guarantees:
 
 ## 4. Domain-Specific Ingestion (`.graphify/project.py`)
 
-Standard Graphify AST extractors target source languages. For `agent-sandbox`, the custom adapter at [`.graphify/project.py`](file:///home/v/Data/Projects/agent-sandbox/.graphify/project.py) routes infrastructure, automation, and operational configuration files into the semantic graph as documents:
+Standard Graphify AST extractors target source languages. For `agent-sandbox`, the custom adapter at [`.graphify/project.py`](../../.graphify/project.py) routes infrastructure, automation, and operational configuration files into the semantic graph as documents:
 
 - **Shell scripts and CLI executables:** `.sh`, `.bash`, `cli/asb-guard`, `cli/asb-agent`.
 - **Container specifications:** `image/Containerfile`, `image/Containerfile.proxy`.
@@ -111,7 +111,7 @@ Knowledge graph updates are **never** bundled into the same Git commit as produc
 
 1. **Commit 1: Implementation / Code Changes**
    - Stage code, tests, and documentation: `git add <files>` (excluding `graphify-out/**`).
-   - Format commit message with mandatory structured body wrapped at 76 columns, following [`docs/domains/git/commit-conventions.md`](file:///home/v/Data/Projects/agent-sandbox/docs/domains/git/commit-conventions.md).
+   - Format commit message with mandatory structured body wrapped at 76 columns, following [`docs/domains/git/commit-conventions.md`](../domains/git/commit-conventions.md).
 2. **Commit 2: Knowledge Graph Synchronization**
    - Update knowledge graph: `graphify update .`
    - Stage strictly graph artifacts:

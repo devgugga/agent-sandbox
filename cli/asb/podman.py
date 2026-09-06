@@ -62,3 +62,11 @@ def exists(kind: str, name: str) -> bool:
 def running(name: str) -> bool:
     return bool(out("ps", "--filter", f"name=^{name}$", "--filter",
                     "status=running", "--quiet"))
+
+
+def ensure_rootless_netns() -> None:
+    true_bin = shutil.which("true")
+    if true_bin is None:
+        raise PodmanError("binario 'true' nao encontrado no PATH")
+    run("unshare", "--rootless-netns", true_bin)
+

@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "cli"))
 
 from asb.podman import (  # noqa: E402
     PodmanError,
+    ensure_rootless_netns,
     exists,
     json_out,
     out,
@@ -70,3 +71,21 @@ class TestPodmanKindAndStatus(unittest.TestCase):
 
     def test_running_returns_false_for_absent(self):
         self.assertFalse(running("nonexistent-container-xyz"))
+
+
+class TestEnsureRootlessNetns(unittest.TestCase):
+    @mock.patch("asb.podman.run")
+    @mock.patch("shutil.which", return_value="/usr/bin/true")
+    def test_ensure_rootless_netns_success(self, mock_which, mock_run):
+        ensure_rootless_netns()
+        mock_which.assert_called_once_with("true")
+        mock_run.assert_called_once_with(
+            "unshare", "--rootless-netns", "/usr/bin/true"
+        )
+
+    @mock.patch("shutil.which", return_value=None)
+    def test_ensure_rootless_netns_missing_true_raises(self, mock_which):
+        with self.assertRaises(PodmanError) as ctx:
+            ensure_rootless_netns()
+        self.assertIn("binario 'true' nao encontrado", str(ctx.exception))
+

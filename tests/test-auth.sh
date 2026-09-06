@@ -6,6 +6,8 @@ source "$ROOT/tests/assert.sh"
 
 WS_A="test-auth-a-$$"
 WS_B="test-auth-b-$$"
+TEST_CRED_VOL="${ASB_CREDENTIALS_VOLUME:-asb-test-cred-$$}"
+export ASB_CREDENTIALS_VOLUME="$TEST_CRED_VOL"
 REPO=$(mktemp -d)/proj
 mkdir -p "$REPO" && cd "$REPO"
 git init -q -b main . && git config user.email t@e.com && git config user.name T
@@ -13,8 +15,11 @@ echo ok > README.md && git add -A && git commit -qm inicial
 cd "$ROOT"
 
 cleanup() {
-  "$ROOT/cli/asb-agent" down --workspace "$WS_A" >/dev/null 2>&1
-  "$ROOT/cli/asb-agent" down --workspace "$WS_B" >/dev/null 2>&1
+  "$ROOT/cli/asb-agent" down --workspace "$WS_A" >/dev/null 2>&1 || true
+  "$ROOT/cli/asb-agent" down --workspace "$WS_B" >/dev/null 2>&1 || true
+  podman rm -f "asb-${WS_A}-agent" "asb-${WS_A}-proxy" "asb-${WS_B}-agent" "asb-${WS_B}-proxy" >/dev/null 2>&1 || true
+  podman volume rm -f "$TEST_CRED_VOL" >/dev/null 2>&1 || true
+  rm -rf "$(dirname "$REPO")"
 }
 trap cleanup EXIT
 
@@ -53,7 +58,7 @@ assert_eq "marca-do-teste" \
 
 echo "-- o volume nao e removido por down nem por purge --"
 "$ROOT/cli/asb-agent" down --workspace "$WS_B" >/dev/null
-assert_eq "0" "$(podman volume exists asb-credentials; echo $?)" \
+assert_eq "0" "$(podman volume exists "$TEST_CRED_VOL"; echo $?)" \
   "o volume de credenciais sobreviveu ao down"
 
 report

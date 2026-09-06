@@ -27,7 +27,7 @@ PROXY_IMAGE = "agent-sandbox-proxy:latest"
 PROXY_PORT = 3128
 CONFIG = Path(os.path.expanduser("~")) / ".config" / "agent-sandbox"
 SSH_KEY = CONFIG / "id_ed25519"
-CREDENTIALS_VOLUME = "asb-credentials"
+CREDENTIALS_VOLUME = os.environ.get("ASB_CREDENTIALS_VOLUME", "asb-credentials")
 TOOLCACHE_VOLUME = "asb-toolcache"
 KEYRING_PASS = CONFIG / "keyring.pass"
 
@@ -55,9 +55,10 @@ def ensure_ssh_key() -> Path:
 
 
 def ensure_credentials_volume() -> str:
-    if not podman.exists("volume", CREDENTIALS_VOLUME):
-        podman.run("volume", "create", CREDENTIALS_VOLUME)
-    return CREDENTIALS_VOLUME
+    vol = os.environ.get("ASB_CREDENTIALS_VOLUME", CREDENTIALS_VOLUME)
+    if not podman.exists("volume", vol):
+        podman.run("volume", "create", vol)
+    return vol
 
 
 def ensure_toolcache_volume() -> str:
@@ -561,7 +562,7 @@ def login(root: Path) -> int:
         "run", "-d", "--name", name,
         "--userns", "keep-id:uid=1000,gid=1000",
         "-e", f"ASB_KEYRING_PASS={passphrase}",
-        "-v", f"{CREDENTIALS_VOLUME}:/run/asb-credentials:Z",
+        "-v", f"{ensure_credentials_volume()}:/run/asb-credentials:Z",
         IMAGE)
     try:
         print("\nEntre em cada agente. Use SEMPRE fluxos de device-auth: o "

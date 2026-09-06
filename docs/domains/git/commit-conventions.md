@@ -49,10 +49,21 @@ This document is the canonical source of truth for agents authoring and curating
 | `✅` | Adding or correcting automated tests. |
 | `🚚` | Moving or renaming files and directories. |
 | `⬆️` | Upgrading dependencies or toolchain baselines. |
+| `🕸️` | Graphify knowledge graph synchronization. |
 
 ### Commit Body (Mandatory)
 
-The body is **mandatory** for every commit touching code, configuration, infrastructure, or structural documentation.
+The body is **mandatory** for every commit touching code,
+configuration, infrastructure, or structural documentation.
+
+**Two-Commit Knowledge Graph Workflow & Exception:**
+The dedicated commit carrying strictly `graphify-out/**` with title
+`🕸️ sync knowledge graph` is the **sole exception** where the mandatory
+structured body is omitted. In this two-commit workflow:
+1. First commit: Product code, infrastructure, tests, or documentation
+   changes with the standard mandatory structured body.
+2. Second commit: Strictly `graphify-out/**` artifacts with title
+   `🕸️ sync knowledge graph` and no body.
 
 Use the structured sections in this order:
 

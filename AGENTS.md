@@ -98,3 +98,34 @@ All commits must follow [`docs/domains/git/commit-conventions.md`](./docs/domain
 - **Mandatory structured body** wrapped at 76 columns (`### ✅ New features`, `### 💡 Architecture improvements`, `### 🧼 Best practices & validations`, `### 🔐 Security & Access Control`, `### 🚀 Outcome`).
 - AI attribution trailers (`Co-authored-by`) are strictly prohibited.
 - Use the `commit-curator` subagent to curate and format commits.
+
+---
+
+## 7. Graphify
+
+The repository maintains an automated, persistent knowledge graph in `graphify-out/` (`graph.json`, `graph.html`, `GRAPH_REPORT.md`) documenting code architecture, dependencies, and operational assets.
+
+### 1. Fast Path Querying
+When `graphify-out/graph.json` exists, agents must treat codebase architecture and relationship questions as Graphify queries first rather than brute-force grepping:
+- `graphify query "<question>"`: BFS search for broad conceptual relationships and flows.
+- `graphify query "<question>" --dfs`: DFS traversal to trace specific dependency chains.
+- `graphify explain "<concept>"`: Explains a node, component, or configuration file.
+- `graphify path "<source>" "<target>"`: Identifies shortest architectural path between components.
+
+### 2. Semantic Update Timing
+Do not run graph rebuilds continuously during development. Run an incremental semantic update **once**, when implementation, tests, and code reviews are stable, immediately before committing:
+```bash
+graphify update .
+```
+
+### 3. Two-Commit Workflow
+Knowledge graph updates are versioned in a dedicated second commit following [`docs/domains/git/commit-conventions.md`](./docs/domains/git/commit-conventions.md):
+1. **Feature/Code Commit:** Code and docs without `graphify-out/**`, containing the mandatory structured body.
+2. **Graph Sync Commit:** Strictly `graphify-out/**` with title `🕸️ sync knowledge graph` (sole exception where structured body is omitted).
+
+### 4. Linked Worktrees & Environment Setup
+In linked Git worktrees (e.g. `.worktrees/`) or new workspaces, Git hooks may not trigger automatically. Run manual updates or environment verification when needed:
+```bash
+./.graphify/setup.sh --verify-only
+```
+For complete architectural details and security guardrails, refer to [`docs/architecture/graphify.md`](./docs/architecture/graphify.md).

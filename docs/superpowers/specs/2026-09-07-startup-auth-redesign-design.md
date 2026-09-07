@@ -29,15 +29,20 @@ Diagnóstico desta máquina, neste dia:
 - Há um processo pasta em execução, identificado como `passt.avx2`.
   Portanto, ausência de um processo chamado literalmente pasta não é diagnóstico.
 - Codex reconhece login nos dois workspaces; Claude retorna `loggedIn: false`
-  e seu arquivo compartilhado está vazio. Antigravity não foi validado.
+  e seu arquivo compartilhado está vazio.
+- O operador confirmou que o login do Antigravity também não funciona.
+  Essa falha está no escopo de correção; sua reprodução técnica ainda não
+  foi realizada na análise.
 - O keyring responde. O forwarder perdeu o listener da porta 80, mas seu
   processo principal continua vivo.
 - 191 testes unitários passaram. Não foi executado reboot durante a análise.
 
 A corrida entre rede do host e inicialização rootless é uma hipótese forte,
 não uma causa encerrada por teste controlado. A origem do arquivo vazio do
-Claude permanece desconhecida. Não atribuir a falha a symlinks, escrita
-atômica, concorrência ou keyring sem observar o fornecedor real.
+Claude e a causa da falha de login do Antigravity permanecem desconhecidas.
+Investigar os dois separadamente, sem presumir uma causa comum. Não atribuir
+as falhas a symlinks, escrita atômica, concorrência ou keyring sem observar
+o fornecedor real.
 
 ## 3. Alternativas e decisão proposta
 
@@ -269,7 +274,9 @@ resultado, versão e boot ID, sem credenciais:
    container ID, trabalho não commitado e dados de serviço existentes.
 3. Login real nos três fornecedores; cliente novo e dois workspaces simultâneos
    utilizáveis; renovação real observada ou marcada pendente, nunca simulada
-   como comprovação final.
+   como comprovação final. As falhas relatadas de Claude e Antigravity devem
+   ter reprodução e resolução comprovadas individualmente; corrigir somente
+   um deles não satisfaz a entrega.
 4. Queda temporária de rede não apaga credenciais; indisponibilidade de API não
    vira indicação de logout. Recuperação automática validada no piloto; caso
    exija reset global de rootless, não promover essa solução para produção.

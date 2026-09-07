@@ -3,7 +3,8 @@
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Tornar login, persistência e diagnóstico confiáveis para Claude,
-Codex e Antigravity, mantendo login compartilhado entre workspaces.
+Codex e Antigravity, corrigindo as falhas de login relatadas em Claude e
+Antigravity e mantendo login compartilhado entre workspaces.
 
 **Architecture:** Adaptadores pequenos por fornecedor usam os fluxos nativos;
 keyring é infraestrutura separada. Persistência só muda após caracterização
@@ -74,9 +75,14 @@ por bind mounts de arquivos: rename também precisa ser testado nesse caso.
 - [ ] Executar dois clientes simultâneos e observar uma renovação real quando
   ela ocorrer; não adulterar token real ou relógio da máquina para provocá-la.
   Se não observada, marcar pending e manter esse critério aberto.
-- [ ] Documentar a causa do Claude vazio ou a evidência que ainda falta.
-  Distinguir login abortado, caminho diferente, erro de persistência, token
-  rejeitado e conectividade. Não implementar A3 por adivinhação.
+- [ ] Reproduzir e documentar separadamente a falha do Claude (incluindo o
+  arquivo vazio observado) e a falha de login do Antigravity relatada pelo
+  operador. Distinguir login abortado, caminho diferente, erro de persistência,
+  token rejeitado e conectividade. Não implementar A3 por adivinhação.
+- [ ] Para Antigravity, comparar o cliente que autenticou com um cliente novo
+  e com a sessão SSH pelo wrapper, verificando acesso ao Secret Service e
+  reconhecimento da conta pela CLI real. Keyring respondendo não comprova
+  login do agy. Registrar a evidência faltante se a falha não for reproduzida.
 - [ ] Decisão: se mecanismo nativo escreve corretamente no contrato atual,
   preservá-lo e corrigir a causa encontrada. Se exige layout diferente ou
   compartilhamento conflita com refresh, registrar reprovação e revisar §6.1
@@ -243,5 +249,7 @@ self.assertEqual(rate_limited.state, "provider_error")
 ## Saída desta frente
 
 Status e erros previsíveis por fornecedor, login seletivo e persistência
-comprovada no contrato aprovado. A aceitação depende do piloto T2: unitários,
-arquivo existente e keyring saudável não provam que as contas funcionam.
+comprovada no contrato aprovado. Claude e Antigravity exigem comprovação
+individual da resolução de suas falhas; Codex exige validação de regressão.
+A aceitação depende do piloto T2: unitários, arquivo existente e keyring
+saudável não provam que as contas funcionam.

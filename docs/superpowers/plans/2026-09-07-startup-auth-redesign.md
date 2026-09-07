@@ -15,6 +15,11 @@ com Type=exec, Bash, Squid, OpenSSH, Secret Service existente.
 
 **Spec:** [Desenho proposto](../specs/2026-09-07-startup-auth-redesign-design.md).
 
+As falhas de login a corrigir incluem Claude Code e Antigravity, conforme
+relato do operador. O diagnóstico técnico já constatou Claude deslogado;
+Antigravity ainda precisa de reprodução. Codex permanece na validação de
+regressão, sem presumir que as três CLIs falham pela mesma causa.
+
 ## Global Constraints
 
 - Proposta para revisão; nenhuma tarefa de implementação foi executada.
@@ -43,7 +48,7 @@ com Type=exec, Bash, Squid, OpenSSH, Secret Service existente.
 | 0 | I1 e parte sintética/documental de A1 | Supervisão provada em fixtures; hipóteses de autenticação delimitadas |
 | Gate 0 | Revisão desses resultados | Decisão de seguir com o desenho ou revisar somente a parte reprovada |
 | 1 | I2–I5 e A2 | Inicialização sintética e diagnóstico de conta/rede separados |
-| Gate de autenticação | Parte real de A1, com rede do piloto funcional | Causa e mecanismo de persistência observados antes de A3 |
+| Gate de autenticação | Parte real de A1, com rede do piloto funcional | Falhas de Claude e Antigravity investigadas separadamente; causa e persistência observadas antes de A3 |
 | 2 | A3–A4 | Login seletivo e verificação real, armazenamento aprovado por A1 |
 | 3 | T1 abaixo | Ciclo integrado em piloto isolado e contrato Orca preservado |
 | 4 | I6 e T2 abaixo | Adoção de um workspace, ensaio de rollback e boots reais |

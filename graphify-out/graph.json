@@ -12448,7 +12448,7 @@
       "node_kind": "heading",
       "norm_label": "a1 \u2014 caracterizar o login real antes de escolher a correcao",
       "source_file": "docs/superpowers/plans/2026-09-07-agent-authentication.md",
-      "source_location": "L34"
+      "source_location": "L35"
     },
     {
       "id": "docs_superpowers_plans_2026_09_07_agent_authentication_a2_separar_status_de_conta_rede_e_infraestrutura",
@@ -12460,7 +12460,7 @@
       "node_kind": "heading",
       "norm_label": "a2 \u2014 separar status de conta, rede e infraestrutura",
       "source_file": "docs/superpowers/plans/2026-09-07-agent-authentication.md",
-      "source_location": "L85"
+      "source_location": "L91"
     },
     {
       "id": "docs_superpowers_plans_2026_09_07_agent_authentication_a3_login_seletivo_persist\u00eancia_comprovada_e_vers\u00f5es",
@@ -12472,7 +12472,7 @@
       "node_kind": "heading",
       "norm_label": "a3 \u2014 login seletivo, persistencia comprovada e versoes",
       "source_file": "docs/superpowers/plans/2026-09-07-agent-authentication.md",
-      "source_location": "L140"
+      "source_location": "L146"
     },
     {
       "id": "docs_superpowers_plans_2026_09_07_agent_authentication_a4_verifica\u00e7\u00e3o_real_e_or\u00e7amento_expl\u00edcito",
@@ -12484,7 +12484,7 @@
       "node_kind": "heading",
       "norm_label": "a4 \u2014 verificacao real e orcamento explicito",
       "source_file": "docs/superpowers/plans/2026-09-07-agent-authentication.md",
-      "source_location": "L195"
+      "source_location": "L201"
     },
     {
       "id": "docs_superpowers_plans_2026_09_07_agent_authentication_autentica\u00e7\u00e3o_por_fornecedor_implementation_plan",
@@ -12508,7 +12508,7 @@
       "node_kind": "heading",
       "norm_label": "global constraints",
       "source_file": "docs/superpowers/plans/2026-09-07-agent-authentication.md",
-      "source_location": "L17"
+      "source_location": "L18"
     },
     {
       "id": "docs_superpowers_plans_2026_09_07_agent_authentication_sa\u00edda_desta_frente",
@@ -12520,7 +12520,7 @@
       "node_kind": "heading",
       "norm_label": "saida desta frente",
       "source_file": "docs/superpowers/plans/2026-09-07-agent-authentication.md",
-      "source_location": "L243"
+      "source_location": "L249"
     },
     {
       "id": "docs_superpowers_plans_2026_09_07_startup_auth_redesign",
@@ -12544,7 +12544,7 @@
       "node_kind": "heading",
       "norm_label": "estrutura de arquivos",
       "source_file": "docs/superpowers/plans/2026-09-07-startup-auth-redesign.md",
-      "source_location": "L67"
+      "source_location": "L72"
     },
     {
       "id": "docs_superpowers_plans_2026_09_07_startup_auth_redesign_global_constraints",
@@ -12556,7 +12556,7 @@
       "node_kind": "heading",
       "norm_label": "global constraints",
       "source_file": "docs/superpowers/plans/2026-09-07-startup-auth-redesign.md",
-      "source_location": "L18"
+      "source_location": "L23"
     },
     {
       "id": "docs_superpowers_plans_2026_09_07_startup_auth_redesign_inicializa\u00e7\u00e3o_e_autentica\u00e7\u00e3o_implementation_plan",
@@ -12580,7 +12580,7 @@
       "node_kind": "heading",
       "norm_label": "investimento e criterio de interrupcao",
       "source_file": "docs/superpowers/plans/2026-09-07-startup-auth-redesign.md",
-      "source_location": "L182"
+      "source_location": "L187"
     },
     {
       "id": "docs_superpowers_plans_2026_09_07_startup_auth_redesign_ordem_e_pontos_de_decis\u00e3o",
@@ -12592,7 +12592,7 @@
       "node_kind": "heading",
       "norm_label": "ordem e pontos de decisao",
       "source_file": "docs/superpowers/plans/2026-09-07-startup-auth-redesign.md",
-      "source_location": "L39"
+      "source_location": "L44"
     },
     {
       "id": "docs_superpowers_plans_2026_09_07_startup_auth_redesign_t1_integrar_as_frentes_e_provar_o_fluxo_orca",
@@ -12604,7 +12604,7 @@
       "node_kind": "heading",
       "norm_label": "t1 \u2014 integrar as frentes e provar o fluxo orca",
       "source_file": "docs/superpowers/plans/2026-09-07-startup-auth-redesign.md",
-      "source_location": "L82"
+      "source_location": "L87"
     },
     {
       "id": "docs_superpowers_plans_2026_09_07_startup_auth_redesign_t2_piloto_real_reboot_e_retorno",
@@ -12616,7 +12616,7 @@
       "node_kind": "heading",
       "norm_label": "t2 \u2014 piloto real, reboot e retorno",
       "source_file": "docs/superpowers/plans/2026-09-07-startup-auth-redesign.md",
-      "source_location": "L117"
+      "source_location": "L122"
     },
     {
       "id": "docs_superpowers_plans_2026_09_07_startup_auth_redesign_t3_aceitar_opera\u00e7\u00e3o_e_atualizar_documenta\u00e7\u00e3o",
@@ -12628,7 +12628,7 @@
       "node_kind": "heading",
       "norm_label": "t3 \u2014 aceitar operacao e atualizar documentacao",
       "source_file": "docs/superpowers/plans/2026-09-07-startup-auth-redesign.md",
-      "source_location": "L158"
+      "source_location": "L163"
     },
     {
       "id": "docs_superpowers_plans_2026_09_07_startup_supervision",
@@ -12796,7 +12796,7 @@
       "node_kind": "heading",
       "norm_label": "3. alternativas e decisao proposta",
       "source_file": "docs/superpowers/specs/2026-09-07-startup-auth-redesign-design.md",
-      "source_location": "L42"
+      "source_location": "L47"
     },
     {
       "id": "docs_superpowers_specs_2026_09_07_startup_auth_redesign_design_4_contratos_globais",
@@ -12808,7 +12808,7 @@
       "node_kind": "heading",
       "norm_label": "4. contratos globais",
       "source_file": "docs/superpowers/specs/2026-09-07-startup-auth-redesign-design.md",
-      "source_location": "L55"
+      "source_location": "L60"
     },
     {
       "id": "docs_superpowers_specs_2026_09_07_startup_auth_redesign_design_5_1_sondas_e_limites",
@@ -12820,7 +12820,7 @@
       "node_kind": "heading",
       "norm_label": "5.1 sondas e limites",
       "source_file": "docs/superpowers/specs/2026-09-07-startup-auth-redesign-design.md",
-      "source_location": "L109"
+      "source_location": "L114"
     },
     {
       "id": "docs_superpowers_specs_2026_09_07_startup_auth_redesign_design_5_2_forwarder_e_cria\u00e7\u00e3o_transacional",
@@ -12832,7 +12832,7 @@
       "node_kind": "heading",
       "norm_label": "5.2 forwarder e criacao transacional",
       "source_file": "docs/superpowers/specs/2026-09-07-startup-auth-redesign-design.md",
-      "source_location": "L136"
+      "source_location": "L141"
     },
     {
       "id": "docs_superpowers_specs_2026_09_07_startup_auth_redesign_design_5_inicializa\u00e7\u00e3o_responsabilidades_e_estado",
@@ -12844,7 +12844,7 @@
       "node_kind": "heading",
       "norm_label": "5. inicializacao: responsabilidades e estado",
       "source_file": "docs/superpowers/specs/2026-09-07-startup-auth-redesign-design.md",
-      "source_location": "L78"
+      "source_location": "L83"
     },
     {
       "id": "docs_superpowers_specs_2026_09_07_startup_auth_redesign_design_6_1_persist\u00eancia_e_concorr\u00eancia_gate_obrigat\u00f3rio",
@@ -12856,7 +12856,7 @@
       "node_kind": "heading",
       "norm_label": "6.1 persistencia e concorrencia: gate obrigatorio",
       "source_file": "docs/superpowers/specs/2026-09-07-startup-auth-redesign-design.md",
-      "source_location": "L184"
+      "source_location": "L189"
     },
     {
       "id": "docs_superpowers_specs_2026_09_07_startup_auth_redesign_design_6_2_vers\u00f5es_logs_e_keyring",
@@ -12868,7 +12868,7 @@
       "node_kind": "heading",
       "norm_label": "6.2 versoes, logs e keyring",
       "source_file": "docs/superpowers/specs/2026-09-07-startup-auth-redesign-design.md",
-      "source_location": "L207"
+      "source_location": "L212"
     },
     {
       "id": "docs_superpowers_specs_2026_09_07_startup_auth_redesign_design_6_autentica\u00e7\u00e3o_contratos_por_fornecedor",
@@ -12880,7 +12880,7 @@
       "node_kind": "heading",
       "norm_label": "6. autenticacao: contratos por fornecedor",
       "source_file": "docs/superpowers/specs/2026-09-07-startup-auth-redesign-design.md",
-      "source_location": "L148"
+      "source_location": "L153"
     },
     {
       "id": "docs_superpowers_specs_2026_09_07_startup_auth_redesign_design_7_migra\u00e7\u00e3o_e_retorno",
@@ -12892,7 +12892,7 @@
       "node_kind": "heading",
       "norm_label": "7. migracao e retorno",
       "source_file": "docs/superpowers/specs/2026-09-07-startup-auth-redesign-design.md",
-      "source_location": "L225"
+      "source_location": "L230"
     },
     {
       "id": "docs_superpowers_specs_2026_09_07_startup_auth_redesign_design_8_aceita\u00e7\u00e3o_e_regras_para_parar",
@@ -12904,7 +12904,7 @@
       "node_kind": "heading",
       "norm_label": "8. aceitacao e regras para parar",
       "source_file": "docs/superpowers/specs/2026-09-07-startup-auth-redesign-design.md",
-      "source_location": "L261"
+      "source_location": "L266"
     },
     {
       "id": "docs_superpowers_specs_2026_09_07_startup_auth_redesign_design_9_fontes_e_rela\u00e7\u00e3o_com_documentos_anteriores",
@@ -12916,7 +12916,7 @@
       "node_kind": "heading",
       "norm_label": "9. fontes e relacao com documentos anteriores",
       "source_file": "docs/superpowers/specs/2026-09-07-startup-auth-redesign-design.md",
-      "source_location": "L287"
+      "source_location": "L294"
     },
     {
       "id": "docs_superpowers_specs_2026_09_07_startup_auth_redesign_design_redesenho_de_inicializa\u00e7\u00e3o_e_autentica\u00e7\u00e3o",
@@ -25341,7 +25341,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "docs/superpowers/plans/2026-09-07-agent-authentication.md",
-      "source_location": "L140",
+      "source_location": "L146",
       "weight": 1.0
     },
     {
@@ -25352,7 +25352,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "docs/superpowers/plans/2026-09-07-agent-authentication.md",
-      "source_location": "L17",
+      "source_location": "L18",
       "weight": 1.0
     },
     {
@@ -25363,7 +25363,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "docs/superpowers/plans/2026-09-07-agent-authentication.md",
-      "source_location": "L195",
+      "source_location": "L201",
       "weight": 1.0
     },
     {
@@ -25374,7 +25374,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "docs/superpowers/plans/2026-09-07-agent-authentication.md",
-      "source_location": "L243",
+      "source_location": "L249",
       "weight": 1.0
     },
     {
@@ -25385,7 +25385,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "docs/superpowers/plans/2026-09-07-agent-authentication.md",
-      "source_location": "L34",
+      "source_location": "L35",
       "weight": 1.0
     },
     {
@@ -25396,7 +25396,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "docs/superpowers/plans/2026-09-07-agent-authentication.md",
-      "source_location": "L85",
+      "source_location": "L91",
       "weight": 1.0
     },
     {
@@ -25418,7 +25418,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "docs/superpowers/plans/2026-09-07-startup-auth-redesign.md",
-      "source_location": "L117",
+      "source_location": "L122",
       "weight": 1.0
     },
     {
@@ -25429,18 +25429,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "docs/superpowers/plans/2026-09-07-startup-auth-redesign.md",
-      "source_location": "L158",
-      "weight": 1.0
-    },
-    {
-      "source": "docs_superpowers_plans_2026_09_07_startup_auth_redesign_inicializa\u00e7\u00e3o_e_autentica\u00e7\u00e3o_implementation_plan",
-      "target": "docs_superpowers_plans_2026_09_07_startup_auth_redesign_global_constraints",
-      "relation": "contains",
-      "_origin": "ast",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "source_file": "docs/superpowers/plans/2026-09-07-startup-auth-redesign.md",
-      "source_location": "L18",
+      "source_location": "L163",
       "weight": 1.0
     },
     {
@@ -25451,7 +25440,18 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "docs/superpowers/plans/2026-09-07-startup-auth-redesign.md",
-      "source_location": "L182",
+      "source_location": "L187",
+      "weight": 1.0
+    },
+    {
+      "source": "docs_superpowers_plans_2026_09_07_startup_auth_redesign_inicializa\u00e7\u00e3o_e_autentica\u00e7\u00e3o_implementation_plan",
+      "target": "docs_superpowers_plans_2026_09_07_startup_auth_redesign_global_constraints",
+      "relation": "contains",
+      "_origin": "ast",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "source_file": "docs/superpowers/plans/2026-09-07-startup-auth-redesign.md",
+      "source_location": "L23",
       "weight": 1.0
     },
     {
@@ -25462,7 +25462,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "docs/superpowers/plans/2026-09-07-startup-auth-redesign.md",
-      "source_location": "L39",
+      "source_location": "L44",
       "weight": 1.0
     },
     {
@@ -25473,7 +25473,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "docs/superpowers/plans/2026-09-07-startup-auth-redesign.md",
-      "source_location": "L67",
+      "source_location": "L72",
       "weight": 1.0
     },
     {
@@ -25484,7 +25484,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "docs/superpowers/plans/2026-09-07-startup-auth-redesign.md",
-      "source_location": "L82",
+      "source_location": "L87",
       "weight": 1.0
     },
     {
@@ -26694,7 +26694,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "docs/superpowers/specs/2026-09-07-startup-auth-redesign-design.md",
-      "source_location": "L109",
+      "source_location": "L114",
       "weight": 1.0
     },
     {
@@ -26705,7 +26705,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "docs/superpowers/specs/2026-09-07-startup-auth-redesign-design.md",
-      "source_location": "L136",
+      "source_location": "L141",
       "weight": 1.0
     },
     {
@@ -26716,7 +26716,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "docs/superpowers/specs/2026-09-07-startup-auth-redesign-design.md",
-      "source_location": "L184",
+      "source_location": "L189",
       "weight": 1.0
     },
     {
@@ -26727,7 +26727,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "docs/superpowers/specs/2026-09-07-startup-auth-redesign-design.md",
-      "source_location": "L207",
+      "source_location": "L212",
       "weight": 1.0
     },
     {
@@ -26738,7 +26738,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "docs/superpowers/specs/2026-09-07-startup-auth-redesign-design.md",
-      "source_location": "L148",
+      "source_location": "L153",
       "weight": 1.0
     },
     {
@@ -26760,7 +26760,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "docs/superpowers/specs/2026-09-07-startup-auth-redesign-design.md",
-      "source_location": "L225",
+      "source_location": "L230",
       "weight": 1.0
     },
     {
@@ -26771,7 +26771,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "docs/superpowers/specs/2026-09-07-startup-auth-redesign-design.md",
-      "source_location": "L261",
+      "source_location": "L266",
       "weight": 1.0
     },
     {
@@ -26782,7 +26782,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "docs/superpowers/specs/2026-09-07-startup-auth-redesign-design.md",
-      "source_location": "L287",
+      "source_location": "L294",
       "weight": 1.0
     },
     {
@@ -26793,7 +26793,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "docs/superpowers/specs/2026-09-07-startup-auth-redesign-design.md",
-      "source_location": "L42",
+      "source_location": "L47",
       "weight": 1.0
     },
     {
@@ -26815,7 +26815,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "docs/superpowers/specs/2026-09-07-startup-auth-redesign-design.md",
-      "source_location": "L55",
+      "source_location": "L60",
       "weight": 1.0
     },
     {
@@ -26826,7 +26826,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "docs/superpowers/specs/2026-09-07-startup-auth-redesign-design.md",
-      "source_location": "L78",
+      "source_location": "L83",
       "weight": 1.0
     },
     {
@@ -31798,7 +31798,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "docs/superpowers/plans/2026-09-07-agent-authentication.md",
-      "source_location": "L15",
+      "source_location": "L16",
       "weight": 1.0
     },
     {
@@ -31820,7 +31820,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "docs/superpowers/plans/2026-09-07-startup-auth-redesign.md",
-      "source_location": "L54",
+      "source_location": "L59",
       "weight": 1.0
     },
     {
@@ -31831,7 +31831,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "docs/superpowers/plans/2026-09-07-startup-auth-redesign.md",
-      "source_location": "L55",
+      "source_location": "L60",
       "weight": 1.0
     },
     {
@@ -32843,5 +32843,5 @@
     }
   ],
   "hyperedges": [],
-  "built_at_commit": "caae6338b14e80cadc4bb25dccab6676b7a35d36"
+  "built_at_commit": "a67dae8b692eb04e228b0aefa6eb0de375dc7032"
 }

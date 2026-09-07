@@ -1,16 +1,16 @@
 # Graph Report - agent-sandbox  (2026-09-07)
 
 ## Corpus Check
-- 108 files · ~120,421 words
+- 108 files · ~120,615 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
 - 1122 nodes · 1679 edges · 78 communities (59 shown, 19 thin omitted)
-- Extraction: 97% EXTRACTED · 3% INFERRED · 0% AMBIGUOUS · INFERRED: 55 edges (avg confidence: 0.78)
+- Extraction: 97% EXTRACTED · 3% INFERRED · 0% AMBIGUOUS · INFERRED: 55 edges (avg confidence: 0.79)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `caae6338`
+- Built from commit: `a67dae8b`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -99,8 +99,8 @@
 4. `exists()` - 22 edges
 5. `PodmanError` - 21 edges
 6. `Profile` - 21 edges
-7. `layout_for()` - 21 edges
-8. `TestDoctorSecretService` - 21 edges
+7. `TestDoctorSecretService` - 21 edges
+8. `layout_for()` - 21 edges
 9. `repo_with()` - 21 edges
 10. `Failure Modes & Forensic Record` - 21 edges
 
@@ -350,20 +350,18 @@ Cohesion: 0.29
 Nodes (7): names(), Nomes derivados do workspace. Um lugar so: no v1 a derivacao duplicada entre…, Remove todo container do workspace pelo LABEL, nunca por prefixo solto: casar…, Encaminha SO as portas declaradas para o host. Nunca faixas privadas: o host…, start_forwarder(), start_services(), _sweep_containers()
 
 ## Knowledge Gaps
-- **398 isolated node(s):** `start-keyring.sh script`, `DBUS_SESSION_BUS_ADDRESS`, `common.sh script`, `shim.template.sh script`, `__dirname` (+393 more)
+- **398 isolated node(s):** `Global Constraints`, `A1 — Caracterizar o login real antes de escolher a correção`, `A2 — Separar status de conta, rede e infraestrutura`, `A3 — Login seletivo, persistência comprovada e versões`, `A4 — Verificação real e orçamento explícito` (+393 more)
   These have ≤1 connection - possible missing edges or undocumented components.
 - **19 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `build_staging()` connect `build_staging` to `lifecycle.py`?**
-  _High betweenness centrality (0.038) - this node is a cross-community bridge._
-- **Why does `Profile` connect `Profile` to `lifecycle.py`, `load_profile`, `Layout`, `names`?**
-  _High betweenness centrality (0.030) - this node is a cross-community bridge._
 - **Why does `load_profile()` connect `load_profile` to `lifecycle.py`, `Layout`, `Profile`?**
-  _High betweenness centrality (0.029) - this node is a cross-community bridge._
-- **What connects `start-keyring.sh script`, `DBUS_SESSION_BUS_ADDRESS`, `common.sh script` to the rest of the system?**
+  _High betweenness centrality (0.038) - this node is a cross-community bridge._
+- **Why does `build_staging()` connect `build_staging` to `lifecycle.py`?**
+  _High betweenness centrality (0.020) - this node is a cross-community bridge._
+- **What connects `Global Constraints`, `A1 — Caracterizar o login real antes de escolher a correção`, `A2 — Separar status de conta, rede e infraestrutura` to the rest of the system?**
   _398 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `run` be split into smaller, more focused modules?**
   _Cohesion score 0.12962962962962962 - nodes in this community are weakly interconnected._
@@ -371,3 +369,5 @@ _Questions this graph is uniquely positioned to answer:_
   _Cohesion score 0.09872241579558652 - nodes in this community are weakly interconnected._
 - **Should `assert.sh` be split into smaller, more focused modules?**
   _Cohesion score 0.05970149253731343 - nodes in this community are weakly interconnected._
+- **Should `load_profile` be split into smaller, more focused modules?**
+  _Cohesion score 0.09898242368177614 - nodes in this community are weakly interconnected._

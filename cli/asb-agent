@@ -35,6 +35,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     up = workspace_command("up", "cria e sobe um workspace")
     up.add_argument("--repo", required=True)
+    up.add_argument(
+        "--runtime",
+        choices=["legacy", "systemd"],
+        default="legacy",
+        help="backend de supervisao (default: legacy)",
+    )
 
     workspace_command("down", "remove containers e rede; preserva o trabalho")
     workspace_command("suspend", "para os containers do workspace")
@@ -61,7 +67,12 @@ def main() -> int:
         if args.command == "build":
             return lifecycle.build(ROOT)
         if args.command == "up":
-            return lifecycle.up(ROOT, args.workspace, Path(args.repo).resolve())
+            return lifecycle.up(
+                ROOT,
+                args.workspace,
+                Path(args.repo).resolve(),
+                runtime=args.runtime,
+            )
         if args.command == "down":
             return lifecycle.down(args.workspace)
         if args.command == "suspend":

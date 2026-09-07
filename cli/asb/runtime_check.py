@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -46,6 +47,23 @@ def main(argv: list[str] | None = None) -> int:
 
     ws = manifest.get("workspace", "")
     containers = manifest.get("containers", {})
+
+    for var in (
+        "ASB_CONFIG_ROOT",
+        "ASB_KEYRING_CONTAINER",
+        "ASB_CREDENTIALS_VOLUME",
+        "ASB_TOOLCACHE_VOLUME",
+        "ASB_KEYRING_DATA_VOLUME",
+        "ASB_KEYRING_RUNTIME_VOLUME",
+        "ASB_KEYRING_PASS_FILE",
+    ):
+        if var in manifest and manifest[var]:
+            os.environ[var] = str(manifest[var])
+    if "config_dir" in manifest and manifest["config_dir"]:
+        os.environ["ASB_CONFIG_ROOT"] = str(manifest["config_dir"])
+    if "keyring_container" in manifest and manifest["keyring_container"]:
+        os.environ["ASB_KEYRING_CONTAINER"] = str(manifest["keyring_container"])
+    ssh_key_path = Path(manifest["ssh_key"]) if "ssh_key" in manifest and manifest["ssh_key"] else None
 
     # Resolver nomes dos containers a partir do manifesto ou padrão
     proxy_info = containers.get("proxy", {})
@@ -98,7 +116,7 @@ def main(argv: list[str] | None = None) -> int:
 
         # 2. Keyring Secret Service (limite 10s)
         keyring_res = wait_until(
-            lambda t: probe_keyring(timeout=t),
+            lambda t: probe_keyring(container=manifest.get("keyring_container"), timeout=t),
             timeout=10.0,
             interval=1.0,
         )
@@ -122,7 +140,7 @@ def main(argv: list[str] | None = None) -> int:
             return 1
 
         ssh_res = wait_until(
-            lambda t: probe_ssh(port=ssh_port, timeout=t),
+            lambda t: probe_ssh(port=ssh_port, key=ssh_key_path, timeout=t),
             timeout=30.0,
             interval=1.0,
         )

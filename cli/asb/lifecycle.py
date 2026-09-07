@@ -11,7 +11,8 @@ import sys
 import time
 from pathlib import Path
 
-from . import podman
+from . import podman, readiness, supervisor
+from .install import install_runtime
 from .profile import Profile, load_profile
 from .squid import render
 from .staging import build_staging
@@ -26,7 +27,11 @@ from .workspace import (
 IMAGE = "agent-sandbox:latest"
 PROXY_IMAGE = "agent-sandbox-proxy:latest"
 PROXY_PORT = 3128
-CONFIG = Path(os.path.expanduser("~")) / ".config" / "agent-sandbox"
+CONFIG = (
+    Path(os.environ["ASB_CONFIG_ROOT"])
+    if "ASB_CONFIG_ROOT" in os.environ
+    else Path(os.path.expanduser("~")) / ".config" / "agent-sandbox"
+)
 SSH_KEY = CONFIG / "id_ed25519"
 CREDENTIALS_VOLUME = os.environ.get("ASB_CREDENTIALS_VOLUME", "asb-credentials")
 TOOLCACHE_VOLUME = "asb-toolcache"
@@ -130,9 +135,10 @@ def ensure_credentials_volume() -> str:
 
 
 def ensure_toolcache_volume() -> str:
-    if not podman.exists("volume", TOOLCACHE_VOLUME):
-        podman.run("volume", "create", TOOLCACHE_VOLUME)
-    return TOOLCACHE_VOLUME
+    vol = os.environ.get("ASB_TOOLCACHE_VOLUME", TOOLCACHE_VOLUME)
+    if not podman.exists("volume", vol):
+        podman.run("volume", "create", vol)
+    return vol
 
 
 def ensure_keyring_pass() -> Path:
@@ -333,23 +339,86 @@ def build(root: Path) -> int:
     return 0
 
 
-def up(root: Path, ws: str, repo: Path) -> int:
-    """Cria o workspace. Ou completa, ou nao deixa nada para tras.
+class WorkspaceTransaction:
+    """Rastreia recursos criados durante a transacao de up para rollback estrito por ID."""
 
-    O rollback nao e zelo: um `up` que falha no meio e depois e repetido bate
-    em "workspace ja existe" por causa dos proprios restos, e o operador fica
-    preso sem entender por que.
-    """
+    def __init__(self, ws: str, is_existing: bool) -> None:
+        self.ws = ws
+        self.is_existing = is_existing
+        self.created_containers: list[str] = []
+        self.created_networks: list[str] = []
+        self.created_volumes: list[str] = []
+        self.created_units: list[Path] = []
+
+    def record_container(self, container_id: str) -> None:
+        if container_id and container_id not in self.created_containers:
+            self.created_containers.append(container_id)
+
+    def record_network(self, network_name: str) -> None:
+        if network_name and network_name not in self.created_networks:
+            self.created_networks.append(network_name)
+
+    def record_volume(self, volume_name: str) -> None:
+        if volume_name and volume_name not in self.created_volumes:
+            self.created_volumes.append(volume_name)
+
+    def record_unit(self, unit_path: Path) -> None:
+        if unit_path and unit_path not in self.created_units:
+            self.created_units.append(unit_path)
+
+    def rollback(self) -> None:
+        # Falha em workspace existente NUNCA executa sweep destrutivo de containers preexistentes
+        if self.is_existing:
+            return
+
+        # Rollback atinge EXCLUSIVAMENTE os IDs dos recursos criados nesta transacao
+        for cid in self.created_containers:
+            podman.run("rm", "-f", cid, check=False)
+
+        for net in self.created_networks:
+            if podman.exists("network", net):
+                podman.run("network", "rm", "-f", net, check=False)
+
+        for vol in self.created_volumes:
+            if podman.exists("volume", vol):
+                podman.run("volume", "rm", "-f", vol, check=False)
+
+        if self.created_units:
+            try:
+                supervisor.remove_workspace_units(self.ws)
+            except Exception:
+                pass
+
+
+def _get_container_id(name: str) -> str:
     try:
-        return _up(root, ws, repo)
-    except BaseException:
-        # NAO remove ~/asb-agent/<proj>/<ws>: um `up` repetido sobre um
-        # workspace existente nao pode apagar commits do agente.
-        _sweep_containers(ws)
-        for network in (names(ws)["net"], names(ws)["out"]):
-            if podman.exists("network", network):
-                podman.run("network", "rm", "-f", network, check=False)
-        raise
+        cid = podman.out("inspect", name, "--format", "{{.Id}}").strip()
+        if cid:
+            return cid
+    except Exception:
+        pass
+    return name
+
+
+def _origin_of(ws: str, home: Path) -> Path | None:
+    """Le o caminho de origem gravado no estado. `down` precisa dele para achar
+    o layout, e um workspace sem estado nao e erro: nao ha o que limpar."""
+    marker = home / ".local" / "state" / "agent-sandbox" / ws / "origin"
+    return Path(marker.read_text().strip()) if marker.is_file() else None
+
+
+def _runtime_of(ws: str, home: Path | None = None) -> str:
+    """Le o backend de runtime gravado no manifesto do workspace."""
+    h = home if home is not None else Path(os.path.expanduser("~"))
+    manifest_file = h / ".local" / "state" / "agent-sandbox" / ws / "runtime.json"
+    if manifest_file.is_file():
+        try:
+            manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
+            if isinstance(manifest, dict):
+                return str(manifest.get("runtime_type") or manifest.get("runtime_backend") or "legacy")
+        except Exception:
+            pass
+    return "legacy"
 
 
 def _sweep_containers(ws: str) -> None:
@@ -370,48 +439,65 @@ def _sweep_containers(ws: str) -> None:
         podman.run("rm", "-f", container, check=False)
 
 
-def start_services(ws: str, profile: Profile) -> None:
+def start_services(
+    ws: str,
+    profile: Profile,
+    cmd_action: str = "run",
+    restart: str = "unless-stopped",
+    tx: WorkspaceTransaction | None = None,
+) -> dict[str, dict[str, str]]:
     n = names(ws)
+    cmd_flags = ["-d"] if cmd_action == "run" else []
+    manifests: dict[str, dict[str, str]] = {}
     for service in profile.services:
         container = f"asb-{ws}-svc-{service.name}"
         env = []
         for key, value in service.env.items():
             env += ["-e", f"{key}={value}"]
-        # --user 0: imagens sem diretiva USER (postgres, por exemplo) sao
-        # resolvidas por keep-id para o uid mapeado do host, e o initdb falha
-        # em ajustar permissoes dos diretorios da propria imagem.
-        podman.run("run", "-d", "--name", container,
+        podman.run(cmd_action, *cmd_flags, "--name", container,
                    "--label", f"asb.workspace={ws}",
-                   "--restart", "unless-stopped",
+                   "--restart", restart,
                    "--network", n["net"], "--user", "0",
                    *env, service.image)
+        cid = _get_container_id(container)
+        if tx:
+            tx.record_container(cid)
+        manifests[f"svc-{service.name}"] = {
+            "name": container,
+            "id": cid,
+            "unit": f"{container}.service",
+        }
+    return manifests
 
 
-def start_forwarder(ws: str, profile: Profile) -> None:
-    """Encaminha SO as portas declaradas para o host.
-
-    Nunca faixas privadas: o host participa de uma rede Tailscale, e liberar
-    RFC1918 ou CGNAT entregaria a tailnet inteira ao agente.
-
-    O encaminhador tem perna na rede externa porque so assim alcanca o gateway
-    do host. Ele nao e um proxy de uso geral: roda socat com destinos fixos, e
-    o agente so alcanca as portas listadas.
-    """
+def start_forwarder(
+    ws: str,
+    profile: Profile,
+    cmd_action: str = "run",
+    restart: str = "unless-stopped",
+    tx: WorkspaceTransaction | None = None,
+) -> str:
+    """Encaminha SO as portas declaradas para o host."""
     if not profile.host_ports:
-        return
+        return ""
     for port in profile.host_ports:
         if not isinstance(port, int) or isinstance(port, bool) or not (1 <= port <= 65535):
             raise ValueError(f"Porta invalida para forwarder: {port!r}")
     n = names(ws)
     forwarder = f"{n['net']}-fwd"
     port_args = [str(port) for port in profile.host_ports]
-    podman.run("run", "-d", "--name", forwarder,
+    cmd_flags = ["-d"] if cmd_action == "run" else []
+    podman.run(cmd_action, *cmd_flags, "--name", forwarder,
                "--label", f"asb.workspace={ws}",
-               "--restart", "unless-stopped",
+               "--restart", restart,
                "--sysctl", "net.ipv4.ip_unprivileged_port_start=0",
                "--network", f"{n['net']},{n['out']}", "--user", "900",
                "--entrypoint", "/usr/local/bin/asb-forwarder",
                PROXY_IMAGE, *port_args)
+    cid = _get_container_id(forwarder)
+    if tx:
+        tx.record_container(cid)
+    return cid
 
 
 PRUNED_DIRS = {
@@ -448,14 +534,50 @@ def discover_mise_dirs(root: Path) -> list[Path]:
     return dirs
 
 
-def _up(root: Path, ws: str, repo: Path) -> int:
+def _run_mise_installs(agent_container: str, project_root: Path) -> list[tuple[Path, int, str]]:
+    mise_errors: list[tuple[Path, int, str]] = []
+    for d in discover_mise_dirs(project_root):
+        print(f"  info executando mise install em {d.name}...", file=sys.stderr)
+        res = podman.run("exec", "-u", "1000", "-w", str(d),
+                         agent_container, "mise", "install", "-y", check=False)
+        rc = getattr(res, "returncode", 0)
+        if rc == 0:
+            print(f"  ok   ferramentas mise instaladas ({d.name})", file=sys.stderr)
+        else:
+            stderr = getattr(res, "stderr", "") or ""
+            print(f"  erro falha ao executar mise install em {d.name} (código {rc})",
+                  file=sys.stderr)
+            if stderr:
+                print(stderr.strip(), file=sys.stderr)
+            mise_errors.append((d, rc, stderr))
+    return mise_errors
+
+
+def _current_revision(root: Path) -> str:
+    try:
+        res = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--short=12", "HEAD"],
+            capture_output=True, text=True, check=True
+        )
+        rev = res.stdout.strip()
+        if rev and all(c not in rev for c in ("/", "\\", "..", " ", "\t", "\n", "\r")):
+            return rev
+    except Exception:
+        pass
+    return "dev"
+
+
+def prepare_workspace(
+    root: Path,
+    ws: str,
+    repo: Path,
+    runtime: str = "legacy",
+    tx: WorkspaceTransaction | None = None,
+) -> None:
+    """Prepara clone, redes, containers e manifesto sem restauracao global."""
     if not podman.exists("image", IMAGE):
         raise podman.PodmanError(
             f"imagem {IMAGE} ausente; execute 'asb-agent build'")
-    n = names(ws)
-    if podman.exists("container", n["agent"]):
-        raise podman.PodmanError(
-            f"workspace ja existe: {ws} (use 'resume', ou 'down' primeiro)")
 
     podman.ensure_rootless_netns()
     build_proxy(root)
@@ -464,6 +586,7 @@ def _up(root: Path, ws: str, repo: Path) -> int:
     layout = layout_for(repo, ws, home)
     prepare_clone(repo, layout)
 
+    layout.state.mkdir(parents=True, exist_ok=True)
     conf = layout.state / "squid.conf"
     conf.write_text(render(profile,
                            root / "image" / "squid" / "allowlist-base.txt",
@@ -472,44 +595,72 @@ def _up(root: Path, ws: str, repo: Path) -> int:
     conf.chmod(0o644)
     (layout.state / "origin").write_text(str(repo))
 
-    # A rede interna nao tem rota default nem DNS externo, e o podman a
-    # reconstroi em TODA partida do container. E por isso que nao existe mais
-    # ordem de subida a respeitar: nao ha regra que possa faltar.
+    n = names(ws)
     if not podman.exists("network", n["net"]):
         podman.run("network", "create", "--internal", n["net"])
+        if tx:
+            tx.record_network(n["net"])
     if not podman.exists("network", n["out"]):
         podman.run("network", "create", n["out"])
+        if tx:
+            tx.record_network(n["out"])
 
-    # O proxy tem perna nas duas redes: e o unico caminho para fora.
-    podman.run(
-        "run", "-d", "--name", n["proxy"],
+    cmd_action = "create" if runtime == "systemd" else "run"
+    cmd_flags = ["-d"] if cmd_action == "run" else []
+    restart_policy = "no" if runtime == "systemd" else "unless-stopped"
+
+    # 1. Proxy
+    proxy_args = [
+        cmd_action,
+        *cmd_flags,
+        "--name", n["proxy"],
         "--label", f"asb.workspace={ws}",
-        "--restart", "unless-stopped",
+        "--restart", restart_policy,
         "--network", f"{n['net']},{n['out']}", "--user", "900",
         "-v", f"{conf}:/etc/squid/squid.conf:ro,Z",
-        PROXY_IMAGE, "squid", "-N", "-f", "/etc/squid/squid.conf")
+        PROXY_IMAGE, "squid", "-N", "-f", "/etc/squid/squid.conf",
+    ]
+    podman.run(*proxy_args)
+    proxy_cid = _get_container_id(n["proxy"])
+    if tx:
+        tx.record_container(proxy_cid)
 
-    start_services(ws, profile)
-    start_forwarder(ws, profile)
+    # 2. Servicos adicionais
+    services_manifest = start_services(
+        ws, profile, cmd_action=cmd_action, restart=restart_policy, tx=tx
+    )
 
+    # 3. Forwarder
+    fwd_cid = start_forwarder(
+        ws, profile, cmd_action=cmd_action, restart=restart_policy, tx=tx
+    )
+
+    # 4. Broker Docker
+    docker_cid = ""
+    docker_name = f"{n['net']}-docker"
     if profile.host_api == "read":
         broker_sock = Path("/run/asb-docker/docker.sock")
         if not broker_sock.exists():
             raise podman.PodmanError(
                 'host_api = "read" pede o broker; execute '
                 "'asb-agent install-broker' (usa sudo, uma vez)")
-        # Container proprio, SEM rede externa: quem fala com o socket do
-        # Docker nao ganha egresso de tabela junto.
-        podman.run(
-            "run", "-d", "--name", f"{n['net']}-docker",
+        docker_args = [
+            cmd_action,
+            *cmd_flags,
+            "--name", docker_name,
             "--label", f"asb.workspace={ws}",
-            "--restart", "unless-stopped",
+            "--restart", restart_policy,
             "--network", n["net"], "--user", "900",
             "-v", f"{broker_sock}:/var/run/docker.sock:Z",
             "--entrypoint", "sh", PROXY_IMAGE, "-c",
-            "socat TCP-LISTEN:2375,fork,reuseaddr "
-            "UNIX-CONNECT:/var/run/docker.sock")
+            "socat TCP-LISTEN:2375,fork,reuseaddr UNIX-CONNECT:/var/run/docker.sock",
+        ]
+        podman.run(*docker_args)
+        docker_cid = _get_container_id(docker_name)
+        if tx:
+            tx.record_container(docker_cid)
 
+    # 5. Staging, SSH, Keyring
     stage = layout.state / "staging"
     shutil.rmtree(stage, ignore_errors=True)
     staged = build_staging(root / "profiles" / "provision.toml", stage, home)
@@ -523,15 +674,14 @@ def _up(root: Path, ws: str, repo: Path) -> int:
     ensure_keyring_service()
 
     agent_args = [
-        "run", "-d", "--name", n["agent"],
+        cmd_action,
+        *cmd_flags,
+        "--name", n["agent"],
         "--label", f"asb.workspace={ws}",
-        "--restart", "unless-stopped",
+        "--restart", restart_policy,
         "--network", n["net"],
         "-p", "127.0.0.1::22",
         *published,
-        # Sem keep-id o uid 1000 do host mapeia para 0 aqui dentro, o
-        # repositorio montado aparece como root e o agente nao consegue
-        # escrever no proprio workspace.
         "--userns", "keep-id:uid=1000,gid=1000",
         "-e", f"ORCA_SSH_PUBLIC_KEY={key.with_suffix('.pub').read_text().strip()}",
         "-e", f"HTTPS_PROXY=http://{n['proxy']}:{PROXY_PORT}",
@@ -551,54 +701,155 @@ def _up(root: Path, ws: str, repo: Path) -> int:
         IMAGE,
     ]
     if profile.container_mode == "nested":
-        # /dev/fuse para o fuse-overlayfs, /dev/net/tun para o netavark/slirp;
-        # label=disable porque o SELinux do host nao rotula o que o podman de dentro cria.
-        # unmask=/proc/* permite o mount proc do crun sem expor /sys/firmware.
-        # net.ipv4.ip_unprivileged_port_start=0 permite que containers aninhados
-        # (ex: Traefik do BlackICE em 80:80) escutem em portas privilegiadas (< 1024).
         volume = f"{n['net']}-containers"
         if not podman.exists("volume", volume):
             podman.run("volume", "create", volume)
+            if tx:
+                tx.record_volume(volume)
         agent_args[-1:-1] = [
             "--device", "/dev/fuse",
             "--device", "/dev/net/tun",
             "--security-opt", "label=disable",
             "--security-opt", "unmask=/proc/*",
             "--sysctl", "net.ipv4.ip_unprivileged_port_start=0",
-            # Armazenamento das imagens aninhadas fora da camada gravavel: um
-            # `down` seguido de `up` nao rebaixa tudo de novo.
             "-v", f"{volume}:{home}/.local/share/containers:Z",
         ]
     podman.run(*agent_args)
-    # Idempotente e barato; chamar aqui evita que o operador precise lembrar.
-    from . import install
-    install.podman_restart()
+    agent_cid = _get_container_id(n["agent"])
+    if tx:
+        tx.record_container(agent_cid)
 
-    mise_errors: list[tuple[Path, int, str]] = []
-    for d in discover_mise_dirs(layout.project_root):
-        print(f"  info executando mise install em {d.name}...", file=sys.stderr)
-        res = podman.run("exec", "-u", "1000", "-w", str(d),
-                         n["agent"], "mise", "install", "-y", check=False)
-        rc = getattr(res, "returncode", 0)
-        if rc == 0:
-            print(f"  ok   ferramentas mise instaladas ({d.name})", file=sys.stderr)
-        else:
-            stderr = getattr(res, "stderr", "") or ""
-            print(f"  erro falha ao executar mise install em {d.name} (código {rc})",
+    # 6. Gravar manifesto runtime.json
+    manifest_containers: dict[str, dict[str, str]] = {
+        "proxy": {
+            "name": n["proxy"],
+            "id": proxy_cid,
+            "unit": f"{n['proxy']}.service",
+        },
+        "agent": {
+            "name": n["agent"],
+            "id": agent_cid,
+            "unit": f"{n['agent']}.service",
+        },
+    }
+    if profile.host_ports and fwd_cid:
+        manifest_containers["forwarder"] = {
+            "name": fwd_name,
+            "id": fwd_cid,
+            "unit": f"{fwd_name}.service",
+        }
+    if profile.host_api == "read" and docker_cid:
+        manifest_containers["docker"] = {
+            "name": docker_name,
+            "id": docker_cid,
+            "unit": f"{docker_name}.service",
+        }
+    manifest_containers.update(services_manifest)
+
+    manifest_data = {
+        "schemaVersion": 1,
+        "workspace": ws,
+        "runtime_type": runtime,
+        "runtime_backend": runtime,
+        "containers": manifest_containers,
+    }
+    for var in (
+        "ASB_CONFIG_ROOT",
+        "ASB_KEYRING_CONTAINER",
+        "ASB_CREDENTIALS_VOLUME",
+        "ASB_TOOLCACHE_VOLUME",
+        "ASB_KEYRING_DATA_VOLUME",
+        "ASB_KEYRING_RUNTIME_VOLUME",
+        "ASB_KEYRING_PASS_FILE",
+    ):
+        if var in os.environ:
+            manifest_data[var] = os.environ[var]
+    if "ASB_CONFIG_ROOT" in os.environ:
+        manifest_data["config_dir"] = os.environ["ASB_CONFIG_ROOT"]
+    if "ASB_KEYRING_CONTAINER" in os.environ:
+        manifest_data["keyring_container"] = os.environ["ASB_KEYRING_CONTAINER"]
+    manifest_data["ssh_key"] = str(key)
+
+    if runtime == "systemd":
+        rev = _current_revision(root)
+        if (root / "cli" / "asb").is_dir():
+            install_runtime(root, rev)
+            manifest_data["revision"] = rev
+
+    manifest_file = layout.state / "runtime.json"
+    manifest_file.write_text(json.dumps(manifest_data, indent=2), encoding="utf-8")
+
+    # 7. Instalar unidades systemd se runtime gerenciado
+    if runtime == "systemd":
+        units = supervisor.install_workspace(ws, state_dir=layout.state)
+        if tx and isinstance(units, (list, tuple)):
+            for u in units:
+                tx.record_unit(u)
+
+
+def up(root: Path, ws: str, repo: Path, runtime: str = "legacy") -> int:
+    """Cria o workspace. Ou completa, ou nao deixa nada para tras.
+
+    Falha em workspace existente NUNCA executa sweep destrutivo de containers preexistentes.
+    Em novo workspace, rollback remove EXCLUSIVAMENTE os recursos criados nesta transacao.
+    """
+    n = names(ws)
+    is_existing = podman.exists("container", n["agent"])
+    if is_existing:
+        raise podman.PodmanError(
+            f"workspace ja existe: {ws} (use 'resume', ou 'down' primeiro)")
+
+    tx = WorkspaceTransaction(ws, is_existing=False)
+    home = Path(os.path.expanduser("~"))
+    layout = layout_for(repo, ws, home)
+    try:
+        prepare_workspace(root, ws, repo, runtime=runtime, tx=tx)
+
+        if runtime == "systemd":
+            supervisor.start_workspace(ws, enable=True)
+
+        # 1. Sonda de conectividade do proxy antes de operacoes que exigem rede (ex: mise install)
+        proxy_res = readiness.wait_until(
+            lambda to: readiness.probe_proxy(n["agent"], n["proxy"], timeout=to),
+            timeout=30.0,
+        )
+        if proxy_res.state != "healthy":
+            print(f"erro: proxy nao esta pronto ({proxy_res.code}): {proxy_res.remediation}", file=sys.stderr)
+            raise podman.PodmanError(f"proxy nao esta pronto: {proxy_res.code}")
+
+        # 2. Executar mise install
+        mise_errors = _run_mise_installs(n["agent"], layout.project_root)
+        if mise_errors:
+            failed_names = ", ".join(d.name for d, _, _ in mise_errors)
+            print(f"\nerro: falha na instalacao de ferramentas mise em: {failed_names}",
                   file=sys.stderr)
-            if stderr:
-                print(stderr.strip(), file=sys.stderr)
-            mise_errors.append((d, rc, stderr))
+            print("workspace mantido no ar; corrija a allowlist ou mise.toml e "
+                  "execute 'asb-agent up' novamente.", file=sys.stderr)
+            return 1
 
-    if mise_errors:
-        failed_names = ", ".join(d.name for d, _, _ in mise_errors)
-        print(f"\nerro: falha na instalacao de ferramentas mise em: {failed_names}",
-              file=sys.stderr)
-        print("workspace mantido no ar; corrija a allowlist ou mise.toml e "
-              "execute 'asb-agent up' novamente.", file=sys.stderr)
-        return 1
+        # 3. Conferir porta e handshake SSH via probe_ssh antes de emitir JSON
+        mapping = podman.out("port", n["agent"], "22")
+        port = mapping.splitlines()[0].rsplit(":", 1)[-1] if mapping else ""
+        if not port:
+            raise podman.PodmanError("nao foi possivel determinar a porta SSH")
 
-    return emit(ws, layout)
+        key = ensure_ssh_key()
+        ssh_res = readiness.wait_until(
+            lambda to: readiness.probe_ssh(int(port), key=key, timeout=to),
+            timeout=30.0,
+        )
+        if ssh_res.state != "healthy":
+            print(f"erro: SSH nao esta pronto ({ssh_res.code}): {ssh_res.remediation}", file=sys.stderr)
+            raise podman.PodmanError(f"SSH nao esta pronto na porta {port}: {ssh_res.code}")
+
+        return emit(ws, layout)
+    except BaseException:
+        tx.rollback()
+        raise
+
+
+def _up(root: Path, ws: str, repo: Path, runtime: str = "legacy") -> int:
+    return up(root, ws, repo, runtime=runtime)
 
 
 def emit(ws: str, layout: Layout) -> int:
@@ -616,10 +867,17 @@ def emit(ws: str, layout: Layout) -> int:
 
 
 def down(ws: str) -> int:
-    """Remove containers e redes. NAO remove ~/asb-agent/<proj>/<ws>: ali vive
-    o trabalho do agente, e apagar isso por engano seria irreversivel."""
+    """Remove unidades do systemd (se gerenciado), containers e redes.
+
+    NAO remove ~/asb-agent/<proj>/<ws>: ali vive o trabalho do agente.
+    NUNCA remove auth global nem keyring singleton compartilhado.
+    """
     n = names(ws)
     home = Path(os.path.expanduser("~"))
+
+    # Remove unidades systemd se existirem
+    supervisor.remove_workspace_units(ws)
+
     _sweep_containers(ws)
     for network in (n["net"], n["out"]):
         if podman.exists("network", network):
@@ -631,13 +889,6 @@ def down(ws: str) -> int:
     if origin is not None:
         remove_state(layout_for(origin, ws, home))
     return 0
-
-
-def _origin_of(ws: str, home: Path) -> Path | None:
-    """Le o caminho de origem gravado no estado. `down` precisa dele para achar
-    o layout, e um workspace sem estado nao e erro: nao ha o que limpar."""
-    marker = home / ".local" / "state" / "agent-sandbox" / ws / "origin"
-    return Path(marker.read_text().strip()) if marker.is_file() else None
 
 
 def _require_workspace(ws: str) -> tuple[dict[str, str], Path, Path]:
@@ -653,7 +904,32 @@ def _require_workspace(ws: str) -> tuple[dict[str, str], Path, Path]:
 
 
 def suspend(ws: str) -> int:
-    n, _, _ = _require_workspace(ws)
+    """Para o workspace.
+
+    Em runtime gerenciado (systemd):
+    Desabilita e para o target systemd, e verifica que todos os containers foram parados.
+
+    Em runtime legado:
+    Para todos os containers do workspace com podman stop.
+    """
+    n, home, origin = _require_workspace(ws)
+    runtime = _runtime_of(ws, home)
+
+    if runtime == "systemd":
+        target = f"asb-{ws}.target"
+        subprocess.run(
+            ["systemctl", "--user", "disable", target],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        subprocess.run(
+            ["systemctl", "--user", "stop", target],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+
     containers = podman.out(
         "ps", "--filter", f"label=asb.workspace={ws}",
         "--format", "{{.Names}}").splitlines()
@@ -668,26 +944,65 @@ def suspend(ws: str) -> int:
 def resume(root: Path, ws: str) -> int:
     """Religa o workspace.
 
-    E `podman start`, e so. Nao ha ordem a respeitar por seguranca: a rede interna
-    nao pode "nao ter subido", entao o agente nunca ganha egresso indevido por
-    partir primeiro. O proxy sobe antes por educacao — para o agente nao passar alguns
-    segundos sem saida. Todos os outros containers do workspace (servicos, forwarder,
-    broker) tambem sao religados.
+    Em runtime gerenciado (systemd):
+    Habilita o target, executa reset-failed nas unidades do workspace,
+    inicia o target, e aguarda sondas de prontidão (readiness.probe_workspace).
+
+    Em runtime legado:
+    Religa os containers com podman start.
     """
     n, home, origin = _require_workspace(ws)
+    layout = layout_for(origin, ws, home)
+    runtime = _runtime_of(ws, home)
+
     podman.ensure_rootless_netns()
     ensure_keyring_service()
-    if podman.exists("container", n["proxy"]):
-        podman.run("start", n["proxy"], check=False)
-    containers = podman.out(
-        "ps", "-a", "--filter", f"label=asb.workspace={ws}",
-        "--format", "{{.Names}}").splitlines()
-    found = {c.strip() for c in containers if c.strip()}
-    found.update({n["agent"]})
-    for container in sorted(found):
-        if container != n["proxy"] and podman.exists("container", container):
-            podman.run("start", container, check=False)
-    return emit(ws, layout_for(origin, ws, home))
+
+    if runtime == "systemd":
+        target = f"asb-{ws}.target"
+        subprocess.run(["systemctl", "--user", "enable", target], check=True)
+        reset_units = [target]
+        manifest_file = layout.state / "runtime.json"
+        if manifest_file.is_file():
+            try:
+                manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
+                for info in manifest.get("containers", {}).values():
+                    if isinstance(info, dict) and "unit" in info:
+                        reset_units.append(info["unit"])
+            except Exception:
+                pass
+        subprocess.run(
+            ["systemctl", "--user", "reset-failed", *reset_units],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        supervisor.start_workspace(ws)
+
+        def check_ws(to: float) -> readiness.ProbeResult:
+            probes = readiness.probe_workspace(ws)
+            for p in probes:
+                if p.state != "healthy":
+                    return p
+            return readiness.ProbeResult("workspace", "healthy", "ok", 0, "")
+
+        probe_res = readiness.wait_until(check_ws, timeout=30.0)
+        if probe_res.state != "healthy":
+            print(f"erro: falha na prontidao do workspace ({probe_res.component}: {probe_res.code}): {probe_res.remediation}", file=sys.stderr)
+            return 1
+    else:
+        if podman.exists("container", n["proxy"]):
+            podman.run("start", n["proxy"], check=False)
+        containers = podman.out(
+            "ps", "-a", "--filter", f"label=asb.workspace={ws}",
+            "--format", "{{.Names}}").splitlines()
+        found = {c.strip() for c in containers if c.strip()}
+        found.update({n["agent"]})
+        for container in sorted(found):
+            if container != n["proxy"] and podman.exists("container", container):
+                podman.run("start", container, check=False)
+
+    return emit(ws, layout)
 
 
 def reload_allowlist(root: Path, ws: str) -> int:

@@ -129,11 +129,12 @@ def probe_proxy(
     except Exception:
         pass
 
+    target_host, target_port = target.split(":", 1) if ":" in target else (target, "443")
+    nc_timeout = max(1, int(timeout))
     podman_bin = shutil.which("podman") or "podman"
     probe_script = (
-        f'resp=$(printf "CONNECT {target} HTTP/1.1\\r\\nHost: {target}\\r\\n\\r\\n" '
-        f'| nc -w {max(1, int(timeout))} {proxy_host} 3128 2>&1)\n'
-        f'echo "$resp"\n'
+        f'nc -z -v -w {nc_timeout} -X connect -x {proxy_host}:3128 {target_host} {target_port} 2>&1 || '
+        f'(printf "CONNECT {target} HTTP/1.1\\r\\nHost: {target}\\r\\n\\r\\n" | nc -w {nc_timeout} -q 1 {proxy_host} 3128 2>&1)'
     )
 
     try:
@@ -141,18 +142,18 @@ def probe_proxy(
             [podman_bin, "exec", source_container, "sh", "-c", probe_script],
             capture_output=True,
             text=True,
-            timeout=timeout,
+            timeout=timeout + 2.0,
         )
         elapsed = int((monotonic() - started) * 1000)
         output = (res.stdout or "") + (res.stderr or "")
 
-        if "Network is unreachable" in output:
+        if "Network is unreachable" in output or "Network unreachable" in output:
             return ProbeResult("proxy", "unreachable", "no_route", elapsed, "podman unshare --rootless-netns true")
-        if " 200 " in output:
+        if "succeeded" in output or " 200 " in output:
             return ProbeResult("proxy", "healthy", "ok", elapsed, "")
-        if " 403 " in output:
+        if "403" in output:
             return ProbeResult("proxy", "failed", "connect_denied", elapsed, "adicione o dominio em [network] allow")
-        if " 503 " in output:
+        if "503" in output:
             return ProbeResult("proxy", "failed", "connect_failed", elapsed, "verifique conectividade do destino ou uplink")
         if "Connection refused" in output:
             return ProbeResult("proxy", "unreachable", "proxy_unreachable", elapsed, f"proxy nao responde em {proxy_host}:3128")

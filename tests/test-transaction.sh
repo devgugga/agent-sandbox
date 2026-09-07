@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# tests/test-transaction.sh — criacao transacional e rollback via _sweep_containers
+# tests/test-transaction.sh — criacao transacional e rollback por ID
 set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$ROOT/tests/assert.sh"
@@ -60,6 +60,18 @@ fi
 assert_eq "0" "$retry_rc" "repetir up apos rollback sucede sem erro de workspace existente"
 assert_eq "0" "$(podman container exists "asb-${WS_ROLLBACK}-agent"; echo $?)" \
   "o container do agente existe apos up bem-sucedido"
+
+# 5. up em workspace existente falha com erro e NUNCA destroi containers preexistentes
+if "$ROOT/cli/asb-agent" up --workspace "$WS_ROLLBACK" --repo "$repo" >/dev/null 2>&1; then
+  existing_up_rc=0
+else
+  existing_up_rc=$?
+fi
+assert_fails "up em workspace existente falha com erro" [ "$existing_up_rc" -eq 0 ]
+assert_eq "0" "$(podman container exists "asb-${WS_ROLLBACK}-agent"; echo $?)" \
+  "container do agente permanece ativo apos falha de up sobre workspace existente"
+assert_eq "0" "$(podman container exists "asb-${WS_ROLLBACK}-proxy"; echo $?)" \
+  "proxy do workspace permanece ativo apos falha de up sobre workspace existente"
 
 "$ROOT/cli/asb-agent" down --workspace "$WS_ROLLBACK" >/dev/null 2>&1
 

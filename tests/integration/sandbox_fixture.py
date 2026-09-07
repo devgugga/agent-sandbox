@@ -180,6 +180,12 @@ class SandboxFixture:
                 stderr=subprocess.DEVNULL,
             )
 
+        # Ensure SSH key exists in config_dir as well so CLI uses the exact same key
+        config_key = self.config_dir / "id_ed25519"
+        if not config_key.exists():
+            shutil.copy2(self.ssh_key, config_key)
+            shutil.copy2(self.ssh_key.with_suffix(".pub"), config_key.with_suffix(".pub"))
+
         # Generate dedicated passphrase
         self.passphrase_file.write_text(
             base64.b64encode(os.urandom(32)).decode().strip() + "\n",

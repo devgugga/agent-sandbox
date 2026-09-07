@@ -219,6 +219,8 @@ class TestLifecycleOrdering(unittest.TestCase):
                  mock.patch("cli.asb.lifecycle.ensure_credentials_volume", return_value="cred-vol"), \
                  mock.patch("cli.asb.lifecycle.ensure_toolcache_volume", return_value="tool-vol"), \
                  mock.patch("cli.asb.lifecycle.discover_mise_dirs", return_value=[]), \
+                 mock.patch("cli.asb.readiness.wait_until", return_value=mock.MagicMock(state="healthy", code="ok")), \
+                 mock.patch("cli.asb.podman.out", return_value="127.0.0.1:2222"), \
                  mock.patch("cli.asb.lifecycle.emit", return_value=0), \
                  mock.patch("cli.asb.install.podman_restart"):
                 rc = _up(fake_root, "test-ws", fake_repo)
@@ -349,6 +351,8 @@ class TestLifecycleOrdering(unittest.TestCase):
                  mock.patch("cli.asb.lifecycle.ensure_ssh_key", return_value=fake_key), \
                  mock.patch("cli.asb.lifecycle.ensure_toolcache_volume", return_value="tool-vol"), \
                  mock.patch("cli.asb.lifecycle.discover_mise_dirs", return_value=[]), \
+                 mock.patch("cli.asb.readiness.wait_until", return_value=mock.MagicMock(state="healthy", code="ok")), \
+                 mock.patch("cli.asb.podman.out", return_value="127.0.0.1:2222"), \
                  mock.patch("cli.asb.lifecycle.emit", return_value=0), \
                  mock.patch("cli.asb.install.podman_restart"):
                 rc = _up(fake_root, "test-ws", fake_repo)
@@ -518,5 +522,322 @@ class TestStartForwarder(unittest.TestCase):
                 start_forwarder("demo", profile)
 
 
+class TestTransactionalRollback(unittest.TestCase):
+    def test_up_existing_workspace_failure_does_not_sweep(self):
+        from unittest import mock
+        from cli.asb import lifecycle
+
+        root = Path("/fake/root")
+        repo = Path("/fake/repo")
+        with mock.patch("cli.asb.lifecycle.prepare_workspace"), \
+             mock.patch("cli.asb.lifecycle.supervisor.start_workspace", side_effect=RuntimeError("proxy")), \
+             mock.patch("cli.asb.lifecycle._sweep_containers") as sweep:
+            with self.assertRaises(RuntimeError):
+                lifecycle.up(root, "test-existing", repo, runtime="systemd")
+            sweep.assert_not_called()
+
+    def test_up_on_already_existing_container_does_not_sweep(self):
+        from unittest import mock
+        from cli.asb import lifecycle
+
+        root = Path("/fake/root")
+        repo = Path("/fake/repo")
+        with mock.patch("cli.asb.podman.exists", side_effect=lambda kind, name: kind == "container" and name == "asb-existing-agent"), \
+             mock.patch("cli.asb.lifecycle._sweep_containers") as sweep, \
+             mock.patch("cli.asb.lifecycle.prepare_workspace") as prep:
+            with self.assertRaises(lifecycle.podman.PodmanError):
+                lifecycle.up(root, "existing", repo)
+            sweep.assert_not_called()
+            prep.assert_not_called()
+
+    def test_up_rollback_by_id_in_new_workspace_cleans_only_tracked_ids(self):
+        from unittest import mock
+        from cli.asb import lifecycle
+
+        root = Path("/fake/root")
+        repo = Path("/fake/repo")
+        rm_calls = []
+
+        def fake_run(*args, **kwargs):
+            if args and args[0] == "rm":
+                rm_calls.append(args)
+            return mock.MagicMock(returncode=0)
+
+        def fake_prepare(r, ws, rp, runtime="legacy", tx=None):
+            if tx is not None:
+                tx.record_container("cid-proxy-new-123")
+                tx.record_network(f"asb-{ws}-net")
+            raise RuntimeError("simulated failure after partial creation")
+
+        with mock.patch("cli.asb.podman.exists", return_value=False), \
+             mock.patch("cli.asb.podman.run", side_effect=fake_run), \
+             mock.patch("cli.asb.lifecycle.prepare_workspace", side_effect=fake_prepare), \
+             mock.patch("cli.asb.lifecycle._sweep_containers") as sweep:
+            with self.assertRaises(RuntimeError):
+                lifecycle.up(root, "new-ws", repo)
+
+            sweep.assert_not_called()
+            # Only the recorded container ID should be removed
+            removed_ids = [c[2] for c in rm_calls if len(c) >= 3 and c[0] == "rm" and c[1] == "-f"]
+            self.assertEqual(removed_ids, ["cid-proxy-new-123"])
+
+    def test_up_runtime_systemd_creates_containers_with_restart_no(self):
+        from unittest import mock
+        from cli.asb import lifecycle
+        from cli.asb.profile import Profile
+        from cli.asb.workspace import Layout
+
+        run_args_list = []
+        def fake_run(*args, **kwargs):
+            run_args_list.append(list(args))
+            return mock.MagicMock(returncode=0, stdout="cid-12345")
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            fake_root = tmp / "root"
+            fake_state = tmp / "state"
+            fake_mount = tmp / "mount"
+            fake_repo = tmp / "origin"
+            for d in (fake_root, fake_state, fake_mount, fake_repo):
+                d.mkdir(parents=True)
+            fake_layout = Layout(ws="demo", project="proj", mount=fake_mount,
+                                 project_root=fake_mount / "proj", state=fake_state)
+            fake_key = tmp / "key"
+            fake_key.write_text("dummy")
+            (tmp / "key.pub").write_text("ssh-ed25519 AAA dummy")
+            fake_profile = Profile(services=[], host_ports=[], publish_ports=[],
+                                   host_api="none", container_mode="standard", allow=[])
+
+            healthy_probe = mock.MagicMock(state="healthy", code="ok", remediation="")
+
+            with mock.patch("cli.asb.podman.exists", side_effect=lambda kind, name: kind == "image"), \
+                 mock.patch("cli.asb.podman.ensure_rootless_netns"), \
+                 mock.patch("cli.asb.podman.run", side_effect=fake_run), \
+                 mock.patch("cli.asb.podman.out", return_value="cid-12345"), \
+                 mock.patch("cli.asb.lifecycle.load_profile", return_value=fake_profile), \
+                 mock.patch("cli.asb.lifecycle.layout_for", return_value=fake_layout), \
+                 mock.patch("cli.asb.lifecycle.prepare_clone"), \
+                 mock.patch("cli.asb.lifecycle.render", return_value="acl x"), \
+                 mock.patch("cli.asb.lifecycle.build_staging", return_value=0), \
+                 mock.patch("cli.asb.lifecycle.ensure_ssh_key", return_value=fake_key), \
+                 mock.patch("cli.asb.lifecycle.ensure_keyring_service"), \
+                 mock.patch("cli.asb.lifecycle.ensure_keyring_runtime_volume", return_value="k-run"), \
+                 mock.patch("cli.asb.lifecycle.ensure_credentials_volume", return_value="c-vol"), \
+                 mock.patch("cli.asb.lifecycle.ensure_toolcache_volume", return_value="t-vol"), \
+                 mock.patch("cli.asb.lifecycle.supervisor.install_workspace", return_value=[]) as mock_install, \
+                 mock.patch("cli.asb.lifecycle.supervisor.start_workspace") as mock_start, \
+                 mock.patch("cli.asb.readiness.wait_until", return_value=healthy_probe), \
+                 mock.patch("cli.asb.lifecycle.discover_mise_dirs", return_value=[]), \
+                 mock.patch("cli.asb.lifecycle.emit", return_value=0):
+                rc = lifecycle.up(fake_root, "demo", fake_repo, runtime="systemd")
+                self.assertEqual(rc, 0)
+                mock_install.assert_called_once()
+                mock_start.assert_called_once_with("demo", enable=True)
+
+                # Check restart policy in container creation calls
+                for call_args in run_args_list:
+                    if call_args and call_args[0] == "create":
+                        self.assertIn("--restart", call_args)
+                        idx = call_args.index("--restart")
+                        self.assertEqual(call_args[idx + 1], "no")
+
+                # Check runtime.json content
+                manifest_file = fake_state / "runtime.json"
+                self.assertTrue(manifest_file.is_file())
+                import json
+                manifest = json.loads(manifest_file.read_text())
+                self.assertEqual(manifest.get("runtime_type"), "systemd")
+
+    def test_up_proxy_readiness_failure_before_mise_install(self):
+        from unittest import mock
+        from cli.asb import lifecycle
+        from cli.asb.profile import Profile
+        from cli.asb.workspace import Layout
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            fake_state = tmp / "state"
+            fake_mount = tmp / "mount"
+            fake_layout = Layout(ws="demo", project="proj", mount=fake_mount,
+                                 project_root=fake_mount / "proj", state=fake_state)
+            fake_profile = Profile(services=[], host_ports=[], publish_ports=[],
+                                   host_api="none", container_mode="standard", allow=[])
+            fake_key = tmp / "key"
+            fake_key.write_text("k")
+            (tmp / "key.pub").write_text("k.pub")
+
+            failed_proxy = mock.MagicMock(state="failed", code="connect_denied", remediation="fix allowlist")
+
+            with mock.patch("cli.asb.podman.exists", side_effect=lambda kind, name: kind == "image"), \
+                 mock.patch("cli.asb.podman.ensure_rootless_netns"), \
+                 mock.patch("cli.asb.podman.run"), \
+                 mock.patch("cli.asb.podman.out", return_value="cid-1"), \
+                 mock.patch("cli.asb.lifecycle.load_profile", return_value=fake_profile), \
+                 mock.patch("cli.asb.lifecycle.layout_for", return_value=fake_layout), \
+                 mock.patch("cli.asb.lifecycle.prepare_clone"), \
+                 mock.patch("cli.asb.lifecycle.render", return_value="acl x"), \
+                 mock.patch("cli.asb.lifecycle.build_staging", return_value=0), \
+                 mock.patch("cli.asb.lifecycle.ensure_ssh_key", return_value=fake_key), \
+                 mock.patch("cli.asb.lifecycle.ensure_keyring_service"), \
+                 mock.patch("cli.asb.lifecycle.ensure_keyring_runtime_volume", return_value="k-run"), \
+                 mock.patch("cli.asb.lifecycle.ensure_credentials_volume", return_value="c-vol"), \
+                 mock.patch("cli.asb.lifecycle.ensure_toolcache_volume", return_value="t-vol"), \
+                 mock.patch("cli.asb.readiness.wait_until", return_value=failed_proxy), \
+                 mock.patch("cli.asb.lifecycle.discover_mise_dirs") as mock_mise:
+                with self.assertRaises(lifecycle.podman.PodmanError) as ctx:
+                    lifecycle.up(tmp, "demo", tmp / "origin")
+                self.assertIn("proxy nao esta pronto", str(ctx.exception))
+                mock_mise.assert_not_called()
+
+    def test_up_ssh_readiness_failure_propagates_and_does_not_emit(self):
+        from unittest import mock
+        from cli.asb import lifecycle
+        from cli.asb.profile import Profile
+        from cli.asb.workspace import Layout
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            fake_state = tmp / "state"
+            fake_mount = tmp / "mount"
+            fake_layout = Layout(ws="demo", project="proj", mount=fake_mount,
+                                 project_root=fake_mount / "proj", state=fake_state)
+            fake_profile = Profile(services=[], host_ports=[], publish_ports=[],
+                                   host_api="none", container_mode="standard", allow=[])
+            fake_key = tmp / "key"
+            fake_key.write_text("k")
+            (tmp / "key.pub").write_text("k.pub")
+
+            healthy_probe = mock.MagicMock(state="healthy", code="ok", remediation="")
+            failed_ssh = mock.MagicMock(state="failed", code="key_refused", remediation="fix ssh key")
+
+            def fake_wait(probe_fn, timeout=30.0, **kwargs):
+                if not hasattr(fake_wait, "calls"):
+                    fake_wait.calls = 0
+                fake_wait.calls += 1
+                if fake_wait.calls == 1:
+                    return healthy_probe
+                return failed_ssh
+
+            with mock.patch("cli.asb.podman.exists", side_effect=lambda kind, name: kind == "image"), \
+                 mock.patch("cli.asb.podman.ensure_rootless_netns"), \
+                 mock.patch("cli.asb.podman.run"), \
+                 mock.patch("cli.asb.podman.out", side_effect=["cid-proxy", "cid-agent", "127.0.0.1:2222"]), \
+                 mock.patch("cli.asb.lifecycle.load_profile", return_value=fake_profile), \
+                 mock.patch("cli.asb.lifecycle.layout_for", return_value=fake_layout), \
+                 mock.patch("cli.asb.lifecycle.prepare_clone"), \
+                 mock.patch("cli.asb.lifecycle.render", return_value="acl x"), \
+                 mock.patch("cli.asb.lifecycle.build_staging", return_value=0), \
+                 mock.patch("cli.asb.lifecycle.ensure_ssh_key", return_value=fake_key), \
+                 mock.patch("cli.asb.lifecycle.ensure_keyring_service"), \
+                 mock.patch("cli.asb.lifecycle.ensure_keyring_runtime_volume", return_value="k-run"), \
+                 mock.patch("cli.asb.lifecycle.ensure_credentials_volume", return_value="c-vol"), \
+                 mock.patch("cli.asb.lifecycle.ensure_toolcache_volume", return_value="t-vol"), \
+                 mock.patch("cli.asb.readiness.wait_until", side_effect=fake_wait), \
+                 mock.patch("cli.asb.lifecycle.discover_mise_dirs", return_value=[]), \
+                 mock.patch("cli.asb.lifecycle.emit") as mock_emit:
+                with self.assertRaises(lifecycle.podman.PodmanError) as ctx:
+                    lifecycle.up(tmp, "demo", tmp / "origin")
+                self.assertIn("SSH nao esta pronto", str(ctx.exception))
+                mock_emit.assert_not_called()
+
+
+class TestManagedLifecycleCommands(unittest.TestCase):
+    def test_suspend_managed_disables_and_stops_target_and_verifies_stopped(self):
+        from unittest import mock
+        from cli.asb import lifecycle
+
+        fake_n = {"agent": "asb-demo-agent", "proxy": "asb-demo-proxy"}
+        systemctl_calls = []
+
+        def fake_subprocess_run(cmd, *args, **kwargs):
+            if cmd and cmd[0] == "systemctl":
+                systemctl_calls.append(cmd)
+            return mock.MagicMock(returncode=0)
+
+        with mock.patch("cli.asb.lifecycle._require_workspace", return_value=(fake_n, Path("/tmp"), Path("/origin"))), \
+             mock.patch("cli.asb.lifecycle._runtime_of", return_value="systemd"), \
+             mock.patch("subprocess.run", side_effect=fake_subprocess_run), \
+             mock.patch("cli.asb.podman.out", return_value="asb-demo-agent\nasb-demo-proxy"), \
+             mock.patch("cli.asb.podman.exists", return_value=True), \
+             mock.patch("cli.asb.podman.running", return_value=False):
+            rc = lifecycle.suspend("demo")
+            self.assertEqual(rc, 0)
+            self.assertTrue(any("disable" in c and "asb-demo.target" in c for c in systemctl_calls))
+            self.assertTrue(any("stop" in c and "asb-demo.target" in c for c in systemctl_calls))
+
+    def test_suspend_legacy_stops_containers_directly(self):
+        from unittest import mock
+        from cli.asb import lifecycle
+
+        fake_n = {"agent": "asb-demo-agent", "proxy": "asb-demo-proxy"}
+        stop_calls = []
+
+        def fake_podman_run(*args, **kwargs):
+            if args and args[0] == "stop":
+                stop_calls.append(args)
+            return mock.MagicMock(returncode=0)
+
+        with mock.patch("cli.asb.lifecycle._require_workspace", return_value=(fake_n, Path("/tmp"), Path("/origin"))), \
+             mock.patch("cli.asb.lifecycle._runtime_of", return_value="legacy"), \
+             mock.patch("subprocess.run") as mock_subproc, \
+             mock.patch("cli.asb.podman.out", return_value="asb-demo-agent\nasb-demo-proxy"), \
+             mock.patch("cli.asb.podman.exists", return_value=True), \
+             mock.patch("cli.asb.podman.running", return_value=True), \
+             mock.patch("cli.asb.podman.run", side_effect=fake_podman_run):
+            rc = lifecycle.suspend("demo")
+            self.assertEqual(rc, 0)
+            mock_subproc.assert_not_called()
+            self.assertEqual(len(stop_calls), 2)
+
+    def test_resume_managed_enables_resets_starts_and_checks_probes(self):
+        from unittest import mock
+        from cli.asb import lifecycle
+        from cli.asb.workspace import Layout
+
+        fake_n = {"agent": "asb-demo-agent", "proxy": "asb-demo-proxy"}
+        systemctl_calls = []
+
+        def fake_subprocess_run(cmd, *args, **kwargs):
+            if cmd and cmd[0] == "systemctl":
+                systemctl_calls.append(cmd)
+            return mock.MagicMock(returncode=0)
+
+        fake_layout = Layout(ws="demo", project="proj", mount=Path("/tmp/mount"),
+                             project_root=Path("/tmp/mount/proj"), state=Path("/tmp/state"))
+        healthy_probe = mock.MagicMock(state="healthy", code="ok", remediation="")
+
+        with mock.patch("cli.asb.lifecycle._require_workspace", return_value=(fake_n, Path("/tmp"), Path("/origin"))), \
+             mock.patch("cli.asb.lifecycle._runtime_of", return_value="systemd"), \
+             mock.patch("cli.asb.podman.ensure_rootless_netns"), \
+             mock.patch("cli.asb.lifecycle.ensure_keyring_service"), \
+             mock.patch("subprocess.run", side_effect=fake_subprocess_run), \
+             mock.patch("cli.asb.lifecycle.supervisor.start_workspace") as mock_start, \
+             mock.patch("cli.asb.lifecycle.layout_for", return_value=fake_layout), \
+             mock.patch("cli.asb.readiness.wait_until", return_value=healthy_probe), \
+             mock.patch("cli.asb.lifecycle.emit", return_value=0) as mock_emit:
+            rc = lifecycle.resume(Path("/fake/root"), "demo")
+            self.assertEqual(rc, 0)
+            self.assertTrue(any("enable" in c and "asb-demo.target" in c for c in systemctl_calls))
+            self.assertTrue(any("reset-failed" in c for c in systemctl_calls))
+            mock_start.assert_called_once_with("demo")
+            mock_emit.assert_called_once()
+
+    def test_down_managed_removes_units_before_cleaning_containers(self):
+        from unittest import mock
+        from cli.asb import lifecycle
+
+        events = []
+
+        with mock.patch("cli.asb.lifecycle.supervisor.remove_workspace_units", side_effect=lambda ws: events.append("remove_units")) as mock_remove, \
+             mock.patch("cli.asb.lifecycle._sweep_containers", side_effect=lambda ws: events.append("sweep_containers")), \
+             mock.patch("cli.asb.podman.exists", return_value=False), \
+             mock.patch("cli.asb.lifecycle._origin_of", return_value=None):
+            rc = lifecycle.down("demo")
+            self.assertEqual(rc, 0)
+            mock_remove.assert_called_once_with("demo")
+            self.assertEqual(events, ["remove_units", "sweep_containers"])
+
+
 if __name__ == "__main__":
     unittest.main()
+

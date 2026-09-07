@@ -219,6 +219,7 @@ class TestLifecycleHostApi(unittest.TestCase):
              mock.patch("asb.lifecycle.ensure_keyring_service"), \
              mock.patch("asb.lifecycle.ensure_keyring_runtime_volume", return_value="asb-keyring-runtime"), \
              mock.patch("asb.lifecycle.ensure_credentials_volume", return_value="asb-credentials"), \
+             mock.patch("asb.readiness.wait_until", return_value=mock.MagicMock(state="healthy", code="ok")), \
              mock.patch("asb.install.podman_restart"), \
              mock.patch("pathlib.Path.exists", return_value=True), \
              mock.patch("pathlib.Path.write_text"), \

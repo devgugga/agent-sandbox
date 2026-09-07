@@ -703,12 +703,22 @@ class SandboxFixture:
             shutil.rmtree(self.state_root, ignore_errors=True)
 
     def __enter__(self) -> SandboxFixture:
-        self.setup_environment()
-        if self._auto_setup:
-            self.setup_container()
-            self.install_unit()
-            if self.forwarder_ports:
-                self.setup_forwarder()
+        """Setup guarded: o protocolo de context manager do Python NAO chama
+        `__exit__` quando o proprio `__enter__` levanta. `setup_environment`
+        cria os quatro volumes ANTES de tudo; sem esta guarda, qualquer
+        excecao em `setup_container`, `install_unit` ou `setup_forwarder`
+        deixava volumes e containers `asb-test-` na maquina do operador sem
+        rastreio nem caminho de limpeza (foi assim que 8 volumes vazaram)."""
+        try:
+            self.setup_environment()
+            if self._auto_setup:
+                self.setup_container()
+                self.install_unit()
+                if self.forwarder_ports:
+                    self.setup_forwarder()
+        except BaseException:
+            self.teardown()
+            raise
         return self
 
     def __exit__(

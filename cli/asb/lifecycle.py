@@ -710,8 +710,19 @@ def down(ws: str) -> int:
         print(f"aviso: {exc}; seguindo com limpeza local", file=sys.stderr)
         managed = False
     if managed:
-        supervisor.remove_workspace_units(
-            ws, state_dir=home / ".local" / "state" / "agent-sandbox" / ws)
+        # `remove_workspace_units` termina em `daemon-reload` com
+        # check=True e pode levantar `CalledProcessError` (sessao systemd
+        # de usuario ausente ou velha) ou `FileNotFoundError` (sem
+        # `systemctl` no PATH) — exatamente o host quebrado em que `down`
+        # existe para agir. Deixar propagar abortava a limpeza ANTES do
+        # `_sweep_containers`, largando containers, redes e volumes para
+        # tras. Mesmo padrao best-effort do `_runtime_of` acima.
+        try:
+            supervisor.remove_workspace_units(
+                ws, state_dir=home / ".local" / "state" / "agent-sandbox" / ws)
+        except Exception as exc:
+            print(f"aviso: falha ao remover unidades systemd de {ws}: {exc}; "
+                  "seguindo com limpeza local", file=sys.stderr)
 
     _sweep_containers(ws)
     for network in (n["net"], n["out"]):

@@ -54,6 +54,7 @@ def build_parser() -> argparse.ArgumentParser:
                        help="confirma a remocao dos arquivos")
 
     sub.add_parser("build", help="constroi a imagem base")
+    sub.add_parser("login", help="autentica os tres agentes (uma vez)")
 
     auth_parser = sub.add_parser("auth", help="status de conta por fornecedor (diagnostico)")
     auth_sub = auth_parser.add_subparsers(dest="auth_command", required=True)

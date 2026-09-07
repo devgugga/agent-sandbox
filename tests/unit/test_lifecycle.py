@@ -1290,6 +1290,63 @@ class TestManagedLifecycleCommands(unittest.TestCase):
             self.assertEqual(rc, 0)
             mock_remove.assert_not_called()
 
+    def test_down_continues_sweeping_when_daemon_reload_fails(self):
+        """B#4: `remove_workspace_units` termina em `daemon-reload` com
+        check=True. Numa sessao systemd de usuario ausente ou velha —
+        plausivel exatamente quando se derruba um workspace quebrado — a
+        excecao propagava para fora de `down` ANTES do `_sweep_containers`,
+        largando containers, redes e volumes para tras. `down` e a saida de
+        emergencia: nunca aborta a limpeza local."""
+        from unittest import mock
+        from cli.asb import lifecycle
+        import contextlib
+        import io
+        import subprocess as _subprocess
+
+        boom = _subprocess.CalledProcessError(
+            1, ["systemctl", "--user", "daemon-reload"])
+        events = []
+
+        with mock.patch("cli.asb.lifecycle.supervisor.remove_workspace_units",
+                        side_effect=boom) as mock_remove, \
+             mock.patch("cli.asb.lifecycle._sweep_containers",
+                        side_effect=lambda ws: events.append("sweep")) as mock_sweep, \
+             mock.patch("cli.asb.lifecycle._runtime_of", return_value="systemd"), \
+             mock.patch("cli.asb.podman.exists", return_value=False), \
+             mock.patch("cli.asb.lifecycle._origin_of", return_value=None):
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                rc = lifecycle.down("demo")
+
+        self.assertEqual(rc, 0)
+        mock_remove.assert_called_once()
+        mock_sweep.assert_called_once_with("demo")
+        self.assertEqual(events, ["sweep"])
+        self.assertIn("aviso", stderr.getvalue())
+        self.assertIn("daemon-reload", stderr.getvalue())
+
+    def test_down_continues_sweeping_when_systemctl_is_missing(self):
+        """Mesmo contrato para `FileNotFoundError`: host sem `systemctl` no
+        PATH tambem nao pode abortar a limpeza local."""
+        from unittest import mock
+        from cli.asb import lifecycle
+        import contextlib
+        import io
+
+        with mock.patch("cli.asb.lifecycle.supervisor.remove_workspace_units",
+                        side_effect=FileNotFoundError("systemctl")), \
+             mock.patch("cli.asb.lifecycle._sweep_containers") as mock_sweep, \
+             mock.patch("cli.asb.lifecycle._runtime_of", return_value="systemd"), \
+             mock.patch("cli.asb.podman.exists", return_value=False), \
+             mock.patch("cli.asb.lifecycle._origin_of", return_value=None):
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                rc = lifecycle.down("demo")
+
+        self.assertEqual(rc, 0)
+        mock_sweep.assert_called_once_with("demo")
+        self.assertIn("aviso", stderr.getvalue())
+
     def test_down_with_corrupted_manifest_still_cleans_up_best_effort(self):
         """`down` e a saida de emergencia de um workspace quebrado: um
         runtime.json corrompido (agora um erro real gracas a I3) NUNCA pode

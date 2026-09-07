@@ -443,11 +443,15 @@ class TestLoginKeyringIntegration(unittest.TestCase):
 
 class TestCheckKeyringService(unittest.TestCase):
     def test_check_keyring_service_container_missing(self):
+        # I1 (fix round 1): infraestrutura ausente aponta para reparo de
+        # infraestrutura, nunca para o "login" universal de conta.
         with mock.patch("asb.lifecycle.podman.exists", return_value=False):
             ok, label, fix = lifecycle.check_keyring_service()
             self.assertFalse(ok)
             self.assertEqual(label, "container asb-keyring")
-            self.assertEqual(fix, "asb-agent login")
+            self.assertNotEqual(fix, "asb-agent login")
+            self.assertNotIn("login", fix)
+            self.assertIn("workspace", fix)
 
     def test_check_keyring_service_container_stopped(self):
         with mock.patch("asb.lifecycle.podman.exists", return_value=True), \
@@ -455,7 +459,8 @@ class TestCheckKeyringService(unittest.TestCase):
             ok, label, fix = lifecycle.check_keyring_service()
             self.assertFalse(ok)
             self.assertEqual(label, "asb-keyring parado")
-            self.assertEqual(fix, "asb-agent login")
+            self.assertNotIn("login", fix)
+            self.assertEqual(fix, "reinicie o container: podman start asb-keyring")
 
     def test_check_keyring_service_schema_outdated(self):
         with mock.patch("asb.lifecycle.podman.exists", return_value=True), \
@@ -464,7 +469,8 @@ class TestCheckKeyringService(unittest.TestCase):
             ok, label, fix = lifecycle.check_keyring_service()
             self.assertFalse(ok)
             self.assertIn("desatualizado", label)
-            self.assertEqual(fix, "asb-agent login")
+            self.assertNotIn("login", fix)
+            self.assertIn("podman rm -f asb-keyring", fix)
 
     def test_check_keyring_service_mounts_violated(self):
         with mock.patch("asb.lifecycle.podman.exists", return_value=True), \
@@ -473,7 +479,8 @@ class TestCheckKeyringService(unittest.TestCase):
             ok, label, fix = lifecycle.check_keyring_service()
             self.assertFalse(ok)
             self.assertIn("violado", label)
-            self.assertEqual(fix, "asb-agent login")
+            self.assertNotIn("login", fix)
+            self.assertIn("podman rm -f asb-keyring", fix)
 
     def test_check_keyring_service_rejects_wrong_volume_source(self):
         inspected = {
@@ -526,7 +533,8 @@ class TestCheckKeyringService(unittest.TestCase):
             ok, label, fix = lifecycle.check_keyring_service()
             self.assertFalse(ok)
             self.assertEqual(label, "socket do Secret Service (asb-keyring)")
-            self.assertEqual(fix, "asb-agent login")
+            self.assertNotIn("login", fix)
+            self.assertEqual(fix, "reinicie o servico: podman restart asb-keyring")
 
     def test_check_keyring_service_unresponsive(self):
         def fake_run(*args, **kwargs):
@@ -544,7 +552,8 @@ class TestCheckKeyringService(unittest.TestCase):
             ok, label, fix = lifecycle.check_keyring_service()
             self.assertFalse(ok)
             self.assertEqual(label, "Secret Service sem resposta (asb-keyring)")
-            self.assertEqual(fix, "asb-agent login")
+            self.assertNotIn("login", fix)
+            self.assertEqual(fix, "reinicie o servico: podman restart asb-keyring")
 
     def test_check_keyring_service_healthy(self):
         def fake_run(*args, **kwargs):
@@ -566,7 +575,7 @@ class TestCheckKeyringService(unittest.TestCase):
             ok, label, fix = lifecycle.check_keyring_service()
             self.assertFalse(ok)
             self.assertEqual(label, "container custom-keyring")
-            self.assertEqual(fix, "asb-agent login")
+            self.assertNotIn("login", fix)
 
 
 class TestVerificacaoDeLogin(unittest.TestCase):

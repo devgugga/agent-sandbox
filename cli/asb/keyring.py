@@ -142,25 +142,42 @@ def check_keyring_service(container: str | None = None) -> tuple[bool, str, str]
       5. socket ausente: 'socket do Secret Service (asb-keyring)'
       6. Secret Service sem resposta: 'Secret Service sem resposta (asb-keyring)'
       7. saudavel: 'Secret Service (asb-keyring)'
-    Toda falha indica a mesma correcao: 'asb-agent login'.
+    Falhas de INFRAESTRUTURA identificadas com precisao (podman ausente,
+    container ausente/parado, schema desatualizado, contrato de mounts
+    violado, socket ausente, Secret Service sem resposta) apontam para
+    reparo de infraestrutura via podman — nunca para 'asb-agent login':
+    keyring e um singleton compartilhado sem dono de conta, e login e uma
+    acao que muta a CONTA de um fornecedor, nao a infraestrutura local. So o
+    fallback generico de excecao inesperada (falha nao prevista durante a
+    propria checagem) ainda aponta para 'asb-agent login', por falta de um
+    diagnostico mais especifico nesse caso.
     """
     name = container or os.environ.get("ASB_KEYRING_CONTAINER", KEYRING_CONTAINER)
     if shutil.which("podman") is None:
-        return False, f"container {name}", "asb-agent login"
+        return (False, f"container {name}",
+                "instale/verifique o podman; o container e criado "
+                "automaticamente ao preparar um workspace")
 
     try:
         if not podman.exists("container", name):
-            return False, f"container {name}", "asb-agent login"
+            return (False, f"container {name}",
+                    "prepare um workspace para criar o container "
+                    "automaticamente, ou verifique 'asb-agent doctor'")
         if not podman.running(name):
-            return False, f"{name} parado", "asb-agent login"
+            return (False, f"{name} parado",
+                    f"reinicie o container: podman start {name}")
 
         schema, mounts = _inspect_keyring_container(name)
         if schema != KEYRING_SCHEMA:
-            return False, f"schema do Secret Service ({name}) desatualizado ({schema or 'legado'})", "asb-agent login"
+            return (False, f"schema do Secret Service ({name}) desatualizado ({schema or 'legado'})",
+                    f"recrie o container: podman rm -f {name} "
+                    "(schema e atualizado automaticamente ao preparar um workspace)")
 
         contract_issue = _keyring_mount_contract_issue(mounts)
         if contract_issue:
-            return False, f"contrato de mounts do Secret Service violado ({name}): {contract_issue}", "asb-agent login"
+            return (False, f"contrato de mounts do Secret Service violado ({name}): {contract_issue}",
+                    f"recrie o container: podman rm -f {name} "
+                    "(contrato de mounts e restaurado automaticamente ao preparar um workspace)")
 
         sock_check = podman.run(
             "exec", "-u", "1000", name,
@@ -169,7 +186,8 @@ def check_keyring_service(container: str | None = None) -> tuple[bool, str, str]
         )
         sock_rc = getattr(sock_check, "returncode", 1) if sock_check is not None else 1
         if sock_rc != 0:
-            return False, f"socket do Secret Service ({name})", "asb-agent login"
+            return (False, f"socket do Secret Service ({name})",
+                    f"reinicie o servico: podman restart {name}")
 
         secrets_check = podman.run(
             "exec", "-u", "1000", name,
@@ -184,7 +202,10 @@ def check_keyring_service(container: str | None = None) -> tuple[bool, str, str]
         )
         secrets_rc = getattr(secrets_check, "returncode", 1) if secrets_check is not None else 1
         if secrets_rc != 0:
-            return False, f"Secret Service sem resposta ({name})", "asb-agent login"
+            # Mesma classe de falha do socket ausente (servico dentro do
+            # container nao responde): mesma remediacao de infraestrutura.
+            return (False, f"Secret Service sem resposta ({name})",
+                    f"reinicie o servico: podman restart {name}")
 
         return True, f"Secret Service ({name})", ""
     except Exception as exc:

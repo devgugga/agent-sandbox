@@ -1,6 +1,7 @@
 """Testes de cli/asb/podman.py — invólucro fino sobre o binário podman."""
 from __future__ import annotations
 
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -54,6 +55,33 @@ class TestPodmanRun(unittest.TestCase):
     def test_json_out_parses_json(self):
         info = json_out("version")
         self.assertIsInstance(info, (dict, list))
+
+    def test_run_passes_host_side_timeout_to_subprocess(self):
+        # I2: `run()` precisa repassar `timeout=` para subprocess.run, para
+        # que um podman travado no lado do host tenha um teto.
+        with mock.patch("subprocess.run") as mock_run:
+            mock_run.return_value = mock.Mock(returncode=0, stdout="", stderr="")
+            run("ps", capture=True, timeout=7)
+        self.assertEqual(mock_run.call_args.kwargs.get("timeout"), 7)
+
+    def test_run_timeout_expired_propagates(self):
+        with mock.patch("subprocess.run",
+                        side_effect=subprocess.TimeoutExpired(
+                            cmd="podman ps", timeout=1)):
+            with self.assertRaises(subprocess.TimeoutExpired):
+                run("ps", capture=True, timeout=1)
+
+    def test_out_passes_host_side_timeout_to_subprocess(self):
+        with mock.patch("subprocess.run") as mock_run:
+            mock_run.return_value = mock.Mock(returncode=0, stdout="x", stderr="")
+            out("ps", timeout=3)
+        self.assertEqual(mock_run.call_args.kwargs.get("timeout"), 3)
+
+    def test_running_passes_host_side_timeout_through_to_out(self):
+        with mock.patch("subprocess.run") as mock_run:
+            mock_run.return_value = mock.Mock(returncode=0, stdout="abc", stderr="")
+            running("some-container", timeout=4)
+        self.assertEqual(mock_run.call_args.kwargs.get("timeout"), 4)
 
 
 class TestPodmanKindAndStatus(unittest.TestCase):

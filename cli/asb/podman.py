@@ -23,20 +23,25 @@ def require_binary() -> str:
 
 
 def run(*args: str, check: bool = True,
-        capture: bool = False) -> subprocess.CompletedProcess:
+        capture: bool = False,
+        timeout: float | None = None) -> subprocess.CompletedProcess:
+    """`timeout`, quando informado, limita o lado do HOST (subprocess.run) e
+    levanta `subprocess.TimeoutExpired` se excedido — nao deve ser confundido
+    com um `timeout` passado como argumento do proprio comando podman."""
     result = subprocess.run(
         [require_binary(), *args],
         capture_output=capture, text=True,
-        stdout=None if capture else subprocess.DEVNULL)
+        stdout=None if capture else subprocess.DEVNULL,
+        timeout=timeout)
     if check and result.returncode != 0:
         detail = (result.stderr or "").strip()
         raise PodmanError(f"podman {' '.join(args)} falhou: {detail}")
     return result
 
 
-def out(*args: str) -> str:
+def out(*args: str, timeout: float | None = None) -> str:
     result = subprocess.run([require_binary(), *args], capture_output=True,
-                            text=True)
+                            text=True, timeout=timeout)
     if result.returncode != 0:
         raise PodmanError(
             f"podman {' '.join(args)} falhou: {result.stderr.strip()}")
@@ -59,9 +64,9 @@ def exists(kind: str, name: str) -> bool:
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
 
 
-def running(name: str) -> bool:
+def running(name: str, timeout: float | None = None) -> bool:
     return bool(out("ps", "--filter", f"name=^{name}$", "--filter",
-                    "status=running", "--quiet"))
+                    "status=running", "--quiet", timeout=timeout))
 
 
 def ensure_rootless_netns() -> None:

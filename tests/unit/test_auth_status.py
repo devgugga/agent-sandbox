@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import io
 import json
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -190,12 +191,82 @@ class TestCheckStatus(unittest.TestCase):
             self.assertNotIn("logout", command)
             self.assertNotIn("/login", command)
 
-    def test_podman_missing_becomes_provider_error_not_unauthenticated(self):
+    def test_podman_exec_failure_becomes_provider_error_not_unauthenticated(self):
+        # PodmanError levantado pelo `podman exec` (o proprio comando do
+        # fornecedor falhou ao rodar): erro de infraestrutura.
         with mock.patch("asb.auth.podman.running", return_value=True), \
              mock.patch("asb.auth.podman.run",
                         side_effect=auth.podman.PodmanError("podman nao encontrado no PATH")):
             result = auth.check_status("claude", "asb-ws-agent")
         self.assertEqual(result.state, "provider_error")
+
+    def test_podman_running_check_failure_becomes_provider_error(self):
+        # C1: `podman.running()` chama `podman ps`, que pode levantar
+        # PodmanError sozinho (binario ausente, "podman ps" falhou -- servico
+        # quebrado, permissao, rootless travado). Isso escapava de
+        # check_status sem tratamento e virava 1 ("conta ausente") em vez de
+        # 2 ("provider_error") -- exatamente a confusao infra/conta que a
+        # Tarefa A2 existe para eliminar. A regressao anterior
+        # (test_podman_missing_becomes_provider_error_not_unauthenticated)
+        # mockava podman.running como True, entao NUNCA exercitava este
+        # caminho apesar do nome prometer isso.
+        with mock.patch(
+            "asb.auth.podman.running",
+            side_effect=auth.podman.PodmanError(
+                "podman ps --filter name=^asb-test-nonexistent-agent$ "
+                "--filter status=running --quiet falhou: ..."),
+        ), mock.patch("asb.auth.podman.run") as mock_run:
+            result = auth.check_status("claude", "asb-test-nonexistent-agent")
+        self.assertEqual(result.state, "provider_error")
+        # Se a checagem de "esta rodando" ja falhou por infra, o exec do
+        # comando de status do fornecedor nunca deveria ser tentado.
+        mock_run.assert_not_called()
+
+    def test_running_check_host_side_timeout_becomes_provider_error(self):
+        # I2: um `podman ps` travado no lado do HOST tem que ter um teto,
+        # nao bloquear o CLI indefinidamente.
+        with mock.patch(
+            "asb.auth.podman.running",
+            side_effect=subprocess.TimeoutExpired(cmd="podman ps", timeout=10),
+        ), mock.patch("asb.auth.podman.run") as mock_run:
+            result = auth.check_status("claude", "asb-ws-agent")
+        self.assertEqual(result.state, "provider_error")
+        mock_run.assert_not_called()
+
+    def test_exec_host_side_timeout_becomes_provider_error(self):
+        # I2: um `podman exec` travado no lado do HOST (nao apenas o
+        # `timeout 10` interno ao container) tambem tem que virar
+        # provider_error em vez de travar o CLI.
+        with mock.patch("asb.auth.podman.running", return_value=True), \
+             mock.patch(
+                 "asb.auth.podman.run",
+                 side_effect=subprocess.TimeoutExpired(cmd="podman exec", timeout=15)):
+            result = auth.check_status("claude", "asb-ws-agent")
+        self.assertEqual(result.state, "provider_error")
+
+    def test_running_check_and_exec_pass_a_host_side_timeout(self):
+        # Confirma que check_status realmente PASSA um timeout do lado do
+        # host para as duas chamadas podman (nao so trata a excecao se ela
+        # ocorrer) -- sem isso, nada limita um podman travado.
+        running_kwargs = {}
+        exec_kwargs = {}
+
+        def fake_running(name, **kwargs):
+            running_kwargs.update(kwargs)
+            return True
+
+        def fake_run(*args, **kwargs):
+            exec_kwargs.update(kwargs)
+            return mock.Mock(returncode=0, stdout='{"loggedIn": true}', stderr="")
+
+        with mock.patch("asb.auth.podman.running", side_effect=fake_running), \
+             mock.patch("asb.auth.podman.run", side_effect=fake_run):
+            auth.check_status("claude", "asb-ws-agent")
+
+        self.assertIsNotNone(running_kwargs.get("timeout"))
+        self.assertGreater(running_kwargs["timeout"], 0)
+        self.assertIsNotNone(exec_kwargs.get("timeout"))
+        self.assertGreater(exec_kwargs["timeout"], 0)
 
 
 class TestStatusCommand(unittest.TestCase):
@@ -211,7 +282,8 @@ class TestStatusCommand(unittest.TestCase):
             return auth.AuthResult(provider, "authenticated", "t", "ok", "")
 
         with mock.patch("asb.auth.check_status", side_effect=fake_check_status), \
-             mock.patch("asb.lifecycle.names", return_value={"agent": "asb-ws-agent"}):
+             mock.patch("asb.lifecycle.names", return_value={"agent": "asb-ws-agent"}), \
+             mock.patch("sys.stdout", io.StringIO()):
             rc = auth.status("ws", "all", json_output=True)
 
         self.assertEqual({c[0] for c in calls}, {"claude", "codex", "agy"})
@@ -226,7 +298,8 @@ class TestStatusCommand(unittest.TestCase):
             return auth.AuthResult(provider, "authenticated", "t", "ok", "")
 
         with mock.patch("asb.auth.check_status", side_effect=fake_check_status), \
-             mock.patch("asb.lifecycle.names", return_value={"agent": "asb-ws-agent"}):
+             mock.patch("asb.lifecycle.names", return_value={"agent": "asb-ws-agent"}), \
+             mock.patch("sys.stdout", io.StringIO()):
             auth.status("ws", "claude", json_output=True)
 
         self.assertEqual(calls, ["claude"])
@@ -271,7 +344,8 @@ class TestStatusCommand(unittest.TestCase):
             return auth.AuthResult(provider, "authenticated", "t", "ok", "")
 
         with mock.patch("asb.auth.check_status", side_effect=fake_check_status), \
-             mock.patch("asb.lifecycle.names", return_value={"agent": "c"}):
+             mock.patch("asb.lifecycle.names", return_value={"agent": "c"}), \
+             mock.patch("sys.stdout", io.StringIO()):
             rc = auth.status("ws", "all", json_output=True)
         self.assertEqual(rc, 0)
 
@@ -281,7 +355,8 @@ class TestStatusCommand(unittest.TestCase):
             return auth.AuthResult(provider, state, "t", "x", "y")
 
         with mock.patch("asb.auth.check_status", side_effect=fake_check_status), \
-             mock.patch("asb.lifecycle.names", return_value={"agent": "c"}):
+             mock.patch("asb.lifecycle.names", return_value={"agent": "c"}), \
+             mock.patch("sys.stdout", io.StringIO()):
             rc = auth.status("ws", "all", json_output=True)
         self.assertEqual(rc, 1)
 
@@ -294,7 +369,8 @@ class TestStatusCommand(unittest.TestCase):
             return auth.AuthResult(provider, "authenticated", "t", "", "")
 
         with mock.patch("asb.auth.check_status", side_effect=fake_check_status), \
-             mock.patch("asb.lifecycle.names", return_value={"agent": "c"}):
+             mock.patch("asb.lifecycle.names", return_value={"agent": "c"}), \
+             mock.patch("sys.stdout", io.StringIO()):
             rc = auth.status("ws", "all", json_output=True)
         self.assertEqual(rc, 2)
 
@@ -307,9 +383,33 @@ class TestStatusCommand(unittest.TestCase):
             return auth.AuthResult(provider, state, "t", "", "")
 
         with mock.patch("asb.auth.check_status", side_effect=fake_check_status), \
-             mock.patch("asb.lifecycle.names", return_value={"agent": "c"}):
+             mock.patch("asb.lifecycle.names", return_value={"agent": "c"}), \
+             mock.patch("sys.stdout", io.StringIO()):
             rc = auth.status("ws", "all", json_output=True)
         self.assertEqual(rc, 2)
+
+    def test_status_podman_running_failure_yields_provider_error_and_aggregate_two(self):
+        # Regressao end-to-end de C1: exercita status() -> check_status()
+        # REAL (nao mockado), com podman.running levantando PodmanError, e
+        # confirma que o relatorio JSON reflete provider_error e o codigo
+        # agregado e 2 -- nao 1 nem uma excecao escapando sem tratamento.
+        out = io.StringIO()
+        with mock.patch(
+                "asb.auth.podman.running",
+                side_effect=auth.podman.PodmanError(
+                    "podman ps --filter name=^asb-test-nonexistent-agent$ "
+                    "--filter status=running --quiet falhou: ..."),
+             ), \
+             mock.patch("asb.auth.podman.run") as mock_run, \
+             mock.patch("asb.lifecycle.names",
+                        return_value={"agent": "asb-test-nonexistent-agent"}), \
+             mock.patch("sys.stdout", out):
+            rc = auth.status("ws", "claude", json_output=True)
+
+        data = json.loads(out.getvalue())
+        self.assertEqual(data["results"][0]["state"], "provider_error")
+        self.assertEqual(rc, 2)
+        mock_run.assert_not_called()
 
 
 if __name__ == "__main__":

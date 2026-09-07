@@ -18,6 +18,7 @@ aceita pelo servidor remoto (isso cabe a `verify`, Tarefa A4).
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
@@ -44,6 +45,16 @@ STATUS_COMMANDS: dict[str, str] = {
 # Fronteira publica de `status()`: aceita "all" alem dos tres fornecedores.
 _INDIVIDUAL_PROVIDERS = frozenset({"claude", "codex", "agy"})
 _PUBLIC_PROVIDERS = _INDIVIDUAL_PROVIDERS | {"all"}
+
+# Orcamento de tempo do lado do HOST para as chamadas podman deste modulo.
+# O comando do fornecedor ja e limitado por `timeout 10` DENTRO do container
+# (linha do exec abaixo); estes valores cobrem a ida-e-volta do proprio
+# podman no host (podman ps / podman exec), para que um podman travado ou um
+# rootless preso nunca bloqueiem o CLI indefinidamente. _EXEC_HOST_TIMEOUT e
+# maior que o timeout interno para dar folga ao `timeout 10` de fato matar o
+# comando do fornecedor e ao exec retornar antes do host desistir.
+_RUNNING_CHECK_HOST_TIMEOUT = 10
+_EXEC_HOST_TIMEOUT = 15
 
 
 def _now_iso() -> str:
@@ -174,7 +185,24 @@ def check_status(provider: str, container: str) -> AuthResult:
             remediation="use 'asb-agent auth verify --agent agy' quando disponivel (Tarefa A4)",
         )
 
-    if not podman.running(container):
+    try:
+        container_running = podman.running(
+            container, timeout=_RUNNING_CHECK_HOST_TIMEOUT)
+    except (podman.PodmanError, subprocess.TimeoutExpired) as exc:
+        # `podman.running` chama `podman ps`, que pode levantar PodmanError
+        # (binario ausente, "podman ps" falhou) ou estourar o timeout do
+        # lado do host (podman travado). Nenhum dos dois e "conta ausente":
+        # e falha de infraestrutura, e tem que ganhar de qualquer estado de
+        # conta na precedencia do codigo agregado (2 > 1).
+        return AuthResult(
+            provider=provider,
+            state="provider_error",
+            checked_at=checked_at,
+            evidence=f"falha ao verificar se o container {container} esta em execucao: {exc}",
+            remediation="asb-agent doctor",
+        )
+
+    if not container_running:
         # Infraestrutura parada != conta deslogada: nunca reportar
         # unauthenticated quando nem foi possivel perguntar ao fornecedor.
         # ws_hint deriva "demo" de "asb-demo-agent" (mesmo padrao usado em
@@ -193,11 +221,12 @@ def check_status(provider: str, container: str) -> AuthResult:
         result = podman.run(
             "exec", "-u", "1000", container,
             "timeout", "10", "bash", "-lc", command,
-            check=False, capture=True,
+            check=False, capture=True, timeout=_EXEC_HOST_TIMEOUT,
         )
-    except podman.PodmanError as exc:
-        # Falha ao invocar o proprio podman (binario ausente, exec falhou):
-        # erro de infraestrutura, nunca reportado como conta deslogada.
+    except (podman.PodmanError, subprocess.TimeoutExpired) as exc:
+        # Falha ao invocar o proprio podman (binario ausente, exec falhou)
+        # ou estouro do orcamento de tempo do lado do host: erro de
+        # infraestrutura, nunca reportado como conta deslogada.
         return AuthResult(
             provider=provider,
             state="provider_error",

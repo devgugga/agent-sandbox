@@ -16,13 +16,14 @@ Every workspace runs in an isolated network topology managed via rootless Podman
 
 ```text
 Serviço Global de Credenciais (Singleton):
-host keyring.pass (ro,Z) ─┐
-asb-credentials (z)       ├─> asb-keyring (--network none, uid 1000)
-asb-keyring-runtime (z)   ┘       │
-                                  │ unix:/run/asb-keyring/bus
-                  ┌───────────────┼───────────────┐
-                  │               │               │
-              asb-login      asb-<ws1>-agent  asb-<ws2>-agent
+host keyring.pass (ro,Z) ──┐
+asb-credentials (ro,z)    ─┼─> asb-keyring (--network none, uid 1000)
+asb-keyring-data (z)      ─┤       │
+asb-keyring-runtime (z)   ─┘       │ unix:/run/asb-keyring/bus
+                                   │
+                   ┌───────────────┼───────────────┐
+                   │               │               │
+               asb-login      asb-<ws1>-agent  asb-<ws2>-agent
 
 Topologia de Rede por Workspace:
 rede asb-<ws>  (--internal: sem rota default, sem DNS externo)
@@ -38,7 +39,7 @@ The agent reaches everything by **container name** across restarts. Outbound tra
 
 ### Container Roles
 
-- **`asb-keyring`**: The singleton Secret Service daemon. Runs as uid 1000 with `--userns keep-id:uid=1000,gid=1000`, `--network none` (zero network interfaces or egress), and `--restart unless-stopped`. Mounts the host passphrase read-only (`ro,Z`), binds the encrypted credentials volume `asb-credentials`, and exposes the D-Bus session bus Unix socket on the shared runtime volume `asb-keyring-runtime` (`/run/asb-keyring/bus`). Sole owner and writer of the GNOME Keyring database; workspace and login containers connect strictly as D-Bus clients.
+- **`asb-keyring`**: The singleton Secret Service daemon. Runs as uid 1000 with `--userns keep-id:uid=1000,gid=1000`, `--network none` (zero network interfaces or egress), and `--restart unless-stopped`. Mounts the host passphrase read-only (`ro,Z`), binds the dedicated encrypted keyring data volume `asb-keyring-data` (`/run/asb-keyring-data`), mounts `asb-credentials` as read-only (`ro,z`) for legacy data migration, and exposes the D-Bus session bus Unix socket on the shared runtime volume `asb-keyring-runtime` (`/run/asb-keyring/bus`). Sole owner and writer of the GNOME Keyring database; workspace and login containers connect strictly as D-Bus clients and never mount `asb-keyring-data`.
 - **`asb-<ws>-agent`**: The execution environment. Mirrors the host user (identical username, uid 1000, identical `$HOME`). Reached by Orca via OpenSSH published to `127.0.0.1:<random-port>`. Has no default network route and no external DNS. Mounts `asb-keyring-runtime` as read-only (`ro,z`) and sets `DBUS_SESSION_BUS_ADDRESS=unix:path=/run/asb-keyring/bus`.
 - **`asb-<ws>-proxy`**: Squid egress proxy. Connected to both `asb-<ws>` (internal) and `asb-<ws>-out` (external bridge with internet egress). Enforces TLS CONNECT filtering against the combined allowlist and resolves upstream DNS.
 - **`asb-<ws>-docker`** *(opt-in)*: Docker API bridge created when `docker.host_api = "read"`. Forwards port 2375 to `/run/asb-docker/docker.sock` via `socat`. Bound strictly to the internal network with no external internet route.
@@ -64,7 +65,8 @@ The CLI entrypoint is `cli/asb-agent` (symlinked as `asb`):
 
 > [!TIP]
 > **Autenticação de Agentes & Secret Service Singleton**:
-> O sandbox centraliza o GNOME Keyring em um container singleton (`asb-keyring`), eliminando conflitos de concorrência entre daemons. Containers clientes e workspaces conectam-se ao Secret Service via socket Unix compartilhado (`DBUS_SESSION_BUS_ADDRESS=unix:path=/run/asb-keyring/bus` montado de `asb-keyring-runtime:ro,z`).
+> O sandbox centraliza o GNOME Keyring em um container singleton (`asb-keyring`, schema 2), eliminando conflitos de concorrência entre daemons. Containers clientes e workspaces conectam-se ao Secret Service via socket Unix compartilhado (`DBUS_SESSION_BUS_ADDRESS=unix:path=/run/asb-keyring/bus` montado de `asb-keyring-runtime:ro,z`).
+> Os bancos de dados ativos do keyring residem no volume dedicado `asb-keyring-data`. O volume `asb-credentials` pode preservar uma cópia legada de `keyrings/` como origem de migração e rollback. Clientes de workspace e login montam `asb-credentials` com uma máscara tmpfs sobre esse subdiretório (`--mount type=tmpfs,destination=/run/asb-credentials/keyrings,ro,notmpcopyup,tmpfs-mode=000`), mantendo apenas `claude.json` e `codex-auth.json` graváveis e impedindo acesso direto tanto aos bancos ativos quanto à cópia legada.
 >
 > Diferença entre os agentes:
 > - **OpenAI Codex**: Persiste seu token diretamente no arquivo `codex-auth.json` em `asb-credentials` (com link simbólico para `~/.codex/auth.json`).
@@ -73,7 +75,7 @@ The CLI entrypoint is `cli/asb-agent` (symlinked as `asb`):
 >
 > A autenticação inicial pode ser feita via `asb-agent login` (sobe um container efêmero conectado ao bus para validar os três agentes e depois ser removido) ou diretamente de dentro de qualquer workspace ativo (via terminal SSH). As credenciais persistem imediatamente no volume e valem para todos os workspaces.
 >
-> **Atenção para migração de workspaces antigos**: Containers criados antes da arquitetura singleton não possuem o mount de `asb-keyring-runtime` nem o socket D-Bus. Como o Podman não permite adicionar mounts a containers existentes em `resume`, workspaces antigos precisam ser recriados (`asb-agent down` seguido de `asb-agent up`). Execute **sempre** `asb-agent pull --workspace <id>` antes de recriar um workspace antigo para preservar alterações locais não integradas.
+> **Atenção para migração de workspaces antigos**: Containers criados antes da arquitetura singleton não possuem o mount de `asb-keyring-runtime`, o socket D-Bus ou a máscara de isolamento de keyrings. Como o Podman não permite adicionar mounts a containers existentes em `resume`, workspaces antigos precisam ser recriados (`asb-agent down` seguido de `asb-agent up`). Execute **sempre** `asb-agent pull --workspace <id>` antes de recriar um workspace antigo para preservar alterações locais não integradas.
 
 Additional utility commands:
 - `asb-agent list`: lists active and stopped workspaces and their backing repositories.
@@ -101,7 +103,8 @@ host                                          container
 - **Primary checkout on host (`~/Data/Projects/<proj>`)**: **Never mounted**. The sandbox interacts only with its hardlink clone under `~/asb-agent/<proj>/<ws>/`.
 - **Workspace mount (`~/asb-agent/<proj>/<ws>/`)**: Mount path is identical inside and outside the container.
 - **Workspace state (`~/.local/state/agent-sandbox/<ws>/`)**: Kept outside the mounted directory so the agent cannot edit its own allowlist. Holds `squid.conf`, `origin`, and `staging/`.
-- **Agent credentials volume (`asb-credentials`)**: Named Podman volume mounted at `/run/asb-credentials:z`. Contains persistent encrypted keyring storage (`keyrings/`), `codex-auth.json`, and legacy fallback `claude.json`. Owned exclusively by `asb-keyring` for keyrings; client containers symlink `~/.claude/.credentials.json` and `~/.codex/auth.json` to this volume.
+- **Agent credentials volume (`asb-credentials`)**: Named Podman volume mounted at `/run/asb-credentials:z` in client containers so `codex-auth.json` and the legacy fallback `claude.json` remain writable. It may retain a preserved legacy `keyrings/` tree as a migration and rollback source, but clients mask that subdirectory with a read-only mode-000 tmpfs and cannot access it. The singleton mounts this volume read-only for migration.
+- **Keyring data volume (`asb-keyring-data`)**: Named Podman volume mounted read/write only in `asb-keyring` at `/run/asb-keyring-data:z`. Holds the active encrypted GNOME Keyring database and is never mounted in login or workspace containers.
 - **Keyring runtime volume (`asb-keyring-runtime`)**: Named Podman volume mounted at `/run/asb-keyring:z` in `asb-keyring` and `/run/asb-keyring:ro,z` in client containers. Holds the active D-Bus session bus Unix socket (`/run/asb-keyring/bus`).
 - **Keyring passphrase (`~/.config/agent-sandbox/keyring.pass`)**: 32 random bytes, permissions 0600 on the host, mounted strictly read-only (`-v ~/.config/agent-sandbox/keyring.pass:/run/asb-keyring-pass:ro,Z`) into `asb-keyring`. Never injected via environment variables (`ASB_KEYRING_PASS` is obsolete and never present in `podman inspect`), never accessible to workspace client containers.
 - **SSH client key (`~/.config/agent-sandbox/id_ed25519`)**: Generated on demand on the host and authorized inside the container.
@@ -111,7 +114,7 @@ host                                          container
 ## 4. What to Do on Failure
 
 1. **Run `asb-agent doctor`**:
-   Checks rootless Podman, Python version, base container image, credentials volume (`asb-credentials`), toolcache volume (`asb-toolcache`), `asb-keyring` singleton service health (container running, D-Bus session socket alive, and `org.freedesktop.secrets` responsive), systemd `podman-restart.service`, and active workspace rootless network uplink health.
+   Checks rootless Podman, Python version, base container image, credentials volume (`asb-credentials`), toolcache volume (`asb-toolcache`), `asb-keyring` singleton service health and schema/mount contract, D-Bus session socket and `org.freedesktop.secrets` responsiveness, systemd `podman-restart.service`, legacy workspace compatibility, and active workspace rootless network uplink health.
    - If `asb-keyring` is missing, stopped, or not responding: run `asb-agent login` to initialize or heal it.
    - If `asb-keyring` has an incompatible schema: remove it with `podman rm -f asb-keyring` and re-run `asb-agent login`.
    - If an uplink is dead: run `podman unshare --rootless-netns true`.

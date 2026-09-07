@@ -4,25 +4,58 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$ROOT/tests/assert.sh"
 
-WS_A="test-auth-a-$$"
-WS_B="test-auth-b-$$"
-TEST_CRED_VOL="${ASB_CREDENTIALS_VOLUME:-asb-test-cred-$$}"
+TEST_ID="test-auth-$$-$(date +%s%N 2>/dev/null || date +%s)"
+WS_A="ws-a-${TEST_ID}"
+WS_B="ws-b-${TEST_ID}"
+TEST_CRED_VOL="test-cred-${TEST_ID}"
+TEST_KEYRING_DATA_VOL="test-kdata-${TEST_ID}"
+TEST_RUN_VOL="test-run-${TEST_ID}"
+TEST_KEYRING_CONTAINER="test-keyring-${TEST_ID}"
+TEST_PASS_FILE=$(mktemp "${TMPDIR:-/tmp}/asb-test-auth-pass-XXXXXX")
+printf 'synthetic-pass-%s\n' "$TEST_ID" > "$TEST_PASS_FILE"
+chmod 0600 "$TEST_PASS_FILE"
+
+REAL_PASS="$HOME/.config/agent-sandbox/keyring.pass"
+if [ "${ASB_KEYRING_PASS_FILE:-}" = "$REAL_PASS" ]; then
+  echo "ERRO FATAL: teste nao pode apontar para o passfile real: $REAL_PASS" >&2
+  exit 1
+fi
+
+# Abortar imediatamente se algum nome coincidir com recursos de produção
+TEST_LOGIN_CONTAINER="test-login-${TEST_ID}"
+for res in "$TEST_CRED_VOL" "$TEST_RUN_VOL" "$TEST_KEYRING_DATA_VOL" "$TEST_KEYRING_CONTAINER" "$TEST_LOGIN_CONTAINER"; do
+  case "$res" in
+    asb-credentials|asb-keyring|asb-keyring-runtime|asb-keyring-data|asb-toolcache|asb-login)
+      echo "ERRO FATAL: recurso de teste coincide com producao: $res" >&2
+      exit 1
+      ;;
+  esac
+done
+
 export ASB_CREDENTIALS_VOLUME="$TEST_CRED_VOL"
-TEST_KEYRING_CONTAINER="${ASB_KEYRING_CONTAINER:-asb-keyring-test-auth-$$}"
-TEST_RUN_VOL="${ASB_KEYRING_RUNTIME_VOLUME:-asb-run-test-auth-$$}"
 export ASB_KEYRING_CONTAINER="$TEST_KEYRING_CONTAINER"
 export ASB_KEYRING_RUNTIME_VOLUME="$TEST_RUN_VOL"
+export ASB_KEYRING_DATA_VOLUME="$TEST_KEYRING_DATA_VOL"
+export ASB_KEYRING_PASS_FILE="$TEST_PASS_FILE"
+IMAGE="${IMAGE:-agent-sandbox:latest}"
+
 REPO=$(mktemp -d)/proj
 mkdir -p "$REPO" && cd "$REPO"
 git init -q -b main . && git config user.email t@e.com && git config user.name T
 echo ok > README.md && git add -A && git commit -qm inicial
 cd "$ROOT"
 
+# Prepara arquivo sentinela legado no volume de credenciais para comprovar isolamento do cliente
+podman volume create "$TEST_CRED_VOL" >/dev/null
+podman run --rm -v "$TEST_CRED_VOL:/run/asb-credentials:z" "$IMAGE" \
+  sh -c "mkdir -p /run/asb-credentials/keyrings && echo 'sentinel-secret-token' > /run/asb-credentials/keyrings/sentinel.keyring && chmod 0600 /run/asb-credentials/keyrings/sentinel.keyring"
+
 cleanup() {
   "$ROOT/cli/asb-agent" down --workspace "$WS_A" >/dev/null 2>&1 || true
   "$ROOT/cli/asb-agent" down --workspace "$WS_B" >/dev/null 2>&1 || true
-  podman rm -f "asb-${WS_A}-agent" "asb-${WS_A}-proxy" "asb-${WS_B}-agent" "asb-${WS_B}-proxy" "$TEST_KEYRING_CONTAINER" >/dev/null 2>&1 || true
-  podman volume rm -f "$TEST_CRED_VOL" "$TEST_RUN_VOL" >/dev/null 2>&1 || true
+  podman rm -f "asb-${WS_A}-agent" "asb-${WS_A}-proxy" "asb-${WS_B}-agent" "asb-${WS_B}-proxy" "$TEST_KEYRING_CONTAINER" "$TEST_LOGIN_CONTAINER" >/dev/null 2>&1 || true
+  podman volume rm -f "$TEST_CRED_VOL" "$TEST_RUN_VOL" "$TEST_KEYRING_DATA_VOL" >/dev/null 2>&1 || true
+  rm -f "$TEST_PASS_FILE"
   rm -rf "$(dirname "$REPO")"
 }
 trap cleanup EXIT
@@ -32,6 +65,39 @@ OUT=$("$ROOT/cli/asb-agent" up --workspace "$WS_A" --repo "$REPO") || {
   echo "  ABORTADO: up falhou"; exit 1; }
 A="asb-${WS_A}-agent"
 require "o agente A responde" podman exec "$A" true
+
+# Valida schema 2 no singleton
+assert_eq "2" \
+  "$(podman inspect "$TEST_KEYRING_CONTAINER" --format '{{index .Config.Labels "asb.keyring.schema"}}')" \
+  "singleton iniciado com schema 2"
+
+# Valida que o container do workspace NÃO consegue ler nem escrever no subdiretório legado
+assert_fails "container de workspace nao consegue ler arquivo no subdiretorio legado de keyrings" \
+  podman exec "$A" cat /run/asb-credentials/keyrings/sentinel.keyring
+assert_fails "container de workspace nao consegue escrever no subdiretorio legado de keyrings" \
+  podman exec "$A" sh -c "echo hack > /run/asb-credentials/keyrings/hack.keyring"
+assert_contains "mode=000" \
+  "$(podman inspect "$A" --format '{{index .HostConfig.Tmpfs "/run/asb-credentials/keyrings"}}')" \
+  "mascara tmpfs presente em /run/asb-credentials/keyrings no workspace"
+
+# Valida que o container de login também aplica a máscara de isolamento
+podman run -d --name "$TEST_LOGIN_CONTAINER" \
+  --userns keep-id:uid=1000,gid=1000 \
+  -v "$TEST_RUN_VOL:/run/asb-keyring:ro,z" \
+  -e DBUS_SESSION_BUS_ADDRESS="unix:path=/run/asb-keyring/bus" \
+  -v "$TEST_CRED_VOL:/run/asb-credentials:z" \
+  --mount type=tmpfs,destination=/run/asb-credentials/keyrings,ro,notmpcopyup,tmpfs-mode=000 \
+  "$IMAGE" sleep 3600 >/dev/null
+assert_fails "container de login nao consegue ler arquivo no subdiretorio legado de keyrings" \
+  podman exec "$TEST_LOGIN_CONTAINER" cat /run/asb-credentials/keyrings/sentinel.keyring
+assert_fails "container de login nao consegue escrever no subdiretorio legado de keyrings" \
+  podman exec "$TEST_LOGIN_CONTAINER" sh -c "echo hack > /run/asb-credentials/keyrings/hack.keyring"
+podman rm -f "$TEST_LOGIN_CONTAINER" >/dev/null 2>&1 || true
+
+# Valida que o arquivo sentinela permanece intacto no volume de credenciais
+assert_eq "sentinel-secret-token" \
+  "$(podman run --rm --entrypoint cat -v "$TEST_CRED_VOL:/run/asb-credentials:ro,z" "$IMAGE" /run/asb-credentials/keyrings/sentinel.keyring 2>/dev/null || true)" \
+  "arquivo sentinela preservado no volume de credenciais subjacente"
 
 # O caminho real e um LINK para o volume: o refresh de token que o agente faz
 # durante a sessao precisa aterrissar no volume, nao numa copia efemera.
@@ -43,6 +109,10 @@ assert_eq "0" "$(podman exec "$A" sh -c "test -L '$HOME/.codex/auth.json'; echo 
 # O cliente NÃO deve criar link para ~/.local/share/keyrings
 assert_fails "o keyring nao e um link no container cliente" \
   podman exec -u 1000 "$A" sh -c 'test -L "$HOME/.local/share/keyrings"'
+
+# O cliente NÃO deve ter o volume de dados do keyring montado
+assert_fails "volume de dados do keyring nao esta montado no cliente" \
+  podman exec "$A" test -e /run/asb-keyring-data
 
 # O cliente não possui processos locais de Secret Service (D-Bus / keyring)
 assert_fails "nenhum processo dbus-daemon rodando no container cliente" \
@@ -105,5 +175,7 @@ echo "-- o volume nao e removido por down nem por purge --"
 "$ROOT/cli/asb-agent" down --workspace "$WS_B" >/dev/null
 assert_eq "0" "$(podman volume exists "$TEST_CRED_VOL"; echo $?)" \
   "o volume de credenciais sobreviveu ao down"
+assert_eq "0" "$(podman volume exists "$TEST_KEYRING_DATA_VOL"; echo $?)" \
+  "o volume de dados do keyring sobreviveu ao down"
 
 report

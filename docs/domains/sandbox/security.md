@@ -58,7 +58,7 @@ The agent container has **no external DNS resolution**. Name resolution occurs e
 
 ## 4. Credential Isolation & The Singleton Secret Service
 
-Agent model credentials are authenticated once per machine (`asb-agent login`) and managed through a combination of dedicated named volumes (`asb-credentials`, `asb-keyring-runtime`) and the singleton service container (`asb-keyring`):
+Agent model credentials are authenticated once per machine (`asb-agent login`) and managed through a combination of dedicated named volumes (`asb-credentials`, `asb-keyring-data`, `asb-keyring-runtime`) and the singleton service container (`asb-keyring`):
 
 | Agent | Storage Format | Protection Mechanism |
 | :--- | :--- | :--- |
@@ -67,13 +67,15 @@ Agent model credentials are authenticated once per machine (`asb-agent login`) a
 | Google Antigravity | `keyrings/` | GNOME Keyring encrypted via Secret Service D-Bus API |
 
 ### Secret Service Daemon Isolation (`asb-keyring`)
-To eliminate multi-daemon concurrency race conditions and session drops, exactly one container (`asb-keyring`) runs GNOME Keyring and D-Bus session bus:
+To eliminate multi-daemon concurrency race conditions and session drops, exactly one container (`asb-keyring`, labeled `asb.keyring.schema=2`) runs GNOME Keyring and D-Bus session bus:
 - **Zero Network (`--network none`)**: `asb-keyring` has no network interfaces beyond loopback. It has no external egress, no internal workspace bridge attachment, and cannot establish outbound connections.
 - **No Workspace Mounts**: `asb-keyring` has no access to workspace files, host directories, Docker sockets, or SSH keys.
-- **Single Owner of Keyring Files**: Sole writer to `/run/asb-credentials/keyrings`. Client containers do not mount the `keyrings/` directory directly, preventing corruption.
+- **Single Owner of Keyring Files & Data Volume Separation**: Encrypted keyring files are separated into a dedicated volume `asb-keyring-data` mounted exclusively in `asb-keyring`. Workspace and login containers mount only `asb-credentials` (for `claude.json` and `codex-auth.json`) and the read-only D-Bus socket volume `asb-keyring-runtime`. Clients never mount `asb-keyring-data`.
+- **Legacy Keyring Shadow Mask**: Because existing keyring files remain preserved in `asb-credentials/keyrings` during non-destructive migration, client containers mount a secure read-only tmpfs shadow mask (`--mount type=tmpfs,destination=/run/asb-credentials/keyrings,ro,notmpcopyup,tmpfs-mode=000`). This completely prevents workspace or login client processes from reading, listing, or modifying legacy keyring files, while leaving `claude.json` and `codex-auth.json` fully writable.
 - **Passphrase Protection**: The 32-byte cryptographically secure random passphrase (`~/.config/agent-sandbox/keyring.pass`, file mode `0600`) is mounted strictly read-only into `/run/asb-keyring-pass:ro,Z`.
   - The passphrase is **never baked into any container image**.
   - The passphrase is **never passed as an environment variable** (never visible in `podman inspect`).
   - Workspace client containers do not mount the passphrase and do not receive `ASB_KEYRING_PASS`.
   - A copy of the container image or volume stolen or moved to another machine cannot decrypt the keyring without the host's `keyring.pass`.
 - **D-Bus Session Bus Over Private Unix Socket**: `asb-keyring` publishes its D-Bus session socket inside named Podman volume `asb-keyring-runtime` at `/run/asb-keyring/bus`. Workspace clients mount this volume as read-only (`:ro,z`) and communicate via `DBUS_SESSION_BUS_ADDRESS=unix:path=/run/asb-keyring/bus`. The socket is strictly local to container namespaces and is never exposed over TCP or host network ports.
+- **Resumable Migration & Schema Auto-Upgrade**: Legacy data in `asb-credentials/keyrings` is copied to `asb-keyring-data/keyrings` through staging and verified with `/run/asb-keyring-data/.migration_done`. If interrupted, migration safely resumes on the next startup without data loss. Existing schema 1 singleton containers or containers with legacy mounts are automatically recreated on `ensure_keyring_service()` without removing volumes or passfiles.

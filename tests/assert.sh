@@ -19,6 +19,14 @@ assert_contains() {
   esac
 }
 
+assert_not_contains() {
+  local needle="$1" haystack="$2" msg="$3"
+  case "$haystack" in
+    *"$needle"*) _fail=$((_fail+1)); echo "  FALHOU: $msg"; echo "    encontrou indevidamente [$needle] em: $haystack" ;;
+    *) _pass=$((_pass+1)); echo "  ok: $msg" ;;
+  esac
+}
+
 # Sucesso = o comando FALHAR. Usado para provar que algo esta bloqueado.
 assert_fails() {
   local msg="$1"; shift

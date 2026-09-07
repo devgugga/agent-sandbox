@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import sys
 import tempfile
 import unittest
@@ -11,6 +12,21 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "cli"))
 
 from asb import lifecycle  # noqa: E402
+
+
+def valid_keyring_mounts(pass_file: Path | None = None) -> dict[str, dict[str, object]]:
+    """Espelha a estrutura real de Mounts retornada por podman inspect."""
+    return {
+        "/run/asb-credentials": {
+            "type": "volume", "name": "asb-credentials", "source": "", "rw": False},
+        "/run/asb-keyring-data": {
+            "type": "volume", "name": "asb-keyring-data", "source": "", "rw": True},
+        "/run/asb-keyring": {
+            "type": "volume", "name": "asb-keyring-runtime", "source": "", "rw": True},
+        "/run/asb-keyring-pass": {
+            "type": "bind", "name": "",
+            "source": str(pass_file or lifecycle.KEYRING_PASS), "rw": False},
+    }
 
 
 class TestAuthLifecycle(unittest.TestCase):
@@ -96,10 +112,11 @@ class TestKeyringServiceLifecycle(unittest.TestCase):
             fake_pass.write_text("secret-pass")
             with mock.patch("asb.lifecycle.ensure_keyring_pass", return_value=fake_pass), \
                  mock.patch("asb.lifecycle.ensure_credentials_volume", return_value="asb-credentials"), \
+                 mock.patch("asb.lifecycle.ensure_keyring_data_volume", return_value="asb-keyring-data"), \
                  mock.patch("asb.lifecycle.ensure_keyring_runtime_volume", return_value="asb-keyring-runtime"), \
                  mock.patch("asb.lifecycle.podman.exists", side_effect=lambda kind, name: True if kind == "image" else False), \
                  mock.patch("asb.lifecycle.podman.run") as mock_run, \
-                 mock.patch("asb.lifecycle._wait_for_keyring_readiness") as mock_wait:
+                 mock.patch("asb.lifecycle._wait_for_keyring_readiness", return_value=True) as mock_wait:
                 name = lifecycle.ensure_keyring_service()
                 self.assertEqual(name, lifecycle.KEYRING_CONTAINER)
                 mock_wait.assert_called_once_with(lifecycle.KEYRING_CONTAINER, timeout=5.0)
@@ -118,29 +135,81 @@ class TestKeyringServiceLifecycle(unittest.TestCase):
                 self.assertIn("--userns", args)
                 self.assertEqual(args[args.index("--userns") + 1], "keep-id:uid=1000,gid=1000")
                 self.assertIn(f"{fake_pass}:/run/asb-keyring-pass:ro,Z", args)
-                self.assertIn("asb-credentials:/run/asb-credentials:z", args)
+                self.assertIn("asb-credentials:/run/asb-credentials:ro,z", args)
+                self.assertIn("asb-keyring-data:/run/asb-keyring-data:z", args)
                 self.assertIn("asb-keyring-runtime:/run/asb-keyring:z", args)
                 self.assertIn(f"DBUS_SESSION_BUS_ADDRESS=unix:path={lifecycle.KEYRING_BUS}", args)
-                self.assertIn("asb.keyring.schema=1", args)
+                self.assertIn(f"asb.keyring.schema={lifecycle.KEYRING_SCHEMA}", args)
                 self.assertIn("--entrypoint", args)
                 self.assertEqual(args[args.index("--entrypoint") + 1], "/usr/local/bin/start-keyring.sh")
                 self.assertEqual(args[-1], lifecycle.IMAGE)
                 self.assertFalse(any("squid" in str(arg) for arg in args))
 
     def test_ensure_keyring_service_starts_existing_stopped_container(self):
+        valid_mounts = valid_keyring_mounts()
         with mock.patch("asb.lifecycle.podman.exists", return_value=True), \
-             mock.patch("asb.lifecycle.podman.out", return_value="1"), \
+             mock.patch("asb.lifecycle._inspect_keyring_container", return_value=(lifecycle.KEYRING_SCHEMA, valid_mounts)), \
              mock.patch("asb.lifecycle.podman.running", return_value=False), \
              mock.patch("asb.lifecycle.podman.run") as mock_run, \
-             mock.patch("asb.lifecycle._wait_for_keyring_readiness") as mock_wait:
+             mock.patch("asb.lifecycle._wait_for_keyring_readiness", return_value=True) as mock_wait:
             name = lifecycle.ensure_keyring_service()
             self.assertEqual(name, lifecycle.KEYRING_CONTAINER)
             mock_run.assert_called_once_with("start", lifecycle.KEYRING_CONTAINER)
             mock_wait.assert_called_once_with(lifecycle.KEYRING_CONTAINER, timeout=5.0)
 
+    def test_ensure_keyring_service_auto_upgrades_schema_1_container(self):
+        run_calls = []
+        def fake_run(*args, **kwargs):
+            run_calls.append(args)
+            return mock.MagicMock(returncode=0)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_pass = Path(tmp) / "keyring.pass"
+            fake_pass.write_text("pass")
+            with mock.patch("asb.lifecycle.ensure_keyring_pass", return_value=fake_pass), \
+                 mock.patch("asb.lifecycle.ensure_credentials_volume", return_value="asb-credentials"), \
+                 mock.patch("asb.lifecycle.ensure_keyring_data_volume", return_value="asb-keyring-data"), \
+                 mock.patch("asb.lifecycle.ensure_keyring_runtime_volume", return_value="asb-keyring-runtime"), \
+                 mock.patch("asb.lifecycle.podman.exists", side_effect=lambda kind, name: True if (kind in ("container", "image")) else False), \
+                 mock.patch("asb.lifecycle._inspect_keyring_container", return_value=("1", {"/run/asb-credentials": True})), \
+                 mock.patch("asb.lifecycle.podman.run", side_effect=fake_run), \
+                 mock.patch("asb.lifecycle._wait_for_keyring_readiness", return_value=True):
+                name = lifecycle.ensure_keyring_service()
+                self.assertEqual(name, lifecycle.KEYRING_CONTAINER)
+                # Must remove only the container
+                self.assertEqual(run_calls[0], ("rm", "-f", lifecycle.KEYRING_CONTAINER))
+                # Must recreate with schema 2
+                create_call = run_calls[1]
+                self.assertEqual(create_call[0], "run")
+                self.assertIn(f"asb.keyring.schema={lifecycle.KEYRING_SCHEMA}", create_call)
+                self.assertIn("asb-credentials:/run/asb-credentials:ro,z", create_call)
+                self.assertIn("asb-keyring-data:/run/asb-keyring-data:z", create_call)
+
+    def test_ensure_keyring_service_auto_upgrades_legacy_mounts_contract(self):
+        run_calls = []
+        def fake_run(*args, **kwargs):
+            run_calls.append(args)
+            return mock.MagicMock(returncode=0)
+
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_pass = Path(tmp) / "keyring.pass"
+            fake_pass.write_text("pass")
+            with mock.patch("asb.lifecycle.ensure_keyring_pass", return_value=fake_pass), \
+                 mock.patch("asb.lifecycle.ensure_credentials_volume", return_value="asb-credentials"), \
+                 mock.patch("asb.lifecycle.ensure_keyring_data_volume", return_value="asb-keyring-data"), \
+                 mock.patch("asb.lifecycle.ensure_keyring_runtime_volume", return_value="asb-keyring-runtime"), \
+                 mock.patch("asb.lifecycle.podman.exists", side_effect=lambda kind, name: True if (kind in ("container", "image")) else False), \
+                 mock.patch("asb.lifecycle._inspect_keyring_container", return_value=(lifecycle.KEYRING_SCHEMA, {"/run/asb-credentials": {"type": "volume", "name": "asb-credentials", "source": "", "rw": True}})), \
+                 mock.patch("asb.lifecycle.podman.run", side_effect=fake_run), \
+                 mock.patch("asb.lifecycle._wait_for_keyring_readiness", return_value=True):
+                name = lifecycle.ensure_keyring_service()
+                self.assertEqual(name, lifecycle.KEYRING_CONTAINER)
+                self.assertEqual(run_calls[0], ("rm", "-f", lifecycle.KEYRING_CONTAINER))
+
     def test_ensure_keyring_service_rejects_incompatible_schema(self):
+        valid_mounts = valid_keyring_mounts()
         with mock.patch("asb.lifecycle.podman.exists", return_value=True), \
-             mock.patch("asb.lifecycle.podman.out", return_value="bad-schema"), \
+             mock.patch("asb.lifecycle._inspect_keyring_container", return_value=("99", valid_mounts)), \
              mock.patch("asb.lifecycle.podman.run") as mock_run:
             with self.assertRaises(lifecycle.podman.PodmanError) as ctx:
                 lifecycle.ensure_keyring_service()
@@ -148,14 +217,41 @@ class TestKeyringServiceLifecycle(unittest.TestCase):
             self.assertIn("schema", str(ctx.exception).lower())
             mock_run.assert_not_called()
 
+    def test_ensure_keyring_service_never_replaces_unknown_schema_with_bad_mounts(self):
+        inspected = {
+            "Config": {"Labels": {"asb.keyring.schema": "99"}},
+            "Mounts": [
+                {"Type": "volume", "Name": "wrong", "Destination": "/run/asb-credentials", "RW": True},
+            ],
+        }
+        with mock.patch("asb.lifecycle.podman.exists", return_value=True), \
+             mock.patch("asb.lifecycle.podman.out", return_value=json.dumps(inspected)), \
+             mock.patch("asb.lifecycle.podman.run") as mock_run:
+            with self.assertRaises(lifecycle.podman.PodmanError) as ctx:
+                lifecycle.ensure_keyring_service()
+
+        self.assertIn("schema incompativel", str(ctx.exception))
+        mock_run.assert_not_called()
+
+    def test_ensure_keyring_service_never_replaces_container_when_inspect_fails(self):
+        with mock.patch("asb.lifecycle.podman.exists", return_value=True), \
+             mock.patch("asb.lifecycle.podman.out", side_effect=lifecycle.podman.PodmanError("inspect falhou")), \
+             mock.patch("asb.lifecycle.podman.run") as mock_run:
+            with self.assertRaises(lifecycle.podman.PodmanError) as ctx:
+                lifecycle.ensure_keyring_service()
+
+        self.assertIn("inspecionar", str(ctx.exception))
+        mock_run.assert_not_called()
+
     def test_ensure_keyring_service_waits_for_socket_and_secrets(self):
         calls = []
         def fake_run(*args, **kwargs):
             calls.append(args)
             return mock.MagicMock(returncode=0)
 
+        valid_mounts = valid_keyring_mounts()
         with mock.patch("asb.lifecycle.podman.exists", return_value=True), \
-             mock.patch("asb.lifecycle.podman.out", return_value="1"), \
+             mock.patch("asb.lifecycle._inspect_keyring_container", return_value=(lifecycle.KEYRING_SCHEMA, valid_mounts)), \
              mock.patch("asb.lifecycle.podman.running", return_value=True), \
              mock.patch("asb.lifecycle.podman.run", side_effect=fake_run):
             name = lifecycle.ensure_keyring_service()
@@ -165,26 +261,44 @@ class TestKeyringServiceLifecycle(unittest.TestCase):
             self.assertTrue(has_socket_check)
             self.assertTrue(has_secrets_check)
 
-    def test_ensure_keyring_service_timeout_raises_podman_error_citing_login(self):
+    def test_ensure_keyring_service_recovers_after_restarting_unresponsive_container(self):
+        calls = []
         def fake_run(*args, **kwargs):
-            if "test" in args:
-                return mock.MagicMock(returncode=0)
-            if "dbus-send" in args:
-                return mock.MagicMock(returncode=1)
+            calls.append(args)
             return mock.MagicMock(returncode=0)
 
+        valid_mounts = valid_keyring_mounts()
         with mock.patch("asb.lifecycle.podman.exists", return_value=True), \
-             mock.patch("asb.lifecycle.podman.out", return_value="1"), \
+             mock.patch("asb.lifecycle._inspect_keyring_container", return_value=(lifecycle.KEYRING_SCHEMA, valid_mounts)), \
              mock.patch("asb.lifecycle.podman.running", return_value=True), \
              mock.patch("asb.lifecycle.podman.run", side_effect=fake_run), \
-             mock.patch("time.sleep"):
+             mock.patch("asb.lifecycle._wait_for_keyring_readiness", side_effect=[False, True]):
+            name = lifecycle.ensure_keyring_service()
+            self.assertEqual(name, lifecycle.KEYRING_CONTAINER)
+            self.assertIn(("restart", lifecycle.KEYRING_CONTAINER), calls)
+
+    def test_ensure_keyring_service_restarts_and_fails_with_repair_command_if_still_unresponsive(self):
+        calls = []
+        def fake_run(*args, **kwargs):
+            calls.append(args)
+            return mock.MagicMock(returncode=0)
+
+        valid_mounts = valid_keyring_mounts()
+        with mock.patch("asb.lifecycle.podman.exists", return_value=True), \
+             mock.patch("asb.lifecycle._inspect_keyring_container", return_value=(lifecycle.KEYRING_SCHEMA, valid_mounts)), \
+             mock.patch("asb.lifecycle.podman.running", return_value=True), \
+             mock.patch("asb.lifecycle.podman.run", side_effect=fake_run), \
+             mock.patch("asb.lifecycle._wait_for_keyring_readiness", side_effect=[False, False]):
             with self.assertRaises(lifecycle.podman.PodmanError) as ctx:
-                lifecycle.ensure_keyring_service(timeout=0.01)
+                lifecycle.ensure_keyring_service()
+            self.assertIn("podman rm -f", str(ctx.exception))
             self.assertIn("asb-agent login", str(ctx.exception))
+            self.assertIn(("restart", lifecycle.KEYRING_CONTAINER), calls)
 
     def test_keyring_environment_overrides(self):
         env = {
             "ASB_CREDENTIALS_VOLUME": "custom-cred-vol",
+            "ASB_KEYRING_DATA_VOLUME": "custom-data-vol",
             "ASB_KEYRING_RUNTIME_VOLUME": "custom-run-vol",
             "ASB_KEYRING_CONTAINER": "custom-keyring-cont",
             "ASB_KEYRING_PASS_FILE": "/custom/path/keyring.pass",
@@ -196,9 +310,11 @@ class TestKeyringServiceLifecycle(unittest.TestCase):
             with mock.patch.dict("os.environ", env), \
                  mock.patch("asb.lifecycle.podman.exists", side_effect=lambda kind, name: True if kind == "image" else False), \
                  mock.patch("asb.lifecycle.podman.run") as mock_run, \
-                 mock.patch("asb.lifecycle._wait_for_keyring_readiness"):
+                 mock.patch("asb.lifecycle._wait_for_keyring_readiness", return_value=True):
                 c_vol = lifecycle.ensure_credentials_volume()
                 self.assertEqual(c_vol, "custom-cred-vol")
+                d_vol = lifecycle.ensure_keyring_data_volume()
+                self.assertEqual(d_vol, "custom-data-vol")
                 r_vol = lifecycle.ensure_keyring_runtime_volume()
                 self.assertEqual(r_vol, "custom-run-vol")
                 p_file = lifecycle.ensure_keyring_pass()
@@ -208,7 +324,8 @@ class TestKeyringServiceLifecycle(unittest.TestCase):
                 self.assertEqual(name, "custom-keyring-cont")
                 args = list(mock_run.call_args[0])
                 self.assertIn("custom-keyring-cont", args)
-                self.assertIn("custom-cred-vol:/run/asb-credentials:z", args)
+                self.assertIn("custom-cred-vol:/run/asb-credentials:ro,z", args)
+                self.assertIn("custom-data-vol:/run/asb-keyring-data:z", args)
                 self.assertIn("custom-run-vol:/run/asb-keyring:z", args)
                 self.assertIn(f"{custom_pass}:/run/asb-keyring-pass:ro,Z", args)
 
@@ -242,6 +359,7 @@ class TestLoginKeyringIntegration(unittest.TestCase):
 
         self.assertIn("asb-keyring-runtime:/run/asb-keyring:ro,z", run_args_captured)
         self.assertIn("asb-credentials:/run/asb-credentials:z", run_args_captured)
+        self.assertIn("type=tmpfs,destination=/run/asb-credentials/keyrings,ro,notmpcopyup,tmpfs-mode=000", run_args_captured)
         self.assertIn(f"DBUS_SESSION_BUS_ADDRESS=unix:path={lifecycle.KEYRING_BUS}", run_args_captured)
         self.assertFalse(any("ASB_KEYRING_PASS" in str(a) for a in run_args_captured))
 
@@ -339,14 +457,71 @@ class TestCheckKeyringService(unittest.TestCase):
             self.assertEqual(label, "asb-keyring parado")
             self.assertEqual(fix, "asb-agent login")
 
+    def test_check_keyring_service_schema_outdated(self):
+        with mock.patch("asb.lifecycle.podman.exists", return_value=True), \
+             mock.patch("asb.lifecycle.podman.running", return_value=True), \
+             mock.patch("asb.lifecycle._inspect_keyring_container", return_value=("1", {"/run/asb-credentials": False})):
+            ok, label, fix = lifecycle.check_keyring_service()
+            self.assertFalse(ok)
+            self.assertIn("desatualizado", label)
+            self.assertEqual(fix, "asb-agent login")
+
+    def test_check_keyring_service_mounts_violated(self):
+        with mock.patch("asb.lifecycle.podman.exists", return_value=True), \
+             mock.patch("asb.lifecycle.podman.running", return_value=True), \
+             mock.patch("asb.lifecycle._inspect_keyring_container", return_value=(lifecycle.KEYRING_SCHEMA, {"/run/asb-credentials": {"type": "volume", "name": "asb-credentials", "source": "", "rw": True}})):
+            ok, label, fix = lifecycle.check_keyring_service()
+            self.assertFalse(ok)
+            self.assertIn("violado", label)
+            self.assertEqual(fix, "asb-agent login")
+
+    def test_check_keyring_service_rejects_wrong_volume_source(self):
+        inspected = {
+            "Config": {"Labels": {"asb.keyring.schema": "2"}},
+            "Mounts": [
+                {"Type": "volume", "Name": "wrong-credentials", "Destination": "/run/asb-credentials", "RW": False},
+                {"Type": "volume", "Name": "asb-keyring-data", "Destination": "/run/asb-keyring-data", "RW": True},
+                {"Type": "volume", "Name": "asb-keyring-runtime", "Destination": "/run/asb-keyring", "RW": True},
+                {"Type": "bind", "Source": str(lifecycle.KEYRING_PASS), "Destination": "/run/asb-keyring-pass", "RW": False},
+            ],
+        }
+        with mock.patch("asb.lifecycle.podman.exists", return_value=True), \
+             mock.patch("asb.lifecycle.podman.running", return_value=True), \
+             mock.patch("asb.lifecycle.podman.out", return_value=json.dumps(inspected)), \
+             mock.patch("asb.lifecycle.podman.run", return_value=mock.MagicMock(returncode=0)):
+            ok, label, _ = lifecycle.check_keyring_service()
+
+        self.assertFalse(ok)
+        self.assertIn("contrato de mounts", label)
+
+    def test_check_keyring_service_requires_read_only_passfile_mount(self):
+        inspected = {
+            "Config": {"Labels": {"asb.keyring.schema": "2"}},
+            "Mounts": [
+                {"Type": "volume", "Name": "asb-credentials", "Destination": "/run/asb-credentials", "RW": False},
+                {"Type": "volume", "Name": "asb-keyring-data", "Destination": "/run/asb-keyring-data", "RW": True},
+                {"Type": "volume", "Name": "asb-keyring-runtime", "Destination": "/run/asb-keyring", "RW": True},
+            ],
+        }
+        with mock.patch("asb.lifecycle.podman.exists", return_value=True), \
+             mock.patch("asb.lifecycle.podman.running", return_value=True), \
+             mock.patch("asb.lifecycle.podman.out", return_value=json.dumps(inspected)), \
+             mock.patch("asb.lifecycle.podman.run", return_value=mock.MagicMock(returncode=0)):
+            ok, label, _ = lifecycle.check_keyring_service()
+
+        self.assertFalse(ok)
+        self.assertIn("contrato de mounts", label)
+
     def test_check_keyring_service_socket_missing(self):
         def fake_run(*args, **kwargs):
             if "test" in args:
                 return mock.MagicMock(returncode=1)
             return mock.MagicMock(returncode=0)
 
+        valid_mounts = valid_keyring_mounts()
         with mock.patch("asb.lifecycle.podman.exists", return_value=True), \
              mock.patch("asb.lifecycle.podman.running", return_value=True), \
+             mock.patch("asb.lifecycle._inspect_keyring_container", return_value=(lifecycle.KEYRING_SCHEMA, valid_mounts)), \
              mock.patch("asb.lifecycle.podman.run", side_effect=fake_run):
             ok, label, fix = lifecycle.check_keyring_service()
             self.assertFalse(ok)
@@ -361,8 +536,10 @@ class TestCheckKeyringService(unittest.TestCase):
                 return mock.MagicMock(returncode=1)
             return mock.MagicMock(returncode=0)
 
+        valid_mounts = valid_keyring_mounts()
         with mock.patch("asb.lifecycle.podman.exists", return_value=True), \
              mock.patch("asb.lifecycle.podman.running", return_value=True), \
+             mock.patch("asb.lifecycle._inspect_keyring_container", return_value=(lifecycle.KEYRING_SCHEMA, valid_mounts)), \
              mock.patch("asb.lifecycle.podman.run", side_effect=fake_run):
             ok, label, fix = lifecycle.check_keyring_service()
             self.assertFalse(ok)
@@ -373,8 +550,10 @@ class TestCheckKeyringService(unittest.TestCase):
         def fake_run(*args, **kwargs):
             return mock.MagicMock(returncode=0)
 
+        valid_mounts = valid_keyring_mounts()
         with mock.patch("asb.lifecycle.podman.exists", return_value=True), \
              mock.patch("asb.lifecycle.podman.running", return_value=True), \
+             mock.patch("asb.lifecycle._inspect_keyring_container", return_value=(lifecycle.KEYRING_SCHEMA, valid_mounts)), \
              mock.patch("asb.lifecycle.podman.run", side_effect=fake_run):
             ok, label, fix = lifecycle.check_keyring_service()
             self.assertTrue(ok)

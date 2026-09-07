@@ -21,14 +21,35 @@ if [ ! -r "$pass_file" ]; then
   exit 1
 fi
 
-# 3. Garantir persistência do diretório de keyrings no volume de credenciais
-if [ -d /run/asb-credentials ]; then
-  mkdir -p /run/asb-credentials/keyrings
-  chmod 0700 /run/asb-credentials/keyrings
+# 3. Garantir persistência do diretório de keyrings no volume dedicado de dados
+keyring_data_dir="/run/asb-keyring-data/keyrings"
+migration_marker="/run/asb-keyring-data/.migration_done"
+if [ -d /run/asb-keyring-data ]; then
+  mkdir -p "$keyring_data_dir"
+  chmod 0700 "$keyring_data_dir"
+
+  # Migração transacional e retomável de dados legados do volume de credenciais.
+  # Protegida por staging e marcador de conclusão: se interrompida antes do fim,
+  # o próximo início retoma a sincronização de onde parou sem apagar a origem.
+  if [ -d /run/asb-credentials/keyrings ] && [ ! -f "$migration_marker" ]; then
+    if [ -n "$(ls -A /run/asb-credentials/keyrings 2>/dev/null)" ]; then
+      staging_dir="/run/asb-keyring-data/.staging_keyrings"
+      rm -rf "$staging_dir"
+      mkdir -p "$staging_dir"
+      chmod 0700 "$staging_dir"
+      cp -a /run/asb-credentials/keyrings/. "$staging_dir/"
+      cp -a "$staging_dir/." "$keyring_data_dir/"
+      rm -rf "$staging_dir"
+      touch "$migration_marker"
+      chmod 0600 "$migration_marker" 2>/dev/null || true
+      chmod 0700 "$keyring_data_dir"
+    fi
+  fi
+
   mkdir -p "$HOME/.local/share"
-  if [ ! -L "$HOME/.local/share/keyrings" ] || [ "$(readlink "$HOME/.local/share/keyrings")" != "/run/asb-credentials/keyrings" ]; then
+  if [ ! -L "$HOME/.local/share/keyrings" ] || [ "$(readlink "$HOME/.local/share/keyrings")" != "$keyring_data_dir" ]; then
     rm -rf "$HOME/.local/share/keyrings"
-    ln -sfn /run/asb-credentials/keyrings "$HOME/.local/share/keyrings"
+    ln -sfn "$keyring_data_dir" "$HOME/.local/share/keyrings"
   fi
 else
   mkdir -p "$HOME/.local/share/keyrings"

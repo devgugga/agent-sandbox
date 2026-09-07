@@ -212,7 +212,8 @@ class TestDoctor(unittest.TestCase):
         mock_exists.side_effect = fake_exists
         mock_running.side_effect = fake_running
 
-        with mock.patch("asb.doctor.check_keyring_service", return_value=(True, "Secret Service (asb-keyring)", "")):
+        with mock.patch("asb.doctor.check_keyring_service", return_value=(True, "Secret Service (asb-keyring)", "")), \
+             mock.patch("asb.doctor.check_legacy_agent_container", return_value=(False, "")):
             out = io.StringIO()
             with mock.patch("sys.stdout", out):
                 code = doc_mod.doctor(self.fake_root)
@@ -247,7 +248,9 @@ class TestDoctor(unittest.TestCase):
         )
 
         out = io.StringIO()
-        with mock.patch("sys.stdout", out):
+        with mock.patch("asb.doctor.check_keyring_service", return_value=(True, "Secret Service (asb-keyring)", "")), \
+             mock.patch("asb.doctor.check_legacy_agent_container", return_value=(False, "")), \
+             mock.patch("sys.stdout", out):
             code = doc_mod.doctor(self.fake_root)
 
         self.assertEqual(code, 1)
@@ -575,3 +578,105 @@ class TestDoctorSecretService(unittest.TestCase):
                 if "run" in args:
                     self.assertNotIn("-d", args)
 
+    @mock.patch("asb.doctor.podman.out")
+    def test_check_legacy_agent_container_fails_closed_on_inspect_error(self, mock_out):
+        mock_out.side_effect = Exception("container inspect failure")
+        is_legacy, reason = doc_mod.check_legacy_agent_container("asb-ws-agent")
+        self.assertTrue(is_legacy)
+        self.assertIn("falha ao inspecionar container", reason)
+
+    @mock.patch("asb.doctor.podman.out", return_value="[]")
+    def test_check_legacy_agent_container_fails_closed_on_unexpected_json_shape(self, mock_out):
+        is_legacy, reason = doc_mod.check_legacy_agent_container("asb-ws-agent")
+        self.assertTrue(is_legacy)
+        self.assertIn("falha ao inspecionar container", reason)
+
+    @mock.patch("asb.doctor.podman.out")
+    def test_check_legacy_agent_container_detects_missing_keyring_mount(self, mock_out):
+        mock_out.return_value = '{"Mounts": [{"Destination": "/run/asb-credentials"}], "HostConfig": {"Tmpfs": {"/run/asb-credentials/keyrings": "ro,mode=000"}}, "Config": {"Env": ["DBUS_SESSION_BUS_ADDRESS=unix:path=/run/asb-keyring/bus"]}}'
+        is_legacy, reason = doc_mod.check_legacy_agent_container("asb-ws-agent")
+        self.assertTrue(is_legacy)
+        self.assertIn("mount /run/asb-keyring ausente", reason)
+
+    @mock.patch("asb.doctor.podman.out")
+    def test_check_legacy_agent_container_detects_missing_keyring_mask(self, mock_out):
+        mock_out.return_value = '{"Mounts": [{"Destination": "/run/asb-keyring", "RW": false}, {"Destination": "/run/asb-credentials", "RW": true}], "HostConfig": {"Tmpfs": {}}, "Config": {"Env": ["DBUS_SESSION_BUS_ADDRESS=unix:path=/run/asb-keyring/bus"]}}'
+        is_legacy, reason = doc_mod.check_legacy_agent_container("asb-ws-agent")
+        self.assertTrue(is_legacy)
+        self.assertIn("mascara de isolamento de keyrings ausente", reason)
+
+    @mock.patch("asb.doctor.podman.out")
+    def test_check_legacy_agent_container_rejects_bind_mount_as_keyring_mask(self, mock_out):
+        mock_out.return_value = '{"Mounts": [{"Type": "volume", "Name": "asb-keyring-runtime", "Destination": "/run/asb-keyring", "RW": false}, {"Type": "volume", "Name": "asb-credentials", "Destination": "/run/asb-credentials", "RW": true}, {"Type": "bind", "Destination": "/run/asb-credentials/keyrings", "RW": false}], "HostConfig": {"Tmpfs": {}}, "Config": {"Env": ["DBUS_SESSION_BUS_ADDRESS=unix:path=/run/asb-keyring/bus"]}}'
+        is_legacy, reason = doc_mod.check_legacy_agent_container("asb-ws-agent")
+        self.assertTrue(is_legacy)
+        self.assertIn("mascara", reason)
+
+    @mock.patch("asb.doctor.podman.out")
+    def test_check_legacy_agent_container_rejects_permissive_tmpfs_mask(self, mock_out):
+        mock_out.return_value = '{"Mounts": [{"Type": "volume", "Name": "asb-keyring-runtime", "Destination": "/run/asb-keyring", "RW": false}, {"Type": "volume", "Name": "asb-credentials", "Destination": "/run/asb-credentials", "RW": true}], "HostConfig": {"Tmpfs": {"/run/asb-credentials/keyrings": "rw,mode=777"}}, "Config": {"CreateCommand": ["podman", "run", "--mount", "type=tmpfs,destination=/run/asb-credentials/keyrings,rw,notmpcopyup,tmpfs-mode=777"], "Env": ["DBUS_SESSION_BUS_ADDRESS=unix:path=/run/asb-keyring/bus"]}}'
+        is_legacy, reason = doc_mod.check_legacy_agent_container("asb-ws-agent")
+        self.assertTrue(is_legacy)
+        self.assertIn("mascara", reason)
+
+    @mock.patch("asb.doctor.podman.out")
+    def test_check_legacy_agent_container_requires_notmpcopyup(self, mock_out):
+        mock_out.return_value = '{"Mounts": [{"Type": "volume", "Name": "asb-keyring-runtime", "Destination": "/run/asb-keyring", "RW": false}, {"Type": "volume", "Name": "asb-credentials", "Destination": "/run/asb-credentials", "RW": true}], "HostConfig": {"Tmpfs": {"/run/asb-credentials/keyrings": "ro,mode=000"}}, "Config": {"CreateCommand": ["podman", "run", "--mount", "type=tmpfs,destination=/run/asb-credentials/keyrings,ro,tmpfs-mode=000"], "Env": ["DBUS_SESSION_BUS_ADDRESS=unix:path=/run/asb-keyring/bus"]}}'
+        is_legacy, reason = doc_mod.check_legacy_agent_container("asb-ws-agent")
+        self.assertTrue(is_legacy)
+        self.assertIn("notmpcopyup", reason)
+
+    @mock.patch("asb.doctor.podman.out")
+    def test_check_legacy_agent_container_requires_read_only_runtime_mount(self, mock_out):
+        mock_out.return_value = '{"Mounts": [{"Type": "volume", "Name": "asb-keyring-runtime", "Destination": "/run/asb-keyring", "RW": true}, {"Type": "volume", "Name": "asb-credentials", "Destination": "/run/asb-credentials", "RW": true}], "HostConfig": {"Tmpfs": {"/run/asb-credentials/keyrings": "ro,mode=000"}}, "Config": {"CreateCommand": ["podman", "run", "--mount", "type=tmpfs,destination=/run/asb-credentials/keyrings,ro,notmpcopyup,tmpfs-mode=000"], "Env": ["DBUS_SESSION_BUS_ADDRESS=unix:path=/run/asb-keyring/bus"]}}'
+        is_legacy, reason = doc_mod.check_legacy_agent_container("asb-ws-agent")
+        self.assertTrue(is_legacy)
+        self.assertIn("somente leitura", reason)
+
+    @mock.patch("asb.doctor.podman.out")
+    def test_check_legacy_agent_container_detects_bad_dbus_env(self, mock_out):
+        mock_out.return_value = '{"Mounts": [{"Destination": "/run/asb-keyring", "RW": false}, {"Destination": "/run/asb-credentials", "RW": true}], "HostConfig": {"Tmpfs": {"/run/asb-credentials/keyrings": "ro,mode=000"}}, "Config": {"CreateCommand": ["podman", "run", "--mount", "type=tmpfs,destination=/run/asb-credentials/keyrings,ro,notmpcopyup,tmpfs-mode=000"], "Env": []}}'
+        is_legacy, reason = doc_mod.check_legacy_agent_container("asb-ws-agent")
+        self.assertTrue(is_legacy)
+        self.assertIn("DBUS_SESSION_BUS_ADDRESS", reason)
+
+    @mock.patch("asb.doctor.podman.out")
+    def test_check_legacy_agent_container_detects_keyring_pass_env(self, mock_out):
+        mock_out.return_value = '{"Mounts": [{"Destination": "/run/asb-keyring", "RW": false}, {"Destination": "/run/asb-credentials", "RW": true}], "HostConfig": {"Tmpfs": {"/run/asb-credentials/keyrings": "ro,mode=000"}}, "Config": {"CreateCommand": ["podman", "run", "--mount", "type=tmpfs,destination=/run/asb-credentials/keyrings,ro,notmpcopyup,tmpfs-mode=000"], "Env": ["DBUS_SESSION_BUS_ADDRESS=unix:path=/run/asb-keyring/bus", "ASB_KEYRING_PASS=secret"]}}'
+        is_legacy, reason = doc_mod.check_legacy_agent_container("asb-ws-agent")
+        self.assertTrue(is_legacy)
+        self.assertIn("ASB_KEYRING_PASS", reason)
+
+    @mock.patch("asb.doctor.podman.out")
+    def test_check_legacy_agent_container_modern_passes(self, mock_out):
+        mock_out.return_value = '{"Mounts": [{"Type": "volume", "Name": "asb-keyring-runtime", "Destination": "/run/asb-keyring", "RW": false}, {"Type": "volume", "Name": "asb-credentials", "Destination": "/run/asb-credentials", "RW": true}], "HostConfig": {"Tmpfs": {"/run/asb-credentials/keyrings": "ro,mode=000"}}, "Config": {"CreateCommand": ["podman", "run", "--mount", "type=tmpfs,destination=/run/asb-credentials/keyrings,ro,notmpcopyup,tmpfs-mode=000"], "Env": ["DBUS_SESSION_BUS_ADDRESS=unix:path=/run/asb-keyring/bus"]}}'
+        is_legacy, reason = doc_mod.check_legacy_agent_container("asb-ws-agent")
+        self.assertFalse(is_legacy)
+        self.assertEqual(reason, "")
+
+    @mock.patch("asb.doctor.Path.home")
+    @mock.patch("asb.doctor.podman.running", return_value=True)
+    @mock.patch("asb.doctor.podman.exists", return_value=True)
+    @mock.patch("asb.doctor.podman.out", return_value="podman version 5.0.0")
+    @mock.patch("asb.doctor.shutil.which", return_value="/usr/bin/mock")
+    @mock.patch("asb.doctor.subprocess.run")
+    def test_doctor_reports_legacy_workspace_container(
+        self, mock_run, mock_which, mock_out, mock_exists, mock_running, mock_home
+    ):
+        mock_home.return_value = self.fake_home
+        mock_run.return_value = mock.Mock(stdout="enabled\n")
+
+        ws_dir = self.fake_home / ".local" / "state" / "agent-sandbox" / "test-ws"
+        ws_dir.mkdir(parents=True)
+        (ws_dir / "origin").write_text("/fake/repo with space")
+
+        with mock.patch("asb.doctor.check_keyring_service", return_value=(True, "Secret Service (asb-keyring)", "")), \
+             mock.patch("asb.doctor.check_legacy_agent_container", return_value=(True, "mount /run/asb-keyring ausente")):
+            out = io.StringIO()
+            with mock.patch("sys.stdout", out):
+                code = doc_mod.doctor(self.fake_root)
+
+            self.assertEqual(code, 1)
+            output = out.getvalue()
+            self.assertIn("workspace test-ws: container legado (mount /run/asb-keyring ausente)", output)
+            self.assertIn("asb-agent up --workspace test-ws --repo '/fake/repo with space'", output)

@@ -6,6 +6,8 @@ recuperavel sem adivinhacao.
 """
 from __future__ import annotations
 
+import json
+import shlex
 import shutil
 import subprocess
 import sys
@@ -151,6 +153,94 @@ def check_workspace_egress(ws: str, target: str = "github.com", port: int = 443,
                 "podman unshare --rootless-netns true")
 
 
+def check_legacy_agent_container(agent: str) -> tuple[bool, str]:
+    """Verifica se o container do agente cumpre o contrato do Secret Service singleton.
+
+    Retorna (True, motivo) se for container legado ou invalido (falha fechada):
+      - erro de inspecao/JSON;
+      - mount /run/asb-keyring ausente;
+      - mascara de tmpfs ausente em /run/asb-credentials/keyrings;
+      - DBUS_SESSION_BUS_ADDRESS != unix:path=/run/asb-keyring/bus;
+      - ASB_KEYRING_PASS presente no ambiente.
+    Retorna (False, "") se for compativel.
+    """
+    try:
+        raw = podman.out("container", "inspect", agent, "--format", "{{json .}}")
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            raise ValueError("inspect nao retornou um objeto JSON")
+        mount_items = data.get("Mounts", []) or []
+        host_config = data.get("HostConfig", {}) or {}
+        config = data.get("Config", {}) or {}
+        if not isinstance(mount_items, list) or not all(
+            isinstance(item, dict) for item in mount_items
+        ):
+            raise ValueError("Mounts possui formato inesperado")
+        if not isinstance(host_config, dict) or not isinstance(config, dict):
+            raise ValueError("configuracao do inspect possui formato inesperado")
+    except Exception as exc:
+        return True, f"falha ao inspecionar container ({exc})"
+
+    mounts = {
+        m.get("Destination") or m.get("destination"): m
+        for m in mount_items
+        if m.get("Destination") or m.get("destination")
+    }
+    runtime_mount = mounts.get("/run/asb-keyring")
+    if runtime_mount is None:
+        return True, "mount /run/asb-keyring ausente"
+    if runtime_mount.get("RW") is not False:
+        return True, "mount /run/asb-keyring deve ser somente leitura"
+
+    credentials_mount = mounts.get("/run/asb-credentials")
+    if credentials_mount is None:
+        return True, "mount /run/asb-credentials ausente"
+    if credentials_mount.get("RW") is not True:
+        return True, "mount /run/asb-credentials deve ser leitura/escrita"
+
+    if "/run/asb-keyring-data" in mounts or "/run/asb-keyring-pass" in mounts:
+        return True, "cliente possui mount privado do singleton"
+
+    tmpfs_mounts = host_config.get("Tmpfs", {}) or {}
+    if not isinstance(tmpfs_mounts, dict):
+        return True, "falha ao inspecionar container (HostConfig.Tmpfs possui formato inesperado)"
+    mask_options = tmpfs_mounts.get("/run/asb-credentials/keyrings")
+    if not isinstance(mask_options, str):
+        return True, "mascara de isolamento de keyrings ausente em /run/asb-credentials/keyrings"
+    option_set = {option.strip().lower() for option in mask_options.split(",")}
+    if "ro" not in option_set or "rw" in option_set or "mode=000" not in option_set:
+        return True, "mascara de isolamento de keyrings deve ser tmpfs ro com mode=000"
+
+    create_command = config.get("CreateCommand", []) or []
+    if not isinstance(create_command, list):
+        return True, "falha ao inspecionar container (Config.CreateCommand possui formato inesperado)"
+    has_notmpcopyup = any(
+        isinstance(arg, str)
+        and "destination=/run/asb-credentials/keyrings" in arg
+        and "notmpcopyup" in {part.strip().lower() for part in arg.split(",")}
+        for arg in create_command
+    )
+    if not has_notmpcopyup:
+        return True, "mascara de isolamento de keyrings sem notmpcopyup"
+
+    env_list = config.get("Env", []) or []
+    if not isinstance(env_list, list) or not all(isinstance(item, str) for item in env_list):
+        return True, "falha ao inspecionar container (Config.Env possui formato inesperado)"
+    env_dict = {}
+    for item in env_list:
+        if "=" in item:
+            k, v = item.split("=", 1)
+            env_dict[k] = v
+
+    if env_dict.get("DBUS_SESSION_BUS_ADDRESS") != "unix:path=/run/asb-keyring/bus":
+        return True, "DBUS_SESSION_BUS_ADDRESS incorreto ou ausente"
+
+    if "ASB_KEYRING_PASS" in env_dict:
+        return True, "ASB_KEYRING_PASS presente no ambiente"
+
+    return False, ""
+
+
 def doctor(root: Path) -> int:
     print("agent-sandbox doctor")
     healthy = True
@@ -224,10 +314,19 @@ def doctor(root: Path) -> int:
         agent = names(ws)["agent"]
         if not podman.exists("container", agent):
             print(f"  {ws}: SEM CONTAINER  ->  asb-agent up")
-        elif podman.running(agent):
-            egress_ok, label, fix = check_workspace_egress(ws)
-            healthy &= _line(egress_ok, label, fix)
         else:
-            print(f"  {ws}: parado  ->  asb-agent resume --workspace {ws}")
+            is_legacy, reason = check_legacy_agent_container(agent)
+            if is_legacy:
+                healthy = False
+                origin_path = state.read_text().strip() if state.exists() else ""
+                ws_arg = shlex.quote(ws)
+                repo_flag = f" --repo {shlex.quote(origin_path)}" if origin_path else ""
+                remediation = f"asb-agent pull --workspace {ws_arg} && asb-agent down --workspace {ws_arg} && asb-agent up --workspace {ws_arg}{repo_flag}"
+                _line(False, f"workspace {ws}: container legado ({reason})", remediation)
+            elif podman.running(agent):
+                egress_ok, label, fix = check_workspace_egress(ws)
+                healthy &= _line(egress_ok, label, fix)
+            else:
+                print(f"  {ws}: parado  ->  asb-agent resume --workspace {ws}")
 
     return 0 if healthy else 1

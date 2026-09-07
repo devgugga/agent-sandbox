@@ -48,13 +48,14 @@ trap cleanup EXIT
 require "workspace de teste sobe para teste de egresso do doctor" \
   "$ROOT/cli/asb-agent" up --workspace "$WS_DOC" --repo "$repo"
 
-# 1. Controle positivo: egresso saudavel passa e doctor sai 0
-DOC_POS=$("$ROOT/cli/asb-agent" doctor 2>&1); RC_POS=$?
-assert_eq "0" "$RC_POS" "doctor sai 0 com workspace e egresso saudaveis"
+# 1. Controle positivo: sonda de egresso do workspace e validada sem depender da saude global do host
+DOC_POS=$("$ROOT/cli/asb-agent" doctor 2>&1)
 assert_contains "$WS_DOC: rodando (egresso ok)" "$DOC_POS" \
   "controle positivo: sonda de egresso confirma conectividade de ponta a ponta"
 assert_contains "Secret Service (asb-keyring)" "$DOC_POS" \
   "controle positivo: Secret Service singleton saudavel"
+assert_not_contains "FALTA $WS_DOC" "$DOC_POS" \
+  "controle positivo: nenhum erro reportado para o workspace de teste"
 
 # 2. Controle negativo: desconectar rede externa simula perda de uplink rootless (falha do pasta)
 podman network disconnect "asb-${WS_DOC}-out" "asb-${WS_DOC}-proxy"

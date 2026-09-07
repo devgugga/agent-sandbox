@@ -364,6 +364,8 @@ class TestLifecycleOrdering(unittest.TestCase):
             # Contract checks on agent args:
             self.assertIn("asb-keyring-runtime:/run/asb-keyring:ro,z", agent_args_captured)
             self.assertIn("asb-credentials:/run/asb-credentials:z", agent_args_captured)
+            self.assertIn("type=tmpfs,destination=/run/asb-credentials/keyrings,ro,notmpcopyup,tmpfs-mode=000", agent_args_captured)
+            self.assertFalse(any("asb-keyring-data" in str(arg) for arg in agent_args_captured))
             self.assertIn("DBUS_SESSION_BUS_ADDRESS=unix:path=/run/asb-keyring/bus", agent_args_captured)
             self.assertFalse(any("ASB_KEYRING_PASS" in str(arg) for arg in agent_args_captured))
 
@@ -440,6 +442,7 @@ class TestKeyringPreservation(unittest.TestCase):
         for call in run_calls:
             self.assertNotIn("asb-keyring", call)
             self.assertNotIn("asb-keyring-runtime", call)
+            self.assertNotIn("asb-keyring-data", call)
             self.assertNotIn("asb-credentials", call)
 
     def test_suspend_preserves_keyring_container(self):

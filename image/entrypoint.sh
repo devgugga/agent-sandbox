@@ -58,15 +58,24 @@ if [ -d /run/asb-credentials ]; then
   link_credential() {
     real="$1"; stored="/run/asb-credentials/$2"
     install -d -o "$ASB_USER" -g "$ASB_USER" "$(dirname "$real")"
-    [ -e "$stored" ] || [ -d "$stored" ] || {
-      : > "$stored"; chmod 0600 "$stored"; }
+    if [ -w /run/asb-credentials ]; then
+      [ -e "$stored" ] || [ -d "$stored" ] || {
+        : > "$stored"; chmod 0600 "$stored"; }
+    fi
     rm -rf "$real"
     ln -s "$stored" "$real"
     chown -h "$ASB_USER:$ASB_USER" "$real"
   }
   link_credential "$ASB_HOME/.claude/.credentials.json" claude.json
   link_credential "$ASB_HOME/.codex/auth.json"          codex-auth.json
-  chown -R "$ASB_USER:$ASB_USER" /run/asb-credentials
+  if [ -w /run/asb-credentials ]; then
+    chown "$ASB_USER:$ASB_USER" /run/asb-credentials
+    for f in /run/asb-credentials/*; do
+      [ -e "$f" ] || continue
+      [ "$(basename "$f")" = "keyrings" ] && continue
+      chown -R "$ASB_USER:$ASB_USER" "$f" 2>/dev/null || true
+    done
+  fi
 fi
 
 if [ -d /run/asb-toolcache ]; then

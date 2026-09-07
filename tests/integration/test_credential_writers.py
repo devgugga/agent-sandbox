@@ -92,22 +92,29 @@ class TestBindMountAtomicReplace(unittest.TestCase):
 
     def test_bind_mount_file_vs_directory_atomic_replace(self) -> None:
         """Proves os.replace() fails with EBUSY on a bind-mounted file, but succeeds in a directory."""
-        podman_bin = shutil.which("podman")
-        if not podman_bin:
-            self.skipTest("podman not available")
+        if get_test_image() != IMAGE_NAME:
+            self.skipTest("Requires full agent image")
 
-        with tempfile.TemporaryDirectory() as temp_dir:
-            temp_root = Path(temp_dir).resolve()
-
-            # 1. Prepare bind-mounted file
-            mounted_file = temp_root / "file.json"
+        fixture = SandboxFixture("bindreplace", image=IMAGE_NAME, auto_setup=False)
+        with fixture as sandbox:
+            mounted_file = sandbox.state_root / "file.json"
             mounted_file.write_text('{"version": 1}')
 
-            # 2. Prepare bind-mounted directory containing a file
-            mounted_dir = temp_root / "creds_dir"
+            mounted_dir = sandbox.state_root / "creds_dir"
             mounted_dir.mkdir()
             file_in_dir = mounted_dir / "auth.json"
             file_in_dir.write_text('{"version": 1}')
+
+            sandbox._extra_create_args = [
+                "-v",
+                f"{mounted_file}:/mnt/target_file:z",
+                "-v",
+                f"{mounted_dir}:/mnt/target_dir:z",
+            ]
+            sandbox.setup_container()
+            sandbox.install_unit()
+            sandbox.start()
+            self.assertTrue(sandbox.wait_active(timeout=15))
 
             inner_code = (
                 "import os, errno\n"
@@ -130,22 +137,8 @@ class TestBindMountAtomicReplace(unittest.TestCase):
                 "    print(f'DIR_REPLACE_ERROR:{e.errno}')\n"
             )
 
-            cmd = [
-                podman_bin,
-                "run",
-                "--rm",
-                "-v",
-                f"{mounted_file}:/mnt/target_file:z",
-                "-v",
-                f"{mounted_dir}:/mnt/target_dir:z",
-                get_test_image(),
-                "python3",
-                "-c",
-                inner_code,
-            ]
-
-            res = subprocess.run(cmd, capture_output=True, text=True)
-            self.assertEqual(res.returncode, 0, f"Container failed: {res.stderr}")
+            res = sandbox.exec("python3", "-c", inner_code)
+            self.assertEqual(res.returncode, 0, f"Command failed: {res.stderr}")
             output = res.stdout
 
             # Assertion 1: Atomic replace over a bind-mounted file raised EBUSY
@@ -166,14 +159,19 @@ class TestBindMountAtomicReplace(unittest.TestCase):
             # Host file in directory was updated
             self.assertEqual(file_in_dir.read_text(), "updated_in_dir")
 
+            sandbox.stop()
+            sandbox.assert_no_orphans()
+
 
 class TestContainerPermissionsAndPaths(unittest.TestCase):
     """Container-level validation using SandboxFixture under uid 1000."""
 
     def test_uid1000_credential_read_write_permissions(self) -> None:
         """Proves uid 1000 can create, chmod 0600, write, and read credential files."""
-        test_image = get_test_image()
-        with SandboxFixture("credperm", image=test_image) as sandbox:
+        if get_test_image() != IMAGE_NAME:
+            self.skipTest("Requires full agent image")
+
+        with SandboxFixture("credperm", image=IMAGE_NAME) as sandbox:
             sandbox.start()
             self.assertTrue(sandbox.wait_active(timeout=15))
 
@@ -205,8 +203,10 @@ class TestContainerPermissionsAndPaths(unittest.TestCase):
 
     def test_credential_target_states_absent_empty_corrupted_broken(self) -> None:
         """Exercises absent destination, empty 0-byte file, malformed JSON, and broken symlink as uid 1000."""
-        test_image = get_test_image()
-        with SandboxFixture("credstates", image=test_image) as sandbox:
+        if get_test_image() != IMAGE_NAME:
+            self.skipTest("Requires full agent image")
+
+        with SandboxFixture("credstates", image=IMAGE_NAME) as sandbox:
             sandbox.start()
             self.assertTrue(sandbox.wait_active(timeout=15))
 
@@ -273,8 +273,10 @@ class TestContainerPermissionsAndPaths(unittest.TestCase):
         Proves that when an agent writes credentials via temporary file + atomic rename,
         the symlink is overwritten, leaving the persistent volume target untouched.
         """
-        test_image = get_test_image()
-        with SandboxFixture("creddecouple", image=test_image) as sandbox:
+        if get_test_image() != IMAGE_NAME:
+            self.skipTest("Requires full agent image")
+
+        with SandboxFixture("creddecouple", image=IMAGE_NAME) as sandbox:
             sandbox.start()
             self.assertTrue(sandbox.wait_active(timeout=15))
 

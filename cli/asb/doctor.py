@@ -490,22 +490,32 @@ def diagnose(root: Path) -> dict[str, Any]:
             "services": services_list,
         })
 
-    # Provedores de autenticação (estritamente separados da infraestrutura)
+    # Provedores de autenticação (estritamente separados da infraestrutura).
+    #
+    # `doctor` e um diagnostico passivo: nunca executa dentro de containers
+    # de workspace so para descobrir se uma conta esta logada (isso tocaria
+    # workspaces do operador a cada `doctor`, incluindo os de producao).
+    # A checagem REAL de conta vive em cli/asb/auth.py e roda sob pedido via
+    # `asb-agent auth status --workspace <id>`. Por isso o estado aqui fica
+    # "unknown" ate essa checagem rodar — e a remediacao aponta para ela, e
+    # NAO mais para 'asb-agent login': login e uma acao que muta estado, e
+    # 'nao sei ainda' nunca deveria virar 'va logar' por presuncao (a mesma
+    # separacao de conta/rede/infraestrutura que a Tarefa A2 introduz).
     providers: dict[str, dict[str, Any]] = {
         "claude": {
             "state": "unknown",
             "healthy": True,
-            "remediation": "asb-agent login",
+            "remediation": "asb-agent auth status --workspace <id> --agent claude --json",
         },
         "codex": {
             "state": "unknown",
             "healthy": True,
-            "remediation": "asb-agent login",
+            "remediation": "asb-agent auth status --workspace <id> --agent codex --json",
         },
         "agy": {
             "state": "unknown",
             "healthy": True,
-            "remediation": "asb-agent login --agent agy",
+            "remediation": "asb-agent auth status --workspace <id> --agent agy --json",
         },
     }
 

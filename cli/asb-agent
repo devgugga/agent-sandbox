@@ -14,6 +14,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from asb import install, lifecycle  # noqa: E402
+from asb.auth import status as auth_status  # noqa: E402
 from asb.doctor import doctor  # noqa: E402
 from asb.podman import PodmanError  # noqa: E402
 from asb.profile import ProfileError  # noqa: E402
@@ -53,6 +54,18 @@ def build_parser() -> argparse.ArgumentParser:
                        help="confirma a remocao dos arquivos")
 
     sub.add_parser("build", help="constroi a imagem base")
+
+    auth_parser = sub.add_parser("auth", help="status de conta por fornecedor (diagnostico)")
+    auth_sub = auth_parser.add_subparsers(dest="auth_command", required=True)
+    auth_status_parser = auth_sub.add_parser(
+        "status", help="consulta status de conta (nunca inicia login)")
+    auth_status_parser.add_argument("--workspace", required=True)
+    auth_status_parser.add_argument(
+        "--agent", choices=["claude", "codex", "agy", "all"], default="all")
+    auth_status_parser.add_argument(
+        "--json", action="store_true", dest="as_json",
+        help="emite relatorio em formato JSON schema 1")
+
     doc_parser = sub.add_parser("doctor", help="diagnostica o ambiente")
     doc_parser.add_argument("--json", action="store_true", dest="as_json", help="emite diagnostico em formato JSON schema 1")
     sub.add_parser("list", help="lista os workspaces conhecidos")
@@ -66,6 +79,10 @@ def main() -> int:
     try:
         if args.command == "build":
             return lifecycle.build(ROOT)
+        if args.command == "auth":
+            if args.auth_command == "status":
+                return auth_status(
+                    args.workspace, args.agent, json_output=args.as_json)
         if args.command == "up":
             return lifecycle.up(
                 ROOT,

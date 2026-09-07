@@ -43,6 +43,7 @@ class SandboxFixture:
         restart_sec: str = "5s",
         use_launcher: bool = False,
         auto_setup: bool = True,
+        extra_create_args: list[str] | None = None,
     ) -> None:
         if not label or not label.isalnum():
             raise ValueError(f"Label inválido: {label!r} (deve ser alfanumérico)")
@@ -70,6 +71,7 @@ class SandboxFixture:
         self.restart_sec = restart_sec
         self.use_launcher = use_launcher
         self._auto_setup = auto_setup
+        self._extra_create_args = list(extra_create_args) if extra_create_args else []
 
         # Resolved podman binary
         self._podman_bin = shutil.which("podman")
@@ -222,6 +224,7 @@ class SandboxFixture:
             "--pull=never",
             "-p",
             f"127.0.0.1::{self._port}",
+            *self._extra_create_args,
             self._image,
             "sh",
             "-c",
@@ -418,6 +421,20 @@ class SandboxFixture:
             text=True,
         )
         return res.returncode == 0
+
+    def exec(
+        self,
+        *args: str,
+        user: str | None = None,
+        check: bool = False,
+    ) -> subprocess.CompletedProcess[str]:
+        """Runs a command inside the container via podman exec."""
+        cmd = [self._podman_bin, "exec"]
+        if user is not None:
+            cmd.extend(["-u", user])
+        cmd.append(self.container)
+        cmd.extend(args)
+        return subprocess.run(cmd, capture_output=True, text=True, check=check)
 
     def break_proxy(self) -> None:
         """Simulates proxy failure for readiness testing."""

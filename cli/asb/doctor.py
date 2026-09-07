@@ -13,6 +13,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from typing import Any
+
 from . import podman
 from .lifecycle import (
     CREDENTIALS_VOLUME,
@@ -21,6 +23,7 @@ from .lifecycle import (
     check_keyring_service,
     names,
 )
+from .profile import load_profile
 
 
 def _line(ok: bool, label: str, fix: str = "") -> bool:
@@ -241,92 +244,326 @@ def check_legacy_agent_container(agent: str) -> tuple[bool, str]:
     return False, ""
 
 
-def doctor(root: Path) -> int:
-    print("agent-sandbox doctor")
-    healthy = True
+def diagnose(root: Path) -> dict[str, Any]:
+    """Coleta diagnóstico tipado com schemaVersion 1 e separação de infraestrutura e provedores."""
+    checks: list[dict[str, Any]] = []
+    infra_healthy = True
 
-    healthy &= _line(shutil.which("podman") is not None, "podman instalado",
-                     "instale o podman (>= 4.0)")
-    if shutil.which("podman"):
+    # 1. podman instalado
+    has_podman = shutil.which("podman") is not None
+    checks.append({
+        "name": "podman_installed",
+        "healthy": has_podman,
+        "label": "podman instalado",
+        "remediation": "" if has_podman else "instale o podman (>= 4.0)",
+    })
+    infra_healthy &= has_podman
+
+    # 2. versao do podman
+    if has_podman:
         version = podman.out("--version").split()[-1]
         major = int(version.split(".")[0])
-        healthy &= _line(major >= 4, f"podman {version} (>= 4.0)",
-                         "atualize: --internal e resolucao por nome exigem 4+")
+        podman_v_ok = major >= 4
+        checks.append({
+            "name": "podman_version",
+            "healthy": podman_v_ok,
+            "label": f"podman {version} (>= 4.0)",
+            "remediation": "" if podman_v_ok else "atualize: --internal e resolucao por nome exigem 4+",
+        })
+        infra_healthy &= podman_v_ok
 
-    healthy &= _line(sys.version_info >= (3, 11),
-                     f"python {sys.version.split()[0]} (>= 3.11)",
-                     "tomllib e stdlib so a partir do 3.11")
-    healthy &= _line(shutil.which("git") is not None, "git instalado",
-                     "instale o git")
+    # 3. python >= 3.11
+    py_ok = sys.version_info >= (3, 11)
+    checks.append({
+        "name": "python_version",
+        "healthy": py_ok,
+        "label": f"python {sys.version.split()[0]} (>= 3.11)",
+        "remediation": "" if py_ok else "tomllib e stdlib so a partir do 3.11",
+    })
+    infra_healthy &= py_ok
 
-    healthy &= _line(podman.exists("image", IMAGE), f"imagem {IMAGE}",
-                     "asb-agent build")
-    healthy &= _line(podman.exists("volume", CREDENTIALS_VOLUME),
-                     f"volume {CREDENTIALS_VOLUME}", "asb-agent login")
-    healthy &= _line(podman.exists("volume", TOOLCACHE_VOLUME),
-                     f"volume {TOOLCACHE_VOLUME}", "podman volume create asb-toolcache")
+    # 4. git instalado
+    git_ok = shutil.which("git") is not None
+    checks.append({
+        "name": "git_installed",
+        "healthy": git_ok,
+        "label": "git instalado",
+        "remediation": "" if git_ok else "instale o git",
+    })
+    infra_healthy &= git_ok
 
-    ok, label, fix = check_keyring_service()
-    healthy &= _line(ok, label, fix)
+    # 5. imagem base
+    img_ok = podman.exists("image", IMAGE)
+    checks.append({
+        "name": "image",
+        "healthy": img_ok,
+        "label": f"imagem {IMAGE}",
+        "remediation": "" if img_ok else "asb-agent build",
+    })
+    infra_healthy &= img_ok
 
-    enabled = subprocess.run(
+    # 6. volume credenciais
+    vol_cred_ok = podman.exists("volume", CREDENTIALS_VOLUME)
+    checks.append({
+        "name": "credentials_volume",
+        "healthy": vol_cred_ok,
+        "label": f"volume {CREDENTIALS_VOLUME}",
+        "remediation": "" if vol_cred_ok else "asb-agent login",
+    })
+    infra_healthy &= vol_cred_ok
+
+    # 7. volume toolcache
+    vol_tool_ok = podman.exists("volume", TOOLCACHE_VOLUME)
+    checks.append({
+        "name": "toolcache_volume",
+        "healthy": vol_tool_ok,
+        "label": f"volume {TOOLCACHE_VOLUME}",
+        "remediation": "" if vol_tool_ok else "podman volume create asb-toolcache",
+    })
+    infra_healthy &= vol_tool_ok
+
+    # 8. Secret Service
+    keyring_ok, keyring_label, keyring_fix = check_keyring_service()
+    checks.append({
+        "name": "keyring_service",
+        "healthy": keyring_ok,
+        "label": keyring_label,
+        "remediation": keyring_fix,
+    })
+    infra_healthy &= keyring_ok
+
+    # 9. podman-restart.service
+    restart_res = subprocess.run(
         ["systemctl", "--user", "is-enabled", "podman-restart.service"],
         capture_output=True, text=True).stdout.strip()
-    healthy &= _line(enabled == "enabled",
-                     "podman-restart.service habilitado (restauracao no boot)",
-                     "systemctl --user enable podman-restart.service")
+    restart_ok = (restart_res == "enabled")
+    checks.append({
+        "name": "podman_restart_service",
+        "healthy": restart_ok,
+        "label": "podman-restart.service habilitado (restauracao no boot)",
+        "remediation": "" if restart_ok else "systemctl --user enable podman-restart.service",
+    })
+    infra_healthy &= restart_ok
 
+    # 10. guards
     guards = Path.home() / ".local" / "bin"
     for agent in ("claude", "codex", "agy"):
         link = guards / f"asb-{agent}"
         expected = root / "cli" / "asb-guard"
-        # Checkout movido: o link aponta para um caminho que nao existe mais.
-        # E o modo de falha da §16.1, e aqui ele e visivel em vez de silencioso.
-        healthy &= _line(link.is_symlink() and link.resolve() == expected,
-                         f"guarda asb-{agent} aponta para este checkout",
-                         "asb-agent install-guards")
+        guard_ok = link.is_symlink() and link.resolve() == expected
+        checks.append({
+            "name": f"guard_{agent}",
+            "healthy": guard_ok,
+            "label": f"guarda asb-{agent} aponta para este checkout",
+            "remediation": "" if guard_ok else "asb-agent install-guards",
+        })
+        infra_healthy &= guard_ok
 
-    # Sem este link o CLI so roda de dentro do checkout. O v1 nao tinha essa
-    # limitacao, e a ausencia dele e silenciosa: o operador so descobre quando
-    # digita `asb-agent` em outro diretorio e nao acontece nada.
+    # 11. asb-agent cli
     cli_link = guards / "asb-agent"
     cli_target = (root / "cli" / "asb-agent").resolve()
-    healthy &= _line(cli_link.is_symlink() and cli_link.resolve() == cli_target,
-                     "asb-agent aponta para este checkout",
-                     "asb-agent install-guards")
+    cli_ok = cli_link.is_symlink() and cli_link.resolve() == cli_target
+    checks.append({
+        "name": "cli_guard",
+        "healthy": cli_ok,
+        "label": "asb-agent aponta para este checkout",
+        "remediation": "" if cli_ok else "asb-agent install-guards",
+    })
+    infra_healthy &= cli_ok
 
+    # 12. broker docker (opcional)
     broker = Path("/run/asb-docker/docker.sock")
-    _line(broker.is_socket(),
-          'broker do Docker (opcional; so para host_api = "read")',
-          "asb-agent install-broker")
+    checks.append({
+        "name": "docker_broker",
+        "healthy": True,
+        "label": 'broker do Docker (opcional; so para host_api = "read")',
+        "remediation": "" if broker.is_socket() else "asb-agent install-broker",
+    })
 
-    # Defasagem e informativa, nao falha: a imagem continua utilizavel com a
-    # versao antiga. O que nao pode acontecer e a divergencia ficar invisivel.
+    # 13. tool drifts (informativo)
     for tool, label in CONTEXT_TOOLS.items():
         drift = tool_drift(tool, _image_version(label), _host_version(tool))
         if drift is not None:
-            _line(*drift)
+            d_ok, d_label, d_fix = drift
+            checks.append({
+                "name": f"drift_{tool}",
+                "healthy": True,
+                "label": d_label,
+                "remediation": d_fix,
+            })
 
-    print("\nworkspaces:")
-    for state in sorted((Path.home() / ".local" / "state" /
-                         "agent-sandbox").glob("*/origin")):
+    # 14. workspaces
+    workspaces: list[dict[str, Any]] = []
+    for state in sorted((Path.home() / ".local" / "state" / "agent-sandbox").glob("*/origin")):
         ws = state.parent.name
         agent = names(ws)["agent"]
+        origin_path = state.read_text().strip() if state.exists() else ""
+        ws_healthy = True
+        ws_status = "ok"
+        ws_remediation = ""
+
+        legacy_reason = ""
         if not podman.exists("container", agent):
-            print(f"  {ws}: SEM CONTAINER  ->  asb-agent up")
+            ws_healthy = True
+            ws_status = "missing_container"
+            ws_remediation = "asb-agent up"
         else:
             is_legacy, reason = check_legacy_agent_container(agent)
             if is_legacy:
-                healthy = False
-                origin_path = state.read_text().strip() if state.exists() else ""
+                ws_healthy = False
+                legacy_reason = reason
+                ws_status = f"legacy_container: {reason}"
                 ws_arg = shlex.quote(ws)
                 repo_flag = f" --repo {shlex.quote(origin_path)}" if origin_path else ""
-                remediation = f"asb-agent pull --workspace {ws_arg} && asb-agent down --workspace {ws_arg} && asb-agent up --workspace {ws_arg}{repo_flag}"
-                _line(False, f"workspace {ws}: container legado ({reason})", remediation)
+                ws_remediation = (
+                    f"asb-agent pull --workspace {ws_arg} && "
+                    f"asb-agent down --workspace {ws_arg} && "
+                    f"asb-agent up --workspace {ws_arg}{repo_flag}"
+                )
             elif podman.running(agent):
-                egress_ok, label, fix = check_workspace_egress(ws)
-                healthy &= _line(egress_ok, label, fix)
+                egress_ok, egress_label, egress_fix = check_workspace_egress(ws)
+                if not egress_ok:
+                    ws_healthy = False
+                    ws_status = egress_label
+                    ws_remediation = egress_fix
+                else:
+                    ws_status = "running"
             else:
-                print(f"  {ws}: parado  ->  asb-agent resume --workspace {ws}")
+                ws_healthy = True
+                ws_status = "stopped"
+                ws_remediation = f"asb-agent resume --workspace {ws}"
+
+        services_list: list[dict[str, Any]] = []
+        if origin_path:
+            toml_file = Path(origin_path) / ".agent-sandbox.toml"
+            if toml_file.is_file():
+                try:
+                    prof = load_profile(Path(origin_path))
+                    for svc in prof.services:
+                        svc_container = f"asb-{ws}-svc-{svc.name}"
+                        if not podman.exists("container", svc_container):
+                            svc_healthy = False
+                            svc_state = "missing"
+                            svc_remediation = f"asb-agent resume --workspace {ws}"
+                        elif not podman.running(svc_container):
+                            svc_healthy = False
+                            svc_state = "stopped"
+                            svc_remediation = f"asb-agent resume --workspace {ws}"
+                        else:
+                            raw_health = podman.out(
+                                "container", "inspect", svc_container, "--format", "{{.State.Health.Status}}"
+                            ).strip()
+                            if raw_health == "healthy":
+                                svc_healthy = True
+                                svc_state = "healthy"
+                                svc_remediation = ""
+                            elif raw_health in ("unhealthy", "starting"):
+                                svc_healthy = False
+                                svc_state = raw_health
+                                svc_remediation = f"podman logs {svc_container}"
+                            else:
+                                # Sem healthcheck: fica process_running, não application_ready
+                                svc_healthy = True
+                                svc_state = "process_running"
+                                svc_remediation = ""
+
+                        if not svc_healthy:
+                            ws_healthy = False
+
+                        services_list.append({
+                            "name": svc.name,
+                            "container": svc_container,
+                            "state": svc_state,
+                            "healthy": svc_healthy,
+                            "remediation": svc_remediation,
+                        })
+                except Exception:
+                    pass
+
+        infra_healthy &= ws_healthy
+        workspaces.append({
+            "workspace": ws,
+            "healthy": ws_healthy,
+            "status": ws_status,
+            "legacy_reason": legacy_reason,
+            "remediation": ws_remediation,
+            "services": services_list,
+        })
+
+    # Provedores de autenticação (estritamente separados da infraestrutura)
+    providers: dict[str, dict[str, Any]] = {
+        "claude": {
+            "state": "unknown",
+            "healthy": True,
+            "remediation": "asb-agent login",
+        },
+        "codex": {
+            "state": "unknown",
+            "healthy": True,
+            "remediation": "asb-agent login",
+        },
+        "agy": {
+            "state": "unknown",
+            "healthy": True,
+            "remediation": "asb-agent login --agent agy",
+        },
+    }
+
+    return {
+        "schemaVersion": 1,
+        "healthy": infra_healthy,
+        "infrastructure": {
+            "healthy": infra_healthy,
+            "checks": checks,
+            "workspaces": workspaces,
+        },
+        "providers": providers,
+    }
+
+
+def doctor(root: Path, as_json: bool = False) -> int:
+    diag = diagnose(root)
+
+    if as_json:
+        print(json.dumps(diag, indent=2))
+        return 0 if diag["healthy"] else 1
+
+    print("agent-sandbox doctor")
+    healthy = True
+
+    for c in diag["infrastructure"]["checks"]:
+        if c["name"] == "docker_broker":
+            broker = Path("/run/asb-docker/docker.sock")
+            _line(broker.is_socket(), c["label"], c["remediation"])
+        elif c["name"].startswith("drift_"):
+            _line(c["healthy"], c["label"], c["remediation"])
+        else:
+            healthy &= _line(c["healthy"], c["label"], c["remediation"])
+
+    print("\nworkspaces:")
+    for ws_info in diag["infrastructure"]["workspaces"]:
+        ws = ws_info["workspace"]
+        status = ws_info["status"]
+        if status == "missing_container":
+            print(f"  {ws}: SEM CONTAINER  ->  {ws_info['remediation']}")
+        elif status.startswith("legacy_container: "):
+            reason = ws_info.get("legacy_reason") or status.split(": ", 1)[1]
+            healthy = False
+            _line(False, f"workspace {ws}: container legado ({reason})", ws_info["remediation"])
+        elif status == "stopped":
+            print(f"  {ws}: parado  ->  {ws_info['remediation']}")
+        elif status == "running":
+            _line(True, f"{ws}: rodando (egresso ok)")
+        else:
+            healthy = False
+            _line(False, status, ws_info["remediation"])
+
+        for svc in ws_info["services"]:
+            if svc["state"] in ("process_running", "healthy"):
+                _line(True, f"{ws}: servico {svc['name']} ({svc['state']})")
+            else:
+                healthy = False
+                _line(False, f"{ws}: servico {svc['name']} ({svc['state']})", svc["remediation"])
 
     return 0 if healthy else 1
+

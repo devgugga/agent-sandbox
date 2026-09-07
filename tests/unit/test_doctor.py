@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import json
 import sys
 import tempfile
 import unittest
@@ -680,3 +681,77 @@ class TestDoctorSecretService(unittest.TestCase):
             output = out.getvalue()
             self.assertIn("workspace test-ws: container legado (mount /run/asb-keyring ausente)", output)
             self.assertIn("asb-agent up --workspace test-ws --repo '/fake/repo with space'", output)
+
+    @mock.patch("asb.doctor.Path.home")
+    @mock.patch("asb.doctor.podman.running", return_value=False)
+    @mock.patch("asb.doctor.podman.exists", return_value=True)
+    @mock.patch("asb.doctor.podman.out", return_value="podman version 5.0.0")
+    @mock.patch("asb.doctor.shutil.which", return_value="/usr/bin/mock")
+    @mock.patch("asb.doctor.subprocess.run")
+    def test_doctor_json_schema1_and_separation(
+        self, mock_run, mock_which, mock_out, mock_exists, mock_running, mock_home
+    ):
+        mock_home.return_value = self.fake_home
+        mock_run.return_value = mock.Mock(stdout="enabled\n")
+
+        with mock.patch("asb.doctor.check_keyring_service", return_value=(True, "Secret Service (asb-keyring)", "")):
+            out = io.StringIO()
+            with mock.patch("sys.stdout", out):
+                code = doc_mod.doctor(self.fake_root, as_json=True)
+
+        self.assertEqual(code, 0)
+        data = json.loads(out.getvalue())
+        self.assertEqual(data.get("schemaVersion"), 1)
+        self.assertIn("infrastructure", data)
+        self.assertIn("providers", data)
+        self.assertTrue(data["infrastructure"]["healthy"])
+        self.assertIn("claude", data["providers"])
+        self.assertIn("codex", data["providers"])
+        self.assertIn("agy", data["providers"])
+
+    @mock.patch("asb.doctor.Path.home")
+    @mock.patch("asb.doctor.podman.running")
+    @mock.patch("asb.doctor.podman.exists", return_value=True)
+    @mock.patch("asb.doctor.podman.out")
+    @mock.patch("asb.doctor.shutil.which", return_value="/usr/bin/mock")
+    @mock.patch("asb.doctor.subprocess.run")
+    def test_doctor_service_without_healthcheck_is_process_running(
+        self, mock_run, mock_which, mock_out, mock_exists, mock_running, mock_home
+    ):
+        mock_home.return_value = self.fake_home
+        mock_run.return_value = mock.Mock(stdout="enabled\n")
+        mock_running.return_value = True
+
+        ws_dir = self.fake_home / ".local" / "state" / "agent-sandbox" / "test-svc-ws"
+        ws_dir.mkdir(parents=True)
+        repo_dir = Path(self.tmp.name) / "my-repo"
+        repo_dir.mkdir(parents=True)
+        (ws_dir / "origin").write_text(str(repo_dir))
+        (repo_dir / ".agent-sandbox.toml").write_text('[services.redis]\nimage = "redis:alpine"\n')
+
+        def fake_out(*args):
+            if any("version" in str(a) for a in args):
+                return "podman version 5.0.0"
+            if any("{{.State.Health.Status}}" in str(a) for a in args):
+                return ""  # Sem healthcheck
+            return ""
+
+        mock_out.side_effect = fake_out
+
+        with mock.patch("asb.doctor.check_keyring_service", return_value=(True, "Secret Service (asb-keyring)", "")), \
+             mock.patch("asb.doctor.check_legacy_agent_container", return_value=(False, "")), \
+             mock.patch("asb.doctor.check_workspace_egress", return_value=(True, "egresso ok", "")), \
+             mock.patch("asb.podman.run") as mock_podman_run:
+            out = io.StringIO()
+            with mock.patch("sys.stdout", out):
+                code = doc_mod.doctor(self.fake_root, as_json=True)
+
+            self.assertEqual(code, 0)
+            data = json.loads(out.getvalue())
+            ws_item = next(w for w in data["infrastructure"]["workspaces"] if w["workspace"] == "test-svc-ws")
+            self.assertEqual(len(ws_item["services"]), 1)
+            svc = ws_item["services"][0]
+            self.assertEqual(svc["state"], "process_running")
+            self.assertNotEqual(svc["state"], "application_ready")
+            mock_podman_run.assert_not_called()
+

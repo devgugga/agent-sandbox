@@ -11,10 +11,14 @@ Validates systemd Type=exec supervision over persistent Podman containers:
 from __future__ import annotations
 
 import subprocess
+import sys
 import time
 import unittest
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "cli"))
+
+from asb.readiness import probe_host, probe_proxy, probe_ssh
 from tests.integration.sandbox_fixture import IsolationError, SandboxFixture
 
 
@@ -188,6 +192,87 @@ class TestSupervisorPilot(unittest.TestCase):
 
             with self.assertRaises(IsolationError):
                 sandbox._validate_path(Path.home() / ".config" / "agent-sandbox")
+
+    def test_readiness_probes_distinction_and_positive_ssh(self) -> None:
+        """Proves readiness probes distinguish proxy inaccessible from CONNECT denied and prove SSH positive."""
+        image = "localhost/agent-sandbox:latest"
+        with SandboxFixture("readiness", image=image, port=22) as sandbox:
+            sandbox.start()
+            self.assertTrue(sandbox.wait_active(timeout=15))
+
+            # 1. Host probe positive
+            host_res = probe_host()
+            self.assertEqual(host_res.state, "healthy")
+            self.assertEqual(host_res.code, "ok")
+
+            # 2. Proxy probe: mock CONNECT denied (403) without touching real allowlist
+            proxy_name = sandbox.register_container(f"{sandbox._prefix}-proxy")
+            proxy_py = (
+                "import socket\n"
+                "s = socket.socket()\n"
+                "s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)\n"
+                "s.bind(('0.0.0.0', 3128))\n"
+                "s.listen(5)\n"
+                "while True:\n"
+                "    conn, _ = s.accept()\n"
+                "    conn.recv(1024)\n"
+                "    conn.sendall(b'HTTP/1.1 403 Forbidden\\r\\n\\r\\n')\n"
+                "    conn.close()\n"
+            )
+            subprocess.run(
+                [
+                    sandbox._podman_bin, "run", "-d",
+                    "--name", proxy_name,
+                    image,
+                    "python3", "-c", proxy_py,
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+            denied_res = probe_proxy("", proxy_name, target="github.com:443", timeout=3.0)
+            self.assertEqual(denied_res.state, "failed")
+            self.assertEqual(denied_res.code, "connect_denied")
+
+            # 3. Proxy probe: distinguish stopped proxy from CONNECT denied
+            sandbox.break_proxy()
+            stopped_res = probe_proxy("", proxy_name, target="github.com:443", timeout=2.0)
+            self.assertEqual(stopped_res.state, "unreachable")
+            self.assertEqual(stopped_res.code, "proxy_stopped")
+
+            # 4. SSH positive and key rejection
+            cid, host_port = sandbox.inspect_identity()
+            sandbox.exec("mkdir", "-p", "/run/sshd")
+            sandbox.exec("ssh-keygen", "-A")
+            pub_key = sandbox.ssh_key.with_suffix(".pub").read_text().strip()
+            auth_script = (
+                f"mkdir -p /home/v/.ssh && "
+                f"echo '{pub_key}' > /home/v/.ssh/authorized_keys && "
+                f"chown -R 1000:1000 /home/v/.ssh && "
+                f"chmod 700 /home/v/.ssh && "
+                f"chmod 600 /home/v/.ssh/authorized_keys"
+            )
+            sandbox.exec("sh", "-c", auth_script)
+            sandbox.exec("/usr/sbin/sshd")
+
+            # Positive SSH check
+            ssh_ok = probe_ssh(port=host_port, user="v", key=sandbox.ssh_key, timeout=5.0)
+            self.assertEqual(ssh_ok.state, "healthy")
+            self.assertEqual(ssh_ok.code, "ok")
+
+            # Negative SSH check with unauthorized key (key refused)
+            wrong_key = sandbox.state_root / "wrong_ed25519"
+            subprocess.run(
+                ["ssh-keygen", "-t", "ed25519", "-N", "", "-f", str(wrong_key)],
+                check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            ssh_refused = probe_ssh(port=host_port, user="v", key=wrong_key, timeout=3.0)
+            self.assertEqual(ssh_refused.state, "failed")
+            self.assertEqual(ssh_refused.code, "key_refused")
+
+            sandbox.stop()
+            sandbox.assert_no_orphans()
 
 
 if __name__ == "__main__":

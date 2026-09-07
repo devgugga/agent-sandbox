@@ -47,8 +47,8 @@ def build_parser() -> argparse.ArgumentParser:
                        help="confirma a remocao dos arquivos")
 
     sub.add_parser("build", help="constroi a imagem base")
-    sub.add_parser("login", help="autentica os tres agentes (uma vez)")
-    sub.add_parser("doctor", help="diagnostica o ambiente")
+    doc_parser = sub.add_parser("doctor", help="diagnostica o ambiente")
+    doc_parser.add_argument("--json", action="store_true", dest="as_json", help="emite diagnostico em formato JSON schema 1")
     sub.add_parser("list", help="lista os workspaces conhecidos")
     sub.add_parser("install-guards", help="instala asb-claude/codex/agy")
     sub.add_parser("install-broker", help="instala o broker do Docker (sudo)")
@@ -79,7 +79,7 @@ def main() -> int:
         if args.command == "list":
             return lifecycle.list_workspaces()
         if args.command == "doctor":
-            return doctor(ROOT)
+            return doctor(ROOT, as_json=getattr(args, "as_json", False))
         if args.command == "install-guards":
             return install.guards(ROOT)
         if args.command == "install-broker":

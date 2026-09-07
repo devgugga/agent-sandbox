@@ -11,7 +11,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import podman, readiness, supervisor
+from . import install, podman, readiness, supervisor
 from .install import install_runtime
 from .profile import Profile, load_profile
 from .squid import render
@@ -386,8 +386,16 @@ class WorkspaceTransaction:
         if self.created_units:
             try:
                 supervisor.remove_workspace_units(self.ws)
-            except Exception:
-                pass
+            except Exception as exc:
+                # Nunca silenciar: uma falha aqui deixa unidades systemd
+                # orfas apontando para containers que o rollback acabou de
+                # remover. O rollback continua (o erro original de `up`
+                # segue tendo prioridade), mas o operador precisa saber.
+                print(
+                    f"aviso: falha ao remover unidades systemd de '{self.ws}' "
+                    f"durante rollback: {exc}",
+                    file=sys.stderr,
+                )
 
 
 def _get_container_id(name: str) -> str:
@@ -408,17 +416,32 @@ def _origin_of(ws: str, home: Path) -> Path | None:
 
 
 def _runtime_of(ws: str, home: Path | None = None) -> str:
-    """Le o backend de runtime gravado no manifesto do workspace."""
+    """Le o backend de runtime gravado no manifesto do workspace.
+
+    Manifesto AUSENTE e um estado legitimo (workspace legado, nunca gravou
+    runtime.json): retorna 'legacy'. Manifesto PRESENTE porem ilegivel ou
+    corrompido e um erro real, e nao pode virar 'legacy' em silencio: um
+    resume cairia no ramo legacy, pularia enable/reset-failed/start do
+    target e a sonda de prontidao (probe_workspace), e subiria containers
+    criados com --restart=no sem supervisao alguma enquanto informa 0/sucesso
+    ao operador.
+    """
     h = home if home is not None else Path(os.path.expanduser("~"))
     manifest_file = h / ".local" / "state" / "agent-sandbox" / ws / "runtime.json"
-    if manifest_file.is_file():
-        try:
-            manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
-            if isinstance(manifest, dict):
-                return str(manifest.get("runtime_type") or manifest.get("runtime_backend") or "legacy")
-        except Exception:
-            pass
-    return "legacy"
+    if not manifest_file.is_file():
+        return "legacy"
+    try:
+        manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
+    except Exception as exc:
+        raise podman.PodmanError(
+            f"manifesto de runtime corrompido para '{ws}' ({manifest_file}): {exc}"
+        ) from exc
+    if not isinstance(manifest, dict):
+        raise podman.PodmanError(
+            f"manifesto de runtime invalido para '{ws}' ({manifest_file}): "
+            "esperado objeto JSON"
+        )
+    return str(manifest.get("runtime_type") or manifest.get("runtime_backend") or "legacy")
 
 
 def _sweep_containers(ws: str) -> None:
@@ -631,6 +654,7 @@ def prepare_workspace(
     )
 
     # 3. Forwarder
+    fwd_name = f"{n['net']}-fwd"
     fwd_cid = start_forwarder(
         ws, profile, cmd_action=cmd_action, restart=restart_policy, tx=tx
     )
@@ -807,6 +831,18 @@ def up(root: Path, ws: str, repo: Path, runtime: str = "legacy") -> int:
 
         if runtime == "systemd":
             supervisor.start_workspace(ws, enable=True)
+        else:
+            # Apenas o ramo legacy usa --restart unless-stopped: a
+            # restauracao no boot e responsabilidade do
+            # podman-restart.service la. Em runtime systemd os containers
+            # sobem com --restart=no e quem reinicia recursos adotados e
+            # SEMPRE o systemd (constraint global). Fica fora de
+            # `prepare_workspace` de proposito: essa e uma acao global
+            # (politica de boot do host), e `prepare_workspace` existe para
+            # criar os recursos DESTE workspace sem restauracao global.
+            # Idempotente e barato; chamar aqui evita que o operador
+            # precise lembrar.
+            install.podman_restart()
 
         # 1. Sonda de conectividade do proxy antes de operacoes que exigem rede (ex: mise install)
         proxy_res = readiness.wait_until(
@@ -835,14 +871,15 @@ def up(root: Path, ws: str, repo: Path, runtime: str = "legacy") -> int:
 
         key = ensure_ssh_key()
         ssh_res = readiness.wait_until(
-            lambda to: readiness.probe_ssh(int(port), key=key, timeout=to),
+            lambda to: readiness.probe_ssh(
+                int(port), user=getpass.getuser(), key=key, timeout=to),
             timeout=30.0,
         )
         if ssh_res.state != "healthy":
             print(f"erro: SSH nao esta pronto ({ssh_res.code}): {ssh_res.remediation}", file=sys.stderr)
             raise podman.PodmanError(f"SSH nao esta pronto na porta {port}: {ssh_res.code}")
 
-        return emit(ws, layout)
+        return emit(ws, layout, port=port)
     except BaseException:
         tx.rollback()
         raise
@@ -852,15 +889,22 @@ def _up(root: Path, ws: str, repo: Path, runtime: str = "legacy") -> int:
     return up(root, ws, repo, runtime=runtime)
 
 
-def emit(ws: str, layout: Layout) -> int:
+def emit(ws: str, layout: Layout, port: str | None = None) -> int:
     """A linha que o recipe do Orca consome. A porta e LIDA do podman, nunca
-    inventada: o Orca guarda a que o create devolveu e disca nela para sempre."""
+    inventada: o Orca guarda a que o create devolveu e disca nela para sempre.
+
+    Aceita a porta ja resolvida pelo chamador (ex: `up`, que ja a consultou
+    para o gate SSH) para evitar uma segunda chamada `podman port` redundante;
+    se omitida, resolve por conta propria.
+    """
     n = names(ws)
-    mapping = podman.out("port", n["agent"], "22")
-    port = mapping.splitlines()[0].rsplit(":", 1)[-1] if mapping else ""
-    if not port:
+    resolved_port = port
+    if not resolved_port:
+        mapping = podman.out("port", n["agent"], "22")
+        resolved_port = mapping.splitlines()[0].rsplit(":", 1)[-1] if mapping else ""
+    if not resolved_port:
         raise podman.PodmanError("nao foi possivel determinar a porta SSH")
-    print(json.dumps({"workspace": ws, "port": int(port), "user":
+    print(json.dumps({"workspace": ws, "port": int(resolved_port), "user":
                       getpass.getuser(),
                       "project_root": str(layout.project_root)}))
     return 0
@@ -875,8 +919,25 @@ def down(ws: str) -> int:
     n = names(ws)
     home = Path(os.path.expanduser("~"))
 
-    # Remove unidades systemd se existirem
-    supervisor.remove_workspace_units(ws)
+    # Remove unidades systemd SOMENTE para workspaces geridos por systemd:
+    # remove_workspace_units termina em `daemon-reload` com check=True, que
+    # levanta num host sem sessao systemd de usuario. Um workspace legacy
+    # (o default) nunca instalou unidade alguma, entao chama-la ali faria o
+    # down de um workspace puramente legacy falhar onde antes sucedia.
+    #
+    # `down` e a saida de emergencia de um workspace quebrado: um
+    # runtime.json corrompido NUNCA pode abortar a limpeza dos containers e
+    # redes abaixo (diferente de `resume`/`suspend`, que reportam saude e
+    # por isso devem levantar — ver `_runtime_of`). Aqui, na duvida, segue
+    # com a limpeza local best-effort.
+    try:
+        managed = _runtime_of(ws, home) == "systemd"
+    except podman.PodmanError as exc:
+        print(f"aviso: {exc}; seguindo com limpeza local", file=sys.stderr)
+        managed = False
+    if managed:
+        supervisor.remove_workspace_units(
+            ws, state_dir=home / ".local" / "state" / "agent-sandbox" / ws)
 
     _sweep_containers(ws)
     for network in (n["net"], n["out"]):
@@ -938,6 +999,21 @@ def suspend(ws: str) -> int:
     for container in sorted(found):
         if podman.exists("container", container) and podman.running(container):
             podman.run("stop", "-t", "5", container, check=False)
+
+    # Verificar que os containers do workspace realmente pararam: o brief
+    # exige a verificacao, nao apenas o disparo do stop/disable.
+    still_running = sorted(
+        c for c in found
+        if podman.exists("container", c) and podman.running(c)
+    )
+    if still_running:
+        print(
+            f"erro: falha ao suspender workspace {ws}: containers ainda em "
+            f"execucao: {', '.join(still_running)}",
+            file=sys.stderr,
+        )
+        return 1
+
     return 0
 
 

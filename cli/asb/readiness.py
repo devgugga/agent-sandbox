@@ -151,9 +151,9 @@ def probe_proxy(
             return ProbeResult("proxy", "unreachable", "no_route", elapsed, "podman unshare --rootless-netns true")
         if "succeeded" in output or " 200 " in output:
             return ProbeResult("proxy", "healthy", "ok", elapsed, "")
-        if "403" in output:
+        if " 403 " in output:
             return ProbeResult("proxy", "failed", "connect_denied", elapsed, "adicione o dominio em [network] allow")
-        if "503" in output:
+        if " 503 " in output:
             return ProbeResult("proxy", "failed", "connect_failed", elapsed, "verifique conectividade do destino ou uplink")
         if "Connection refused" in output:
             return ProbeResult("proxy", "unreachable", "proxy_unreachable", elapsed, f"proxy nao responde em {proxy_host}:3128")

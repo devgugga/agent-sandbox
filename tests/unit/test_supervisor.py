@@ -337,6 +337,76 @@ class TestWorkspaceOperations(unittest.TestCase):
         self.assertFalse(target_unit.exists())
         mock_run.assert_any_call(["systemctl", "--user", "daemon-reload"], check=True)
 
+    def test_remove_workspace_units_does_not_touch_sibling_with_shared_prefix(self):
+        """I1: `remove_workspace_units` removia unidades por glob
+        `asb-{ws}-*.service`, que casa tambem workspaces irmaos cujo nome
+        comeca com o mesmo prefixo sem delimitador (`asb-demo-` casa
+        `asb-demo-2-agent.service`). As unidades devem ser identificadas
+        EXCLUSIVAMENTE pelos nomes gravados no runtime.json do proprio
+        workspace, nunca por prefixo."""
+        ws_a = "demo"
+        ws_b = "demo-2"
+
+        state_a = self.fake_home / ".local" / "state" / "agent-sandbox" / ws_a
+        state_a.mkdir(parents=True)
+        (state_a / "runtime.json").write_text(
+            json.dumps({
+                "schemaVersion": 1,
+                "workspace": ws_a,
+                "containers": {
+                    "proxy": {"name": f"asb-{ws_a}-proxy", "id": "p1",
+                              "unit": f"asb-{ws_a}-proxy.service"},
+                    "agent": {"name": f"asb-{ws_a}-agent", "id": "a1",
+                              "unit": f"asb-{ws_a}-agent.service"},
+                },
+            })
+        )
+
+        # Unidades reais dos dois workspaces no mesmo diretorio de unidades.
+        units = {
+            f"asb-{ws_a}-proxy.service": self.target_dir / f"asb-{ws_a}-proxy.service",
+            f"asb-{ws_a}-agent.service": self.target_dir / f"asb-{ws_a}-agent.service",
+            f"asb-{ws_a}.target": self.target_dir / f"asb-{ws_a}.target",
+            f"asb-{ws_b}-proxy.service": self.target_dir / f"asb-{ws_b}-proxy.service",
+            f"asb-{ws_b}-agent.service": self.target_dir / f"asb-{ws_b}-agent.service",
+            f"asb-{ws_b}.target": self.target_dir / f"asb-{ws_b}.target",
+        }
+        for path in units.values():
+            path.write_text("unit")
+
+        with mock.patch.object(Path, "home", return_value=self.fake_home), \
+             mock.patch("subprocess.run"):
+            supervisor.remove_workspace_units(
+                ws_a, target_dir=self.target_dir, state_dir=state_a)
+
+        # Unidades do workspace A foram removidas.
+        self.assertFalse(units[f"asb-{ws_a}-proxy.service"].exists())
+        self.assertFalse(units[f"asb-{ws_a}-agent.service"].exists())
+        self.assertFalse(units[f"asb-{ws_a}.target"].exists())
+
+        # Unidades do workspace irmao B (prefixado por A) permanecem intactas.
+        self.assertTrue(units[f"asb-{ws_b}-proxy.service"].exists())
+        self.assertTrue(units[f"asb-{ws_b}-agent.service"].exists())
+        self.assertTrue(units[f"asb-{ws_b}.target"].exists())
+
+    def test_remove_workspace_units_without_manifest_removes_only_target(self):
+        """Sem manifesto legivel, nao ha como saber quais nomes de servico
+        pertencem a este workspace: nada e removido por adivinhacao/glob,
+        apenas a unidade .target cujo nome e derivado do proprio ws."""
+        target_unit = self.target_dir / "asb-orphan.target"
+        stray_service = self.target_dir / "asb-orphan-2-agent.service"
+        target_unit.write_text("target")
+        stray_service.write_text("service")
+
+        with mock.patch.object(Path, "home", return_value=self.fake_home), \
+             mock.patch("subprocess.run"):
+            supervisor.remove_workspace_units(
+                "orphan", target_dir=self.target_dir,
+                state_dir=self.tmp_path / "no-such-state")
+
+        self.assertFalse(target_unit.exists())
+        self.assertTrue(stray_service.exists())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -217,6 +217,25 @@ class TestProbeProxy(unittest.TestCase):
 
     @mock.patch("asb.podman.running")
     @mock.patch("subprocess.run")
+    def test_probe_proxy_403_substring_in_port_number_does_not_false_positive(self, mock_run, mock_running):
+        """M1: o casamento de status virou substring nua ("403" in output),
+        e a saida agora inclui a porta do alvo vinda do `nc -z -v`. Uma porta
+        como 40300 contem "403" sem ser um status HTTP 403 — o casamento
+        precisa ser delimitado (" 403 ")."""
+        mock_running.return_value = True
+        mock_run.return_value = mock.Mock(
+            returncode=1,
+            stdout="",
+            stderr="nc: connect to proxy.example port 40300 (tcp) failed: Connection refused\n",
+        )
+
+        res = probe_proxy("asb-ws-agent", "asb-ws-proxy", target="github.com:443", timeout=2.0)
+        self.assertNotEqual(res.code, "connect_denied")
+        self.assertEqual(res.state, "unreachable")
+        self.assertEqual(res.code, "proxy_unreachable")
+
+    @mock.patch("asb.podman.running")
+    @mock.patch("subprocess.run")
     def test_probe_proxy_no_route(self, mock_run, mock_running):
         mock_running.return_value = True
         mock_run.return_value = mock.Mock(

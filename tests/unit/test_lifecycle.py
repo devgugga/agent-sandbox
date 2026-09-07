@@ -222,9 +222,13 @@ class TestLifecycleOrdering(unittest.TestCase):
                  mock.patch("cli.asb.readiness.wait_until", return_value=mock.MagicMock(state="healthy", code="ok")), \
                  mock.patch("cli.asb.podman.out", return_value="127.0.0.1:2222"), \
                  mock.patch("cli.asb.lifecycle.emit", return_value=0), \
-                 mock.patch("cli.asb.install.podman_restart"):
+                 mock.patch("cli.asb.install.podman_restart") as mock_restart:
                 rc = _up(fake_root, "test-ws", fake_repo)
                 self.assertEqual(rc, 0)
+
+            # S2: o ramo legacy (default) volta a chamar podman_restart();
+            # so o ramo systemd fica isento (politica Podman `no` la).
+            mock_restart.assert_called_once()
 
             self.assertIn("ensure_rootless_netns", events)
             self.assertIn("podman run proxy", events)
@@ -354,9 +358,11 @@ class TestLifecycleOrdering(unittest.TestCase):
                  mock.patch("cli.asb.readiness.wait_until", return_value=mock.MagicMock(state="healthy", code="ok")), \
                  mock.patch("cli.asb.podman.out", return_value="127.0.0.1:2222"), \
                  mock.patch("cli.asb.lifecycle.emit", return_value=0), \
-                 mock.patch("cli.asb.install.podman_restart"):
+                 mock.patch("cli.asb.install.podman_restart") as mock_restart:
                 rc = _up(fake_root, "test-ws", fake_repo)
                 self.assertEqual(rc, 0)
+
+            mock_restart.assert_called_once()
 
             self.assertIn("ensure_keyring_service", events)
             self.assertIn("podman run agent", events)
@@ -610,29 +616,36 @@ class TestTransactionalRollback(unittest.TestCase):
 
             healthy_probe = mock.MagicMock(state="healthy", code="ok", remediation="")
 
-            with mock.patch("cli.asb.podman.exists", side_effect=lambda kind, name: kind == "image"), \
-                 mock.patch("cli.asb.podman.ensure_rootless_netns"), \
-                 mock.patch("cli.asb.podman.run", side_effect=fake_run), \
-                 mock.patch("cli.asb.podman.out", return_value="cid-12345"), \
-                 mock.patch("cli.asb.lifecycle.load_profile", return_value=fake_profile), \
-                 mock.patch("cli.asb.lifecycle.layout_for", return_value=fake_layout), \
-                 mock.patch("cli.asb.lifecycle.prepare_clone"), \
-                 mock.patch("cli.asb.lifecycle.render", return_value="acl x"), \
-                 mock.patch("cli.asb.lifecycle.build_staging", return_value=0), \
-                 mock.patch("cli.asb.lifecycle.ensure_ssh_key", return_value=fake_key), \
-                 mock.patch("cli.asb.lifecycle.ensure_keyring_service"), \
-                 mock.patch("cli.asb.lifecycle.ensure_keyring_runtime_volume", return_value="k-run"), \
-                 mock.patch("cli.asb.lifecycle.ensure_credentials_volume", return_value="c-vol"), \
-                 mock.patch("cli.asb.lifecycle.ensure_toolcache_volume", return_value="t-vol"), \
-                 mock.patch("cli.asb.lifecycle.supervisor.install_workspace", return_value=[]) as mock_install, \
-                 mock.patch("cli.asb.lifecycle.supervisor.start_workspace") as mock_start, \
-                 mock.patch("cli.asb.readiness.wait_until", return_value=healthy_probe), \
-                 mock.patch("cli.asb.lifecycle.discover_mise_dirs", return_value=[]), \
-                 mock.patch("cli.asb.lifecycle.emit", return_value=0):
+            from contextlib import ExitStack
+            with ExitStack() as stack:
+                stack.enter_context(mock.patch("cli.asb.podman.exists", side_effect=lambda kind, name: kind == "image"))
+                stack.enter_context(mock.patch("cli.asb.podman.ensure_rootless_netns"))
+                stack.enter_context(mock.patch("cli.asb.podman.run", side_effect=fake_run))
+                stack.enter_context(mock.patch("cli.asb.podman.out", return_value="cid-12345"))
+                stack.enter_context(mock.patch("cli.asb.lifecycle.load_profile", return_value=fake_profile))
+                stack.enter_context(mock.patch("cli.asb.lifecycle.layout_for", return_value=fake_layout))
+                stack.enter_context(mock.patch("cli.asb.lifecycle.prepare_clone"))
+                stack.enter_context(mock.patch("cli.asb.lifecycle.render", return_value="acl x"))
+                stack.enter_context(mock.patch("cli.asb.lifecycle.build_staging", return_value=0))
+                stack.enter_context(mock.patch("cli.asb.lifecycle.ensure_ssh_key", return_value=fake_key))
+                stack.enter_context(mock.patch("cli.asb.lifecycle.ensure_keyring_service"))
+                stack.enter_context(mock.patch("cli.asb.lifecycle.ensure_keyring_runtime_volume", return_value="k-run"))
+                stack.enter_context(mock.patch("cli.asb.lifecycle.ensure_credentials_volume", return_value="c-vol"))
+                stack.enter_context(mock.patch("cli.asb.lifecycle.ensure_toolcache_volume", return_value="t-vol"))
+                mock_install = stack.enter_context(mock.patch("cli.asb.lifecycle.supervisor.install_workspace", return_value=[]))
+                mock_start = stack.enter_context(mock.patch("cli.asb.lifecycle.supervisor.start_workspace"))
+                stack.enter_context(mock.patch("cli.asb.readiness.wait_until", return_value=healthy_probe))
+                stack.enter_context(mock.patch("cli.asb.lifecycle.discover_mise_dirs", return_value=[]))
+                stack.enter_context(mock.patch("cli.asb.lifecycle.emit", return_value=0))
+                mock_restart = stack.enter_context(mock.patch("cli.asb.install.podman_restart"))
+
                 rc = lifecycle.up(fake_root, "demo", fake_repo, runtime="systemd")
                 self.assertEqual(rc, 0)
                 mock_install.assert_called_once()
                 mock_start.assert_called_once_with("demo", enable=True)
+                # S2: politica Podman `no` e systemd controla a partida —
+                # o ramo systemd NUNCA chama podman_restart().
+                mock_restart.assert_not_called()
 
                 # Check restart policy in container creation calls
                 for call_args in run_args_list:
@@ -683,7 +696,8 @@ class TestTransactionalRollback(unittest.TestCase):
                  mock.patch("cli.asb.lifecycle.ensure_credentials_volume", return_value="c-vol"), \
                  mock.patch("cli.asb.lifecycle.ensure_toolcache_volume", return_value="t-vol"), \
                  mock.patch("cli.asb.readiness.wait_until", return_value=failed_proxy), \
-                 mock.patch("cli.asb.lifecycle.discover_mise_dirs") as mock_mise:
+                 mock.patch("cli.asb.lifecycle.discover_mise_dirs") as mock_mise, \
+                 mock.patch("cli.asb.install.podman_restart"):
                 with self.assertRaises(lifecycle.podman.PodmanError) as ctx:
                     lifecycle.up(tmp, "demo", tmp / "origin")
                 self.assertIn("proxy nao esta pronto", str(ctx.exception))
@@ -734,11 +748,259 @@ class TestTransactionalRollback(unittest.TestCase):
                  mock.patch("cli.asb.lifecycle.ensure_toolcache_volume", return_value="t-vol"), \
                  mock.patch("cli.asb.readiness.wait_until", side_effect=fake_wait), \
                  mock.patch("cli.asb.lifecycle.discover_mise_dirs", return_value=[]), \
-                 mock.patch("cli.asb.lifecycle.emit") as mock_emit:
+                 mock.patch("cli.asb.lifecycle.emit") as mock_emit, \
+                 mock.patch("cli.asb.install.podman_restart"):
                 with self.assertRaises(lifecycle.podman.PodmanError) as ctx:
                     lifecycle.up(tmp, "demo", tmp / "origin")
                 self.assertIn("SSH nao esta pronto", str(ctx.exception))
                 mock_emit.assert_not_called()
+
+    def test_up_with_host_ports_writes_forwarder_manifest_entry(self):
+        """C1 regression: `manifest_containers["forwarder"]` referenciava
+        `fwd_name`, uma variavel nunca atribuida em `prepare_workspace`.
+        Qualquer profile com `host_ports` nao vazio levantava `NameError`
+        dentro do bloco `try` de `up`, disparando um rollback espurio. Todo
+        teste anterior usava `Profile(host_ports=[])`, e `TestStartForwarder`
+        exercitava `start_forwarder` isolado — nenhum atravessava
+        `prepare_workspace` de ponta a ponta com portas configuradas."""
+        from unittest import mock
+        from cli.asb import lifecycle
+        from cli.asb.profile import Profile
+        from cli.asb.workspace import Layout
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            fake_root = tmp / "root"
+            fake_state = tmp / "state"
+            fake_mount = tmp / "mount"
+            fake_repo = tmp / "origin"
+            for d in (fake_root, fake_state, fake_mount, fake_repo):
+                d.mkdir(parents=True)
+            fake_layout = Layout(ws="demo", project="proj", mount=fake_mount,
+                                 project_root=fake_mount / "proj", state=fake_state)
+            fake_key = tmp / "key"
+            fake_key.write_text("dummy")
+            (tmp / "key.pub").write_text("ssh-ed25519 AAA dummy")
+            fake_profile = Profile(services=[], host_ports=[8080], publish_ports=[],
+                                   host_api="none", container_mode="standard", allow=[])
+
+            healthy_probe = mock.MagicMock(state="healthy", code="ok", remediation="")
+
+            with mock.patch("cli.asb.podman.exists", side_effect=lambda kind, name: kind == "image"), \
+                 mock.patch("cli.asb.podman.ensure_rootless_netns"), \
+                 mock.patch("cli.asb.podman.run", return_value=mock.MagicMock(returncode=0)), \
+                 mock.patch("cli.asb.podman.out", return_value="cid-fwd-1"), \
+                 mock.patch("cli.asb.lifecycle.load_profile", return_value=fake_profile), \
+                 mock.patch("cli.asb.lifecycle.layout_for", return_value=fake_layout), \
+                 mock.patch("cli.asb.lifecycle.prepare_clone"), \
+                 mock.patch("cli.asb.lifecycle.render", return_value="acl x"), \
+                 mock.patch("cli.asb.lifecycle.build_staging", return_value=0), \
+                 mock.patch("cli.asb.lifecycle.ensure_ssh_key", return_value=fake_key), \
+                 mock.patch("cli.asb.lifecycle.ensure_keyring_service"), \
+                 mock.patch("cli.asb.lifecycle.ensure_keyring_runtime_volume", return_value="k-run"), \
+                 mock.patch("cli.asb.lifecycle.ensure_credentials_volume", return_value="c-vol"), \
+                 mock.patch("cli.asb.lifecycle.ensure_toolcache_volume", return_value="t-vol"), \
+                 mock.patch("cli.asb.lifecycle.discover_mise_dirs", return_value=[]), \
+                 mock.patch("cli.asb.readiness.wait_until", return_value=healthy_probe), \
+                 mock.patch("cli.asb.lifecycle.emit", return_value=0), \
+                 mock.patch("cli.asb.install.podman_restart"):
+                rc = lifecycle.up(fake_root, "demo", fake_repo, runtime="legacy")
+                self.assertEqual(rc, 0)
+
+            manifest_file = fake_state / "runtime.json"
+            self.assertTrue(manifest_file.is_file())
+            import json
+            manifest = json.loads(manifest_file.read_text())
+            self.assertIn("forwarder", manifest["containers"])
+            self.assertEqual(manifest["containers"]["forwarder"]["name"], "asb-demo-fwd")
+            self.assertEqual(manifest["containers"]["forwarder"]["unit"], "asb-demo-fwd.service")
+
+    def test_up_resolves_ssh_port_once_and_reuses_it_in_emit(self):
+        """I4: `up` resolvia a porta SSH duas vezes (uma para o gate de
+        prontidao, outra dentro de `emit`) com dois `podman port` redundantes.
+        Agora `emit` aceita a porta ja resolvida."""
+        from unittest import mock
+        from cli.asb import lifecycle
+        from cli.asb.profile import Profile
+        from cli.asb.workspace import Layout
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            fake_root = tmp / "repo-root"
+            fake_state = tmp / "state"
+            fake_mount = tmp / "mount"
+            fake_repo = tmp / "origin"
+            for d in (fake_root, fake_state, fake_mount, fake_repo):
+                d.mkdir(parents=True)
+            fake_layout = Layout(ws="test-ws", project="proj", mount=fake_mount,
+                                 project_root=fake_mount / "proj", state=fake_state)
+            fake_key = tmp / "key"
+            fake_key.write_text("dummy")
+            (tmp / "key.pub").write_text("ssh-ed25519 AAA dummy")
+
+            fake_profile = Profile(services=[], host_ports=[], publish_ports=[],
+                                   host_api="none", container_mode="standard", allow=[])
+
+            port_calls = []
+
+            def fake_out(*args, **kwargs):
+                if len(args) >= 1 and args[0] == "port":
+                    port_calls.append(args)
+                return "0.0.0.0:2222"
+
+            def fake_exists(kind, name):
+                if kind == "container" and name == "asb-test-ws-agent":
+                    return False
+                return True
+
+            emitted = {}
+
+            def fake_emit(ws, layout, port=None):
+                emitted["port"] = port
+                return 0
+
+            with mock.patch("cli.asb.lifecycle.podman.exists", side_effect=fake_exists), \
+                 mock.patch("cli.asb.lifecycle.podman.ensure_rootless_netns"), \
+                 mock.patch("cli.asb.lifecycle.ensure_keyring_service"), \
+                 mock.patch("cli.asb.lifecycle.ensure_keyring_runtime_volume", return_value="run-vol"), \
+                 mock.patch("cli.asb.lifecycle.ensure_credentials_volume", return_value="cred-vol"), \
+                 mock.patch("cli.asb.lifecycle.ensure_toolcache_volume", return_value="tool-vol"), \
+                 mock.patch("cli.asb.lifecycle.podman.run"), \
+                 mock.patch("cli.asb.lifecycle.load_profile", return_value=fake_profile), \
+                 mock.patch("cli.asb.lifecycle.layout_for", return_value=fake_layout), \
+                 mock.patch("cli.asb.lifecycle.prepare_clone"), \
+                 mock.patch("cli.asb.lifecycle.render", return_value="acl allow ..."), \
+                 mock.patch("cli.asb.lifecycle.build_staging", return_value=0), \
+                 mock.patch("cli.asb.lifecycle.ensure_ssh_key", return_value=fake_key), \
+                 mock.patch("cli.asb.lifecycle.discover_mise_dirs", return_value=[]), \
+                 mock.patch("cli.asb.readiness.wait_until", return_value=mock.MagicMock(state="healthy", code="ok")), \
+                 mock.patch("cli.asb.podman.out", side_effect=fake_out), \
+                 mock.patch("cli.asb.lifecycle.emit", side_effect=fake_emit), \
+                 mock.patch("cli.asb.install.podman_restart"):
+                rc = lifecycle.up(fake_root, "test-ws", fake_repo)
+                self.assertEqual(rc, 0)
+
+            self.assertEqual(len(port_calls), 1)
+            self.assertEqual(emitted["port"], "2222")
+
+    def test_up_rollback_removes_real_units_and_logs_removal_failure(self):
+        """I5: `WorkspaceTransaction.rollback` engolia qualquer excecao ao
+        remover unidades systemd (`except Exception: pass`), e nenhum teste
+        alcancava esse caminho com `created_units` de fato preenchido: os
+        testes existentes mockavam `prepare_workspace` inteiro ou faziam
+        `install_workspace` retornar `[]`. Aqui `install_workspace` roda de
+        verdade (grava unidades reais em disco) e uma falha de prontidao
+        posterior aciona o rollback; a falha de remocao deve ser logada em
+        stderr, e a excecao original de `up` (nao a do rollback) deve
+        prevalecer."""
+        from unittest import mock
+        from cli.asb import lifecycle
+        from cli.asb.profile import Profile
+        from cli.asb.workspace import Layout
+        import io
+        import contextlib
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            fake_root = tmp / "root"
+            fake_state = tmp / "state"
+            fake_mount = tmp / "mount"
+            fake_repo = tmp / "origin"
+            fake_home = tmp / "home"
+            for d in (fake_root, fake_state, fake_mount, fake_repo, fake_home):
+                d.mkdir(parents=True)
+            fake_layout = Layout(ws="demo", project="proj", mount=fake_mount,
+                                 project_root=fake_mount / "proj", state=fake_state)
+            fake_key = tmp / "key"
+            fake_key.write_text("dummy")
+            (tmp / "key.pub").write_text("ssh-ed25519 AAA dummy")
+            fake_profile = Profile(services=[], host_ports=[], publish_ports=[],
+                                   host_api="none", container_mode="standard", allow=[])
+
+            failed_proxy = mock.MagicMock(state="failed", code="connect_denied", remediation="fix allowlist")
+
+            with mock.patch("cli.asb.podman.exists", side_effect=lambda kind, name: kind == "image"), \
+                 mock.patch("cli.asb.podman.ensure_rootless_netns"), \
+                 mock.patch("cli.asb.podman.run", return_value=mock.MagicMock(returncode=0)), \
+                 mock.patch("cli.asb.podman.out", return_value="cid-xyz"), \
+                 mock.patch("cli.asb.lifecycle.load_profile", return_value=fake_profile), \
+                 mock.patch("cli.asb.lifecycle.layout_for", return_value=fake_layout), \
+                 mock.patch("cli.asb.lifecycle.prepare_clone"), \
+                 mock.patch("cli.asb.lifecycle.render", return_value="acl x"), \
+                 mock.patch("cli.asb.lifecycle.build_staging", return_value=0), \
+                 mock.patch("cli.asb.lifecycle.ensure_ssh_key", return_value=fake_key), \
+                 mock.patch("cli.asb.lifecycle.ensure_keyring_service"), \
+                 mock.patch("cli.asb.lifecycle.ensure_keyring_runtime_volume", return_value="k-run"), \
+                 mock.patch("cli.asb.lifecycle.ensure_credentials_volume", return_value="c-vol"), \
+                 mock.patch("cli.asb.lifecycle.ensure_toolcache_volume", return_value="t-vol"), \
+                 mock.patch.object(Path, "home", return_value=fake_home), \
+                 mock.patch("subprocess.run", return_value=mock.MagicMock(returncode=0)), \
+                 mock.patch("cli.asb.lifecycle.supervisor.remove_workspace_units",
+                             side_effect=RuntimeError("systemctl indisponivel")) as mock_remove, \
+                 mock.patch("cli.asb.readiness.wait_until", return_value=failed_proxy):
+                stderr = io.StringIO()
+                with contextlib.redirect_stderr(stderr):
+                    with self.assertRaises(lifecycle.podman.PodmanError) as ctx:
+                        lifecycle.up(fake_root, "demo", fake_repo, runtime="systemd")
+                self.assertIn("proxy nao esta pronto", str(ctx.exception))
+
+            mock_remove.assert_called_once_with("demo")
+            self.assertIn("systemctl indisponivel", stderr.getvalue())
+
+            # install_workspace escreveu unidades REAIS em disco (nao []
+            # mockado) antes da falha posterior — e essas sao as unidades
+            # que tx.created_units rastreou para o rollback acima.
+            unit_file = fake_home / ".config" / "systemd" / "user" / "asb-demo.target"
+            self.assertTrue(unit_file.is_file())
+
+
+class TestRuntimeOf(unittest.TestCase):
+    """I3: `_runtime_of` deve distinguir manifesto AUSENTE (legacy, ok) de
+    manifesto PRESENTE porem corrompido/ilegivel (erro real)."""
+
+    def test_missing_manifest_returns_legacy(self):
+        from cli.asb import lifecycle
+
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            self.assertEqual(lifecycle._runtime_of("no-such-ws", home), "legacy")
+
+    def test_valid_manifest_returns_declared_runtime(self):
+        from cli.asb import lifecycle
+
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            state = home / ".local" / "state" / "agent-sandbox" / "ws"
+            state.mkdir(parents=True)
+            (state / "runtime.json").write_text(
+                '{"schemaVersion": 1, "workspace": "ws", "runtime_type": "systemd"}')
+            self.assertEqual(lifecycle._runtime_of("ws", home), "systemd")
+
+    def test_corrupted_manifest_raises_instead_of_silently_defaulting_legacy(self):
+        """Um manifesto ilegivel NAO pode virar 'legacy' em silencio: isso
+        faria `resume` pular enable/reset-failed/start do target e a sonda
+        de prontidao, subindo containers --restart=no sem supervisao
+        enquanto informa sucesso ao operador."""
+        from cli.asb import lifecycle
+
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            state = home / ".local" / "state" / "agent-sandbox" / "ws"
+            state.mkdir(parents=True)
+            (state / "runtime.json").write_text("{ nao-e-json valido ]")
+            with self.assertRaises(lifecycle.podman.PodmanError):
+                lifecycle._runtime_of("ws", home)
+
+    def test_manifest_not_a_json_object_raises(self):
+        from cli.asb import lifecycle
+
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            state = home / ".local" / "state" / "agent-sandbox" / "ws"
+            state.mkdir(parents=True)
+            (state / "runtime.json").write_text("[1, 2, 3]")
+            with self.assertRaises(lifecycle.podman.PodmanError):
+                lifecycle._runtime_of("ws", home)
 
 
 class TestManagedLifecycleCommands(unittest.TestCase):
@@ -771,23 +1033,53 @@ class TestManagedLifecycleCommands(unittest.TestCase):
 
         fake_n = {"agent": "asb-demo-agent", "proxy": "asb-demo-proxy"}
         stop_calls = []
+        stopped = set()
 
         def fake_podman_run(*args, **kwargs):
             if args and args[0] == "stop":
                 stop_calls.append(args)
+                stopped.add(args[-1])
             return mock.MagicMock(returncode=0)
+
+        def fake_running(name):
+            # Simula o container efetivamente parando apos o `podman stop`.
+            return name not in stopped
 
         with mock.patch("cli.asb.lifecycle._require_workspace", return_value=(fake_n, Path("/tmp"), Path("/origin"))), \
              mock.patch("cli.asb.lifecycle._runtime_of", return_value="legacy"), \
              mock.patch("subprocess.run") as mock_subproc, \
              mock.patch("cli.asb.podman.out", return_value="asb-demo-agent\nasb-demo-proxy"), \
              mock.patch("cli.asb.podman.exists", return_value=True), \
-             mock.patch("cli.asb.podman.running", return_value=True), \
+             mock.patch("cli.asb.podman.running", side_effect=fake_running), \
              mock.patch("cli.asb.podman.run", side_effect=fake_podman_run):
             rc = lifecycle.suspend("demo")
             self.assertEqual(rc, 0)
             mock_subproc.assert_not_called()
             self.assertEqual(len(stop_calls), 2)
+
+    def test_suspend_fails_when_container_refuses_to_stop(self):
+        """S1: suspend deve verificar que os containers pararam de fato, e
+        retornar codigo != 0 (nunca 0 incondicional) quando algum permanece
+        em execucao apos o stop."""
+        from unittest import mock
+        from cli.asb import lifecycle
+
+        fake_n = {"agent": "asb-demo-agent", "proxy": "asb-demo-proxy"}
+
+        with mock.patch("cli.asb.lifecycle._require_workspace", return_value=(fake_n, Path("/tmp"), Path("/origin"))), \
+             mock.patch("cli.asb.lifecycle._runtime_of", return_value="legacy"), \
+             mock.patch("subprocess.run"), \
+             mock.patch("cli.asb.podman.out", return_value="asb-demo-agent\nasb-demo-proxy"), \
+             mock.patch("cli.asb.podman.exists", return_value=True), \
+             mock.patch("cli.asb.podman.running", return_value=True), \
+             mock.patch("cli.asb.podman.run", return_value=mock.MagicMock(returncode=0)):
+            import io
+            import contextlib
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                rc = lifecycle.suspend("demo")
+            self.assertNotEqual(rc, 0)
+            self.assertIn("asb-demo-agent", stderr.getvalue())
 
     def test_resume_managed_enables_resets_starts_and_checks_probes(self):
         from unittest import mock
@@ -828,14 +1120,61 @@ class TestManagedLifecycleCommands(unittest.TestCase):
 
         events = []
 
-        with mock.patch("cli.asb.lifecycle.supervisor.remove_workspace_units", side_effect=lambda ws: events.append("remove_units")) as mock_remove, \
+        with mock.patch("cli.asb.lifecycle.supervisor.remove_workspace_units", side_effect=lambda ws, **kw: events.append("remove_units")) as mock_remove, \
              mock.patch("cli.asb.lifecycle._sweep_containers", side_effect=lambda ws: events.append("sweep_containers")), \
+             mock.patch("cli.asb.lifecycle._runtime_of", return_value="systemd"), \
              mock.patch("cli.asb.podman.exists", return_value=False), \
              mock.patch("cli.asb.lifecycle._origin_of", return_value=None):
             rc = lifecycle.down("demo")
             self.assertEqual(rc, 0)
-            mock_remove.assert_called_once_with("demo")
+            mock_remove.assert_called_once()
+            self.assertEqual(mock_remove.call_args[0][0], "demo")
             self.assertEqual(events, ["remove_units", "sweep_containers"])
+
+    def test_down_legacy_does_not_call_remove_workspace_units(self):
+        """I2: `down` de workspace legacy nao pode chamar remove_workspace_units.
+
+        `remove_workspace_units` termina em `daemon-reload` com check=True,
+        que levanta num host sem sessao systemd de usuario. Um workspace
+        criado sem --runtime systemd nunca instalou unidade alguma.
+        """
+        from unittest import mock
+        from cli.asb import lifecycle
+
+        with mock.patch("cli.asb.lifecycle.supervisor.remove_workspace_units") as mock_remove, \
+             mock.patch("cli.asb.lifecycle._sweep_containers"), \
+             mock.patch("cli.asb.lifecycle._runtime_of", return_value="legacy"), \
+             mock.patch("cli.asb.podman.exists", return_value=False), \
+             mock.patch("cli.asb.lifecycle._origin_of", return_value=None):
+            rc = lifecycle.down("demo")
+            self.assertEqual(rc, 0)
+            mock_remove.assert_not_called()
+
+    def test_down_with_corrupted_manifest_still_cleans_up_best_effort(self):
+        """`down` e a saida de emergencia de um workspace quebrado: um
+        runtime.json corrompido (agora um erro real gracas a I3) NUNCA pode
+        abortar a limpeza dos containers e redes locais. Diferente de
+        `resume`/`suspend`, que reportam saude e por isso devem propagar o
+        erro de `_runtime_of`, `down` segue com limpeza local best-effort e
+        apenas avisa em stderr."""
+        from unittest import mock
+        from cli.asb import lifecycle
+        import io
+        import contextlib
+
+        with mock.patch("cli.asb.lifecycle.supervisor.remove_workspace_units") as mock_remove, \
+             mock.patch("cli.asb.lifecycle._sweep_containers") as mock_sweep, \
+             mock.patch("cli.asb.lifecycle._runtime_of",
+                        side_effect=lifecycle.podman.PodmanError("manifesto de runtime corrompido")), \
+             mock.patch("cli.asb.podman.exists", return_value=False), \
+             mock.patch("cli.asb.lifecycle._origin_of", return_value=None):
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                rc = lifecycle.down("demo")
+            self.assertEqual(rc, 0)
+            mock_remove.assert_not_called()
+            mock_sweep.assert_called_once_with("demo")
+            self.assertIn("manifesto de runtime corrompido", stderr.getvalue())
 
 
 if __name__ == "__main__":

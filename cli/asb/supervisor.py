@@ -282,13 +282,31 @@ def stop_workspace(ws: str, *, disable: bool = False) -> None:
         subprocess.run(["systemctl", "--user", "disable", target], check=True)
 
 
-def remove_workspace_units(ws: str, target_dir: Path | None = None) -> None:
-    """Desabilita, para e remove unidades do workspace do systemd."""
+def remove_workspace_units(
+    ws: str,
+    target_dir: Path | None = None,
+    state_dir: Path | None = None,
+) -> None:
+    """Desabilita, para e remove unidades do workspace do systemd.
+
+    As unidades de servico sao identificadas EXCLUSIVAMENTE pelos nomes
+    gravados no manifesto `runtime.json` do workspace — NUNCA por glob de
+    prefixo. Um glob `asb-{ws}-*.service` casa tambem workspaces irmaos cujo
+    nome comeca com o mesmo prefixo sem delimitador (ex: `asb-demo-` casa
+    `asb-demo-2-agent.service`), removendo unidades de outro workspace. Esse
+    e o mesmo bug de prefixo ja documentado em `_sweep_containers`
+    (lifecycle.py), que usa LABEL em vez de prefixo pelo mesmo motivo.
+    """
     target = ws if ws.endswith(".target") else f"asb-{ws}.target"
     target_path = (
         target_dir
         if target_dir is not None
         else (Path.home() / ".config" / "systemd" / "user")
+    )
+    state_path = (
+        state_dir
+        if state_dir is not None
+        else (Path.home() / ".local" / "state" / "agent-sandbox" / ws)
     )
 
     # Parar e desabilitar target
@@ -305,13 +323,38 @@ def remove_workspace_units(ws: str, target_dir: Path | None = None) -> None:
         stderr=subprocess.DEVNULL,
     )
 
+    # Coletar nomes EXATOS de unidade de servico a partir do manifesto do
+    # proprio workspace. Sem manifesto (ou sem containers validos), nao ha
+    # como saber quais nomes pertencem a este workspace — nada e removido
+    # por adivinhacao/glob.
+    unit_names: list[str] = []
+    manifest_file = state_path / "runtime.json"
+    if manifest_file.is_file():
+        try:
+            manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
+        except Exception:
+            manifest = None
+        if isinstance(manifest, dict):
+            containers = manifest.get("containers", {})
+            if isinstance(containers, dict):
+                for role, info in containers.items():
+                    if isinstance(info, dict):
+                        u_name = info.get("unit") or f"asb-{ws}-{role}.service"
+                    elif isinstance(info, str):
+                        u_name = f"{info}.service"
+                    else:
+                        continue
+                    if u_name and "\n" not in u_name and "\r" not in u_name and "/" not in u_name:
+                        unit_names.append(u_name)
+
     # Remover arquivos de unidade
     if target_path.is_dir():
         target_file = target_path / target
         if target_file.is_file():
             target_file.unlink()
 
-        for svc_file in target_path.glob(f"asb-{ws}-*.service"):
+        for u_name in unit_names:
+            svc_file = target_path / u_name
             if svc_file.is_file():
                 svc_file.unlink()
 

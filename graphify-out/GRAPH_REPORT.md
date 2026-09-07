@@ -1,22 +1,22 @@
 # Graph Report - agent-sandbox  (2026-09-07)
 
 ## Corpus Check
-- 112 files · ~123,580 words
+- 114 files · ~127,475 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 1212 nodes · 1795 edges · 96 communities (66 shown, 30 thin omitted)
-- Extraction: 97% EXTRACTED · 3% INFERRED · 0% AMBIGUOUS · INFERRED: 58 edges (avg confidence: 0.8)
+- 1265 nodes · 1863 edges · 105 communities (76 shown, 29 thin omitted)
+- Extraction: 97% EXTRACTED · 3% INFERRED · 0% AMBIGUOUS · INFERRED: 62 edges (avg confidence: 0.8)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `228840a1`
+- Built from commit: `0d1d54a6`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
 ## Community Hubs (Navigation)
-- PodmanError
-- layout_for
+- run
+- Path
 - assert.sh
 - load_profile
 - build_staging
@@ -59,10 +59,10 @@
 - test-recipe.sh
 - .agents/skills/graphify/references/extraction-spec.md
 - .codex/skills/graphify/references/extraction-spec.md
-- Layout
+- layout_for
 - shim.template.sh
 - doctor.py
-- Secret Service singleton para credenciais dos agentes
+- Singleton Secret Service Implementation Plan
 - File Structure
 - Recuperação do uplink rootless do Podman
 - Configuration Reference (`.agent-sandbox.toml`)
@@ -89,29 +89,38 @@
 - Claude Code Configuration
 - Google Antigravity & Gemini CLI Configuration
 - git/README.md
-- down
-- run
+- Contratos de Autenticação por Fornecedor e Protocolo de Validação
+- get_test_image
 - SandboxFixture
 - TestSupervisorPilot
 - 3. Resultados dos Ensaios Empíricos
 - .teardown
 - IsolationError
 - .is_container_running
-- .install_unit
+- Secret Service singleton para credenciais dos agentes
 - integration/__init__.py
 - .start
-- .stop
+- 2. Fatos verificados empiricamente
 - .write_sentinel
-- .sentinel_exists
-- ._validate_path
-- .fail_container
+- .cli
+- Path
+- 6. Acesso a Docker
 - .break_proxy
 - CompletedProcess
 - Exception
 - Path
+- 16. Portabilidade e reinstalação
+- 4. Topologia e ciclo de vida
+- 5. Sistema de arquivos
+- 7. Credenciais, configuração e integração dos agentes
+- 9. Fronteiras de segurança
+- 1. Por que reconstruir
+- .exit_zero
+- .inspect_identity
+- .worktree_exists
 
 ## God Nodes (most connected - your core abstractions)
-1. `SandboxFixture` - 37 edges
+1. `SandboxFixture` - 44 edges
 2. `load_profile()` - 35 edges
 3. `up()` - 27 edges
 4. `run()` - 25 edges
@@ -127,25 +136,25 @@
   tests/unit/test_doctor.py → cli/asb/podman.py
 - `TestPurge` --uses--> `PodmanError`  [INFERRED]
   tests/unit/test_doctor.py → cli/asb/podman.py
-- `TestPodmanRun` --uses--> `PodmanError`  [INFERRED]
-  tests/unit/test_podman.py → cli/asb/podman.py
 - `TestLifecycleOrdering` --uses--> `Profile`  [INFERRED]
   tests/unit/test_lifecycle.py → cli/asb/profile.py
 - `TestEnsureRootlessNetns` --uses--> `PodmanError`  [INFERRED]
+  tests/unit/test_podman.py → cli/asb/podman.py
+- `TestPodmanBinary` --uses--> `PodmanError`  [INFERRED]
   tests/unit/test_podman.py → cli/asb/podman.py
 
 ## Import Cycles
 - None detected.
 
-## Communities (96 total, 30 thin omitted)
+## Communities (105 total, 29 thin omitted)
 
-### Community 0 - "PodmanError"
-Cohesion: 0.17
-Nodes (9): ensure_rootless_netns(), PodmanError, Exception, require_binary(), patch, Testes de cli/asb/podman.py — invólucro fino sobre o binário podman., TestEnsureRootlessNetns, TestPodmanBinary (+1 more)
+### Community 0 - "run"
+Cohesion: 0.11
+Nodes (24): Any, ensure_credentials_volume(), ensure_keyring_data_volume(), ensure_keyring_runtime_volume(), ensure_keyring_service(), ensure_toolcache_volume(), login(), Garante o servico global de keyring (singleton). Cria e/ou inicia o container… (+16 more)
 
-### Community 1 - "layout_for"
+### Community 1 - "Path"
 Cohesion: 0.10
-Nodes (23): _git(), layout_for(), prepare_clone(), Exception, Path, cli/asb/workspace.py — identidade do workspace, layout em disco e clone. Duas…, Identidade do workspace, sempre reproduzivel a partir das entradas. O Orca…, Onde tudo mora. `home` e o mesmo caminho no host e no container (D4). (+15 more)
+Nodes (19): _git(), prepare_clone(), Exception, Path, Identidade do workspace, sempre reproduzivel a partir das entradas. O Orca…, Cria o checkout do workspace, se ainda nao existir. Clone e nao worktree: uma…, workspace_id(), WorkspaceError (+11 more)
 
 ### Community 2 - "assert.sh"
 Cohesion: 0.06
@@ -200,8 +209,8 @@ Cohesion: 0.15
 Nodes (11): 1. Architectural Role & Principles, 2. Baseline & Prerequisites, 3. Setup & Verification, 4. Domain-Specific Ingestion (`.graphify/project.py`), 5. Security Guardrails & Exclusions, 6. Query Cheatsheet, 7. Semantic Update Protocol & Two-Commit Workflow, 8. Linked Worktrees & Headless Environments (+3 more)
 
 ### Community 16 - "Design: agent-sandbox v2"
-Cohesion: 0.04
-Nodes (48): 10. Documentação, 11. Superfície do CLI, 12. Testes, 13. O que é removido, 14. Riscos, 15. Modos de falha que não podem voltar, 16.1 Regras, 16.2 Dependências, e o que acontece sem cada uma (+40 more)
+Cohesion: 0.17
+Nodes (12): 10. Documentação, 11. Superfície do CLI, 12. Testes, 13. O que é removido, 14. Riscos, 15. Modos de falha que não podem voltar, 17. Anexo — esquema completo de `.agent-sandbox.toml`, 3. Decisões (+4 more)
 
 ### Community 17 - "graphify reference: extra exports and benchmark"
 Cohesion: 0.22
@@ -232,8 +241,8 @@ Cohesion: 0.33
 Nodes (5): For /graphify explain, For /graphify path, graphify reference: query, path, explain, Step 0 — Constrained query expansion (REQUIRED before traversal), Step 1 — Traversal
 
 ### Community 24 - "lifecycle.py"
-Cohesion: 0.15
-Nodes (27): build(), build_proxy(), check_keyring_service(), ensure_credentials_volume(), ensure_keyring_data_volume(), ensure_keyring_pass(), ensure_keyring_runtime_volume(), ensure_keyring_service() (+19 more)
+Cohesion: 0.11
+Nodes (30): build(), build_proxy(), check_keyring_service(), ensure_keyring_pass(), ensure_ssh_key(), _inspect_keyring_container(), _keyring_mount_contract_issue(), list_workspaces() (+22 more)
 
 ### Community 25 - "agent-authoring/README.md"
 Cohesion: 0.10
@@ -279,17 +288,17 @@ Nodes (21): 10. Orca Recipe Selector Invisibility, 11. Squid Configuration File 
 Cohesion: 0.06
 Nodes (10): Path, Testes de autenticação e volume de credenciais em cli/asb/lifecycle.py., Espelha a estrutura real de Mounts retornada por podman inspect., A verificacao do login tem de EXERCITAR autenticacao. `asb-agy --version`…, TestAuthLifecycle, TestCheckKeyringService, TestKeyringServiceLifecycle, TestLoginKeyringIntegration (+2 more)
 
-### Community 44 - "Layout"
-Cohesion: 0.21
-Nodes (10): emit(), A linha que o recipe do Orca consome. A porta e LIDA do podman, nunca…, Religa o workspace. E `podman start`, e so. Nao ha ordem a respeitar por…, Recarrega a allowlist do proxy sem tocar no container do agente. Preserva a…, reload_allowlist(), resume(), Layout, A politica de egresso e do operador, nunca do agente. `layout.project_root`… (+2 more)
+### Community 44 - "layout_for"
+Cohesion: 0.11
+Nodes (23): down(), emit(), purge(), A linha que o recipe do Orca consome. A porta e LIDA do podman, nunca…, Remove containers e redes. NAO remove ~/asb-agent/<proj>/<ws>: ali vive o…, Religa o workspace. E `podman start`, e so. Nao ha ordem a respeitar por…, Recarrega a allowlist do proxy sem tocar no container do agente. Preserva a…, Remove tambem os ARQUIVOS do workspace. Irreversivel, logo explicito. (+15 more)
 
 ### Community 48 - "doctor.py"
-Cohesion: 0.13
-Nodes (22): Any, ArgumentParser, build_parser(), main(), check_legacy_agent_container(), check_workspace_egress(), doctor(), _host_version() (+14 more)
+Cohesion: 0.15
+Nodes (20): ArgumentParser, build_parser(), main(), check_legacy_agent_container(), check_workspace_egress(), doctor(), _host_version(), _image_version() (+12 more)
 
-### Community 49 - "Secret Service singleton para credenciais dos agentes"
-Cohesion: 0.10
-Nodes (17): Global Constraints, Singleton Secret Service Implementation Plan, Task 1: Criar um teste de regressão isolado para o Secret Service, Task 2: Transformar `start-keyring.sh` em serviço singleton, Task 3: Adicionar o ciclo de vida do serviço global, Task 4: Tornar o entrypoint exclusivamente cliente do Secret Service, Task 5: Validar login real no mesmo serviço e diagnosticar falhas, Task 6: Atualizar o SSoT e executar a verificação completa (+9 more)
+### Community 49 - "Singleton Secret Service Implementation Plan"
+Cohesion: 0.18
+Nodes (8): Global Constraints, Singleton Secret Service Implementation Plan, Task 1: Criar um teste de regressão isolado para o Secret Service, Task 2: Transformar `start-keyring.sh` em serviço singleton, Task 3: Adicionar o ciclo de vida do serviço global, Task 4: Tornar o entrypoint exclusivamente cliente do Secret Service, Task 5: Validar login real no mesmo serviço e diagnosticar falhas, Task 6: Atualizar o SSoT e executar a verificação completa
 
 ### Community 50 - "File Structure"
 Cohesion: 0.12
@@ -359,17 +368,17 @@ Nodes (4): Available Subagents (`.claude/agents/`), Claude Code Configuration, K
 Cohesion: 0.50
 Nodes (4): Available Subagents (`.agents/agents/`), Google Antigravity & Gemini CLI Configuration, Knowledge Graph (`graphify-out/`), Skills (`.agents/skills/`)
 
-### Community 76 - "down"
-Cohesion: 0.14
-Nodes (15): down(), _origin_of(), pull(), purge(), Remove containers e redes. NAO remove ~/asb-agent/<proj>/<ws>: ali vive o…, Le o caminho de origem gravado no estado. `down` precisa dele para achar o…, Traz o trabalho do workspace para o checkout primario, SEM merge. O operador…, Remove tambem os ARQUIVOS do workspace. Irreversivel, logo explicito. (+7 more)
+### Community 76 - "Contratos de Autenticação por Fornecedor e Protocolo de Validação"
+Cohesion: 0.07
+Nodes (26): 1. Sumário Executivo, 2. Matriz de Contratos por Fornecedor, 3.1 Claude Code: Análise Forense do Binário e a Divergência do Libsecret, 3.2 OpenAI Codex: Análise de Armazenamento e Configuração Efetiva, 3.3 Google Antigravity: Análise de D-Bus, Secret Service e Sessão SSH, 3. Análise Detalhada dos Binários e Divergências Históricas, 4.1 Falha de Symlink sob `replace()` Atômico, 4.2 Rejeição de Symlinks por `O_NOFOLLOW` (+18 more)
 
-### Community 77 - "run"
-Cohesion: 0.19
-Nodes (10): names(), Nomes derivados do workspace. Um lugar so: no v1 a derivacao duplicada entre…, Remove todo container do workspace pelo LABEL, nunca por prefixo solto: casar…, Encaminha SO as portas declaradas para o host. Nunca faixas privadas: o host…, start_forwarder(), start_services(), _sweep_containers(), CompletedProcess (+2 more)
+### Community 77 - "get_test_image"
+Cohesion: 0.21
+Nodes (8): get_test_image(), Container-level validation using SandboxFixture under uid 1000., Proves uid 1000 can create, chmod 0600, write, and read credential files., Exercises absent destination, empty 0-byte file, malformed JSON, and broken…, Simulates the entrypoint.sh symlink layout inside the container as uid 1000.…, Proves Claude Code CLI (2.1.263) status handling under 0-byte, corrupt, broken,…, Returns local agent-sandbox image if available, else alpine fallback., TestContainerPermissionsAndPaths
 
 ### Community 78 - "SandboxFixture"
-Cohesion: 0.17
-Nodes (7): Sets up dedicated isolated paths, keys, launcher, and volumes., Creates the synthetic persistent container., Stops container cleanly (exit 0) to test unexpected zero-exit., Isolated sandbox fixture context manager for integration tests., Returns the container ID and host port mapping as (cid, port)., Checks if worktree exists., SandboxFixture
+Cohesion: 0.14
+Nodes (9): Sets up dedicated isolated paths, keys, launcher, and volumes., Creates the synthetic persistent container., Renders the systemd unit content for the pilot., Installs and reloads the unit in user systemd., Stops the supervised systemd unit., Simulates container failure by sending SIGKILL., Isolated sandbox fixture context manager for integration tests., Checks if the sentinel file exists inside the container. (+1 more)
 
 ### Community 79 - "TestSupervisorPilot"
 Cohesion: 0.17
@@ -380,40 +389,80 @@ Cohesion: 0.15
 Nodes (12): 1. Objetivo e Escopo, 2. Artefatos Desenvolvidos, 3.1. Recuperação após Falha e Preservação de Identidade, 3.2. Saída Limpa Inesperada (Código 0), 3.3. Falha em `ExecStartPost` e Limpeza por `ExecStopPost`, 3.4. Reconexão a Container em Execução, 3.5. Proteção de Isolamento, 3. Resultados dos Ensaios Empíricos (+4 more)
 
 ### Community 81 - ".teardown"
-Cohesion: 0.40
+Cohesion: 0.33
 Nodes (3): BaseException, Cleans up all registered resources strictly., TracebackType
 
 ### Community 82 - "IsolationError"
-Cohesion: 0.33
-Nodes (5): Exception, IsolationError, tests/integration/sandbox_fixture.py — isolated test fixture for systemd…, Raised when an operation attempts to access or mutate resources outside…, tests/integration/test_supervisor_pilot.py — Empirical supervision pilot test.…
+Cohesion: 0.28
+Nodes (6): Exception, IsolationError, tests/integration/sandbox_fixture.py — isolated test fixture for systemd…, Raised when an operation attempts to access or mutate resources outside…, tests/integration/test_credential_writers.py — Empirical tests for credential…, tests/integration/test_supervisor_pilot.py — Empirical supervision pilot test.…
 
 ### Community 83 - ".is_container_running"
 Cohesion: 0.33
 Nodes (3): Checks if container is currently in status 'running'., Waits until the unit is active and container is running., Verifies that no running container or orphan processes remain.
 
-### Community 90 - "._validate_path"
+### Community 84 - "Secret Service singleton para credenciais dos agentes"
+Cohesion: 0.22
+Nodes (9): Ciclo de vida, Compatibilidade e migração, Contexto, Critérios de aceitação, Decisão de arquitetura, Fora de escopo, Objetivo, Secret Service singleton para credenciais dos agentes (+1 more)
+
+### Community 87 - "2. Fatos verificados empiricamente"
 Cohesion: 0.25
-Nodes (4): CompletedProcess, Path, Executes the ASB CLI within the isolated environment., Proves SandboxFixture refuses foreign resources, production names, and external…
+Nodes (8): 2. Fatos verificados empiricamente, F1 — Rede `--internal` isola sem nftables e **persiste através de restart**, F2 — Proxy dual-homed funciona e é alcançável por nome, F3 — Publicação de porta funciona em rede interna, e a porta é estável, F4 — `podman-restart.service` já existe como unidade de usuário, F5 — O socket do Docker é inalcançável pelo usuário, F6 — Podman rootless aninhado funciona sem privilégio, F7 — O Orca cria a worktree como irmã do `projectRoot`
+
+### Community 89 - ".cli"
+Cohesion: 0.40
+Nodes (3): CompletedProcess, Runs a command inside the container via podman exec., Executes the ASB CLI within the isolated environment.
+
+### Community 90 - "Path"
+Cohesion: 0.15
+Nodes (9): Path, Filesystem-level tests for atomic replacement, symlinks, and O_NOFOLLOW., Proves atomic replace() replaces the symlink itself, leaving the stored target…, Proves opening a symlink with O_NOFOLLOW raises ELOOP (Errno 40) on Linux. This…, Tests atomic replace behavior on bind-mounted files vs bind-mounted directories., Proves os.replace() fails with EBUSY on a bind-mounted file, but succeeds in a…, TestBindMountAtomicReplace, TestCredentialWritersFilesystem (+1 more)
+
+### Community 91 - "6. Acesso a Docker"
+Cohesion: 0.40
+Nodes (5): 6.1 `host_ports` — alcançar serviços do host, 6.2 `mode = "nested"` — containers dentro do sandbox, 6.3 `host_api = "read"` — socket filtrado, só leitura, 6.4 O que não será construído, 6. Acesso a Docker
+
+### Community 96 - "16. Portabilidade e reinstalação"
+Cohesion: 0.50
+Nodes (4): 16.1 Regras, 16.2 Dependências, e o que acontece sem cada uma, 16.3 Máquina nova, do zero, 16. Portabilidade e reinstalação
+
+### Community 97 - "4. Topologia e ciclo de vida"
+Cohesion: 0.50
+Nodes (4): 4.1 Topologia, 4.2 Ciclo de vida, 4.3 Identidade do workspace, 4. Topologia e ciclo de vida
+
+### Community 98 - "5. Sistema de arquivos"
+Cohesion: 0.50
+Nodes (4): 5.1 Layout, 5.2 O estado do workspace fica FORA da pasta montada, 5.3 Como o trabalho retorna, 5. Sistema de arquivos
+
+### Community 99 - "7. Credenciais, configuração e integração dos agentes"
+Cohesion: 0.50
+Nodes (4): 7.1 Credenciais em volume, 7.2 Configuração por staging montado, 7.3 Integração dos três agentes, 7. Credenciais, configuração e integração dos agentes
+
+### Community 100 - "9. Fronteiras de segurança"
+Cohesion: 0.50
+Nodes (4): 9.1 Invariantes inegociáveis, 9.2 O que isto não protege, 9.3 DNS, 9. Fronteiras de segurança
+
+### Community 101 - "1. Por que reconstruir"
+Cohesion: 0.67
+Nodes (3): 1.1 Os problemas relatados, 1.2 A causa raiz, 1. Por que reconstruir
 
 ## Knowledge Gaps
-- **408 isolated node(s):** `1. Objetivo e Escopo`, `2. Artefatos Desenvolvidos`, `Detalhamento por Cenário:`, `3.1. Recuperação após Falha e Preservação de Identidade`, `3.2. Saída Limpa Inesperada (Código 0)` (+403 more)
+- **425 isolated node(s):** `1. Sumário Executivo`, `2. Matriz de Contratos por Fornecedor`, `Achados Forenses:`, `Achados Forenses:`, `Achados Forenses:` (+420 more)
   These have ≤1 connection - possible missing edges or undocumented components.
-- **30 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **29 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `build_staging()` connect `build_staging` to `lifecycle.py`?**
+- **Why does `Profile` connect `Profile` to `lifecycle.py`, `load_profile`, `layout_for`?**
   _High betweenness centrality (0.024) - this node is a cross-community bridge._
-- **Why does `layout_for()` connect `layout_for` to `lifecycle.py`, `down`, `Layout`?**
-  _High betweenness centrality (0.023) - this node is a cross-community bridge._
-- **Why does `up()` connect `lifecycle.py` to `PodmanError`, `layout_for`, `load_profile`, `build_staging`, `Profile`, `permitted`, `Layout`, `run`, `discover_mise_dirs`?**
-  _High betweenness centrality (0.021) - this node is a cross-community bridge._
-- **What connects `1. Objetivo e Escopo`, `2. Artefatos Desenvolvidos`, `Detalhamento por Cenário:` to the rest of the system?**
-  _408 weakly-connected nodes found - possible documentation gaps or missing edges._
-- **Should `layout_for` be split into smaller, more focused modules?**
-  _Cohesion score 0.09872241579558652 - nodes in this community are weakly interconnected._
-- **Should `assert.sh` be split into smaller, more focused modules?**
-  _Cohesion score 0.05970149253731343 - nodes in this community are weakly interconnected._
-- **Should `load_profile` be split into smaller, more focused modules?**
-  _Cohesion score 0.09898242368177614 - nodes in this community are weakly interconnected._
+- **Why does `TestLifecycleHostApi` connect `Profile` to `permitted`?**
+  _High betweenness centrality (0.018) - this node is a cross-community bridge._
+- **Why does `load_profile()` connect `load_profile` to `lifecycle.py`, `layout_for`, `Profile`?**
+  _High betweenness centrality (0.016) - this node is a cross-community bridge._
+- **Are the 2 inferred relationships involving `SandboxFixture` (e.g. with `TestContainerPermissionsAndPaths` and `TestSupervisorPilot`) actually correct?**
+  _`SandboxFixture` has 2 INFERRED edges - model-reasoned connections that need verification._
+- **What connects `1. Sumário Executivo`, `2. Matriz de Contratos por Fornecedor`, `Achados Forenses:` to the rest of the system?**
+  _425 weakly-connected nodes found - possible documentation gaps or missing edges._
+- **Should `run` be split into smaller, more focused modules?**
+  _Cohesion score 0.10526315789473684 - nodes in this community are weakly interconnected._
+- **Should `Path` be split into smaller, more focused modules?**
+  _Cohesion score 0.0960960960960961 - nodes in this community are weakly interconnected._

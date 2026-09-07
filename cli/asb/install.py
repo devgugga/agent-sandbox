@@ -128,3 +128,110 @@ def broker(root: Path) -> int:
     print("broker instalado. Habilite por projeto com [docker] host_api = "
           '"read" no .agent-sandbox.toml.', file=sys.stderr)
     return 0
+
+
+def install_runtime(
+    root: Path,
+    revision: str,
+    target_base: Path | None = None,
+) -> Path:
+    """Instala o runtime versionado em ~/.local/lib/agent-sandbox/runtime/<revisao>/.
+
+    Garante cópia independente (sem symlinks para o checkout), idempotência
+    atômica e escrita dos scripts helper (launcher e runtime_check).
+    """
+    if not revision or not isinstance(revision, str):
+        raise ValueError("Revisao nao pode ser vazia")
+    if any(c in revision for c in ("/", "\\", "..", " ", "\t", "\n", "\r")):
+        raise ValueError(f"Revisao invalida ou insegura: {revision!r}")
+
+    base = (
+        target_base
+        if target_base is not None
+        else (Path.home() / ".local" / "lib" / "agent-sandbox" / "runtime")
+    )
+    dest = base / revision
+    base.mkdir(parents=True, exist_ok=True)
+
+    staging = base / f".staging-{revision}-{os.getpid()}"
+    if staging.exists():
+        shutil.rmtree(staging, ignore_errors=True)
+    staging.mkdir(parents=True)
+
+    try:
+        # Copiar pacote asb do checkout para staging/asb
+        src_asb = root / "cli" / "asb"
+        if not src_asb.is_dir():
+            raise FileNotFoundError(f"Pacote asb nao encontrado em {src_asb}")
+
+        dst_asb = staging / "asb"
+        shutil.copytree(
+            src_asb,
+            dst_asb,
+            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+            symlinks=False,
+        )
+
+        # Gerar launcher.sh executável
+        launcher_path = staging / "launcher.sh"
+        launcher_content = (
+            "#!/bin/sh\n"
+            "set -eu\n"
+            "podman_bin=\"$(command -v podman || echo /usr/bin/podman)\"\n"
+            "container=\"\"\n"
+            "for arg in \"$@\"; do\n"
+            "    case \"$arg\" in\n"
+            "        --attach|--sig-proxy=false|--sig-proxy=*|start)\n"
+            "            ;;\n"
+            "        *)\n"
+            "            container=\"$arg\"\n"
+            "            ;;\n"
+            "    esac\n"
+            "done\n"
+            "if [ -z \"$container\" ]; then\n"
+            "    echo \"asb-launcher: missing container name\" >&2\n"
+            "    exit 2\n"
+            "fi\n"
+            "status=$(\"$podman_bin\" inspect \"$container\" --format '{{.State.Status}}' 2>/dev/null || true)\n"
+            "if [ \"$status\" = \"running\" ]; then\n"
+            "    exec \"$podman_bin\" attach --sig-proxy=false \"$container\"\n"
+            "else\n"
+            "    exec \"$podman_bin\" start --attach --sig-proxy=false \"$container\"\n"
+            "fi\n"
+        )
+        launcher_path.write_text(launcher_content, encoding="utf-8")
+        launcher_path.chmod(0o755)
+
+        # Gerar runtime_check.py executável
+        check_path = staging / "runtime_check.py"
+        check_content = (
+            "#!/usr/bin/env python3\n"
+            "import sys\n"
+            "from pathlib import Path\n"
+            "\n"
+            "runtime_dir = Path(__file__).resolve().parent\n"
+            "if str(runtime_dir) not in sys.path:\n"
+            "    sys.path.insert(0, str(runtime_dir))\n"
+            "\n"
+            "from asb.runtime_check import main\n"
+            "\n"
+            "if __name__ == \"__main__\":\n"
+            "    sys.exit(main())\n"
+        )
+        check_path.write_text(check_content, encoding="utf-8")
+        check_path.chmod(0o755)
+
+        # Troca atômica de staging para dest
+        if dest.exists():
+            backup = base / f".old-{revision}-{os.getpid()}"
+            dest.rename(backup)
+            staging.rename(dest)
+            shutil.rmtree(backup, ignore_errors=True)
+        else:
+            staging.rename(dest)
+    finally:
+        if staging.exists():
+            shutil.rmtree(staging, ignore_errors=True)
+
+    return dest
+

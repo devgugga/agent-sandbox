@@ -220,6 +220,93 @@ class TestPodmanRestart(unittest.TestCase):
         mock_run.assert_not_called()
 
 
+class TestInstallRuntime(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.tmp_path = Path(self.tmp.name)
+        self.fake_checkout = self.tmp_path / "checkout"
+        self.fake_checkout.mkdir(parents=True)
+        # Create minimal asb package in checkout
+        asb_pkg = self.fake_checkout / "cli" / "asb"
+        asb_pkg.mkdir(parents=True)
+        (asb_pkg / "__init__.py").write_text("# asb init\n")
+        (asb_pkg / "readiness.py").write_text("# readiness\n")
+        (asb_pkg / "runtime_check.py").write_text("# runtime_check\n")
+        self.target_base = self.tmp_path / "runtime_lib"
+
+    def test_install_runtime_copies_asb_and_scripts_without_symlinks(self):
+        dest = install.install_runtime(
+            self.fake_checkout,
+            revision="rev-test-1",
+            target_base=self.target_base,
+        )
+
+        self.assertEqual(dest, self.target_base / "rev-test-1")
+        self.assertTrue(dest.is_dir())
+        self.assertTrue((dest / "asb" / "__init__.py").is_file())
+        self.assertTrue((dest / "asb" / "readiness.py").is_file())
+        self.assertTrue((dest / "launcher.sh").is_file())
+        self.assertTrue((dest / "runtime_check.py").is_file())
+
+        # Mode executable on scripts
+        launcher_mode = (dest / "launcher.sh").stat().st_mode
+        self.assertTrue(launcher_mode & 0o111)
+        check_mode = (dest / "runtime_check.py").stat().st_mode
+        self.assertTrue(check_mode & 0o111)
+
+        # Strictly NO symlinks in installed runtime
+        for p in dest.rglob("*"):
+            self.assertFalse(p.is_symlink(), f"Found symlink in installed runtime: {p}")
+
+    def test_install_runtime_idempotent_when_called_twice(self):
+        dest1 = install.install_runtime(
+            self.fake_checkout,
+            revision="rev-test-1",
+            target_base=self.target_base,
+        )
+        dest2 = install.install_runtime(
+            self.fake_checkout,
+            revision="rev-test-1",
+            target_base=self.target_base,
+        )
+        self.assertEqual(dest1, dest2)
+        self.assertTrue((dest2 / "asb" / "__init__.py").is_file())
+
+    def test_install_runtime_functional_when_checkout_moves(self):
+        dest = install.install_runtime(
+            self.fake_checkout,
+            revision="rev-test-1",
+            target_base=self.target_base,
+        )
+        # Move checkout away
+        moved_checkout = self.tmp_path / "moved_checkout"
+        self.fake_checkout.rename(moved_checkout)
+
+        # Dest must still have all files and be functional
+        self.assertTrue((dest / "asb" / "__init__.py").is_file())
+        self.assertTrue((dest / "launcher.sh").is_file())
+        self.assertTrue((dest / "runtime_check.py").is_file())
+
+    def test_install_runtime_rejects_unsafe_revisions(self):
+        unsafe_revisions = [
+            "",
+            "../escape",
+            "rev/slash",
+            "rev\\backslash",
+            "rev\nnewline",
+            "rev with spaces",
+        ]
+        for rev in unsafe_revisions:
+            with self.assertRaises(ValueError, msg=f"Should reject revision {rev!r}"):
+                install.install_runtime(
+                    self.fake_checkout,
+                    revision=rev,
+                    target_base=self.target_base,
+                )
+
+
 if __name__ == "__main__":
     unittest.main()
+
 

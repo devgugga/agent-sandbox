@@ -4,6 +4,9 @@ import unittest
 from pathlib import Path
 
 from cli.asb.lifecycle import discover_mise_dirs
+from cli.asb.readiness import ProbeResult
+
+_HEALTHY_PROBE = ProbeResult("workspace", "healthy", "ok", 0, "")
 
 
 class TestDiscoverMiseDirs(unittest.TestCase):
@@ -278,6 +281,7 @@ class TestLifecycleOrdering(unittest.TestCase):
                  mock.patch("cli.asb.lifecycle.podman.run", side_effect=fake_run), \
                  mock.patch("cli.asb.lifecycle.podman.out", return_value=""), \
                  mock.patch("cli.asb.lifecycle.layout_for", return_value=fake_layout), \
+                 mock.patch("cli.asb.readiness.wait_until", return_value=_HEALTHY_PROBE), \
                  mock.patch("cli.asb.lifecycle.emit", return_value=0):
                 rc = resume(fake_root, "test-ws")
                 self.assertEqual(rc, 0)
@@ -420,6 +424,7 @@ class TestLifecycleOrdering(unittest.TestCase):
                  mock.patch("cli.asb.lifecycle.podman.run", side_effect=fake_run), \
                  mock.patch("cli.asb.lifecycle.podman.out", return_value=""), \
                  mock.patch("cli.asb.lifecycle.layout_for", return_value=fake_layout), \
+                 mock.patch("cli.asb.readiness.wait_until", return_value=_HEALTHY_PROBE), \
                  mock.patch("cli.asb.lifecycle.emit", return_value=0):
                 rc = resume(fake_root, "test-ws")
                 self.assertEqual(rc, 0)
@@ -431,6 +436,141 @@ class TestLifecycleOrdering(unittest.TestCase):
                 events.index("ensure_keyring_service"),
                 events.index("podman start asb-test-ws-proxy"),
             )
+
+
+class TestResumeReadinessGate(unittest.TestCase):
+    """A#2: `resume` legacy publicava conexao sem verificar nada.
+
+    O ramo legacy fazia `podman start ... check=False` num loop, engolia
+    todo erro e caia direto no `emit`, retornando 0 sempre. O gate de
+    prontidao vivia apenas dentro do ramo systemd. O ramo legacy e o
+    caminho DEFAULT, em uso em producao.
+
+    Regra da spec (T1): falha de infraestrutura impede emitir conexao —
+    stdout vazio, retorno != 0, e NENHUM dado destruido.
+    """
+
+    @staticmethod
+    def _fake_wait_until(probe, *, timeout, interval=1.0):
+        """Executa o callback UMA vez: exercita o `check_ws` real sem
+        gastar os 30s de retry do `wait_until` de producao."""
+        return probe(min(5.0, timeout))
+
+    def _run_legacy_resume(self, probes):
+        from unittest import mock
+        from cli.asb.lifecycle import resume
+        from cli.asb.workspace import Layout
+        import contextlib
+        import io
+
+        podman_calls: list[tuple] = []
+
+        def fake_run(*args, **kwargs):
+            podman_calls.append(args)
+            return mock.MagicMock(returncode=0)
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            fake_root = tmp / "repo-root"
+            fake_state = tmp / "state"
+            fake_mount = tmp / "mount"
+            fake_origin = tmp / "origin"
+            for d in (fake_root, fake_state, fake_mount, fake_origin):
+                d.mkdir(parents=True)
+            project_root = fake_mount / "proj"
+            project_root.mkdir(parents=True)
+            work = project_root / "trabalho-do-agente.txt"
+            work.write_text("dados do workspace", encoding="utf-8")
+
+            fake_layout = Layout(
+                ws="test-ws", project="proj", mount=fake_mount,
+                project_root=project_root, state=fake_state)
+            fake_names = {
+                "net": "asb-test-ws", "out": "asb-test-ws-out",
+                "agent": "asb-test-ws-agent", "proxy": "asb-test-ws-proxy",
+            }
+
+            stdout, stderr = io.StringIO(), io.StringIO()
+            with mock.patch("cli.asb.lifecycle._require_workspace",
+                            return_value=(fake_names, tmp / "home", fake_origin)), \
+                 mock.patch("cli.asb.lifecycle.podman.ensure_rootless_netns"), \
+                 mock.patch("cli.asb.lifecycle.ensure_keyring_service"), \
+                 mock.patch("cli.asb.lifecycle.podman.exists", return_value=True), \
+                 mock.patch("cli.asb.lifecycle.podman.run", side_effect=fake_run), \
+                 mock.patch("cli.asb.lifecycle.podman.out", return_value="127.0.0.1:2222"), \
+                 mock.patch("cli.asb.lifecycle.layout_for", return_value=fake_layout), \
+                 mock.patch("cli.asb.readiness.probe_workspace", return_value=probes), \
+                 mock.patch("cli.asb.readiness.wait_until",
+                            side_effect=self._fake_wait_until):
+                with contextlib.redirect_stdout(stdout), \
+                     contextlib.redirect_stderr(stderr):
+                    rc = resume(fake_root, "test-ws")
+
+            # Capturado AINDA dentro do TemporaryDirectory: o worktree
+            # sintetico desaparece com o tmpdir, nao com o `resume`.
+            return (
+                rc,
+                stdout.getvalue(),
+                stderr.getvalue(),
+                (work.is_file(), work.read_text(encoding="utf-8") if work.is_file() else None),
+                podman_calls,
+            )
+
+    def test_legacy_resume_with_broken_proxy_refuses_to_emit(self):
+        from cli.asb.readiness import ProbeResult
+
+        probes = [
+            ProbeResult("host", "healthy", "ok", 1, ""),
+            ProbeResult("proxy", "failed", "connect_failed", 2,
+                        "verifique conectividade do destino ou uplink"),
+            ProbeResult("ssh", "healthy", "ok", 3, ""),
+            ProbeResult("keyring", "healthy", "ok", 4, ""),
+        ]
+        rc, out, err, work, podman_calls = self._run_legacy_resume(probes)
+
+        self.assertEqual(rc, 1)
+        self.assertEqual(out, "")
+        self.assertIn("proxy", err)
+        self.assertIn("connect_failed", err)
+        # Nenhum dado destruido: o worktree segue intacto e nenhuma remocao
+        # foi disparada contra containers, volumes ou redes.
+        self.assertEqual(work, (True, "dados do workspace"))
+        self.assertEqual([c for c in podman_calls if "rm" in c], [])
+
+    def test_legacy_resume_with_broken_ssh_refuses_to_emit(self):
+        from cli.asb.readiness import ProbeResult
+
+        probes = [
+            ProbeResult("host", "healthy", "ok", 1, ""),
+            ProbeResult("proxy", "healthy", "ok", 2, ""),
+            ProbeResult("ssh", "failed", "connection_refused", 3,
+                        "conexao recusada: verifique se sshd esta ativo"),
+            ProbeResult("keyring", "healthy", "ok", 4, ""),
+        ]
+        rc, out, err, work, _ = self._run_legacy_resume(probes)
+
+        self.assertEqual(rc, 1)
+        self.assertEqual(out, "")
+        self.assertIn("connection_refused", err)
+        self.assertEqual(work, (True, "dados do workspace"))
+
+    def test_legacy_resume_emits_only_when_every_probe_is_healthy(self):
+        from cli.asb.readiness import ProbeResult
+        import json as _json
+
+        probes = [
+            ProbeResult("host", "healthy", "ok", 1, ""),
+            ProbeResult("proxy", "healthy", "ok", 2, ""),
+            ProbeResult("ssh", "healthy", "ok", 3, ""),
+            ProbeResult("keyring", "healthy", "ok", 4, ""),
+        ]
+        rc, out, err, work, _ = self._run_legacy_resume(probes)
+
+        self.assertEqual(rc, 0)
+        payload = _json.loads(out)
+        self.assertEqual(payload["workspace"], "test-ws")
+        self.assertEqual(payload["port"], 2222)
+        self.assertEqual(work, (True, "dados do workspace"))
 
 
 class TestKeyringPreservation(unittest.TestCase):

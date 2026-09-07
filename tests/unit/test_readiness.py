@@ -306,6 +306,84 @@ class TestProbeWorkspace(unittest.TestCase):
         self.assertNotIn("unauthenticated", [item.state for item in result])
 
 
+class TestProbeSshIdentityAtCallSites(unittest.TestCase):
+    """A#3: a sonda SSH tem de discar como o usuario REAL do host.
+
+    `probe_ssh` trazia `user="v"` como default e apenas `lifecycle.up` o
+    sobrescrevia. Os outros dois call sites — `probe_workspace` (consumido
+    por `resume`) e `runtime_check` (gravado no ExecStartPost de TODA
+    unidade systemd) — herdavam o literal. Consequencia: `--runtime systemd`
+    so funcionava para um operador chamado `v`, e o ExecStartPost falhando
+    marcava como failed um container saudavel. Estes testes atravessam os
+    DOIS call sites com um usuario diferente e provam o argv do ssh: um
+    teste que chamasse `probe_ssh` diretamente passaria mesmo com o literal
+    de volta nos call sites.
+    """
+
+    @staticmethod
+    def _capture_ssh_argv(captured: list[list[str]]):
+        def fake_run(cmd, *args, **kwargs):
+            captured.append(list(cmd))
+            return mock.Mock(returncode=0, stdout="", stderr="")
+        return fake_run
+
+    def test_probe_workspace_uses_real_host_user_not_literal(self):
+        captured: list[list[str]] = []
+        healthy = ProbeResult("x", "healthy", "ok", 1, "")
+
+        with mock.patch("getpass.getuser", return_value="alice"), \
+             mock.patch("asb.readiness.probe_host", return_value=healthy), \
+             mock.patch("asb.readiness.probe_proxy", return_value=healthy), \
+             mock.patch("asb.readiness.probe_keyring", return_value=healthy), \
+             mock.patch("asb.podman.running", return_value=True), \
+             mock.patch("asb.podman.out", return_value="127.0.0.1:2222"), \
+             mock.patch("subprocess.run", side_effect=self._capture_ssh_argv(captured)):
+            results = probe_workspace("test-identity")
+
+        ssh_results = [r for r in results if r.component == "ssh"]
+        self.assertEqual([r.state for r in ssh_results], ["healthy"])
+        self.assertEqual(len(captured), 1)
+        self.assertIn("alice@127.0.0.1", captured[0])
+        self.assertNotIn("v@127.0.0.1", captured[0])
+
+    def test_runtime_check_agent_role_uses_real_host_user_not_literal(self):
+        captured: list[list[str]] = []
+        healthy = ProbeResult("x", "healthy", "ok", 1, "")
+
+        with tempfile.NamedTemporaryFile("w", suffix=".json") as f:
+            json.dump({
+                "schemaVersion": 1,
+                "workspace": "test-identity",
+                "containers": {
+                    "proxy": {"name": "asb-test-identity-proxy", "id": "p1"},
+                    "agent": {"name": "asb-test-identity-agent", "id": "a1",
+                              "port": 2222},
+                },
+            }, f)
+            f.flush()
+
+            with mock.patch("getpass.getuser", return_value="alice"), \
+                 mock.patch("asb.runtime_check.probe_proxy", return_value=healthy), \
+                 mock.patch("asb.runtime_check.probe_keyring", return_value=healthy), \
+                 mock.patch("subprocess.run", side_effect=self._capture_ssh_argv(captured)):
+                code = runtime_check.main(
+                    ["--manifest", f.name, "--role", "agent"])
+
+        self.assertEqual(code, 0)
+        self.assertEqual(len(captured), 1)
+        self.assertIn("alice@127.0.0.1", captured[0])
+        self.assertNotIn("v@127.0.0.1", captured[0])
+
+    def test_probe_ssh_still_honours_explicit_user(self):
+        captured: list[list[str]] = []
+        with mock.patch("getpass.getuser", return_value="alice"), \
+             mock.patch("subprocess.run", side_effect=self._capture_ssh_argv(captured)):
+            res = probe_ssh(port=2222, user="bob", key=Path("/fake/key"),
+                            timeout=2.0)
+        self.assertEqual(res.state, "healthy")
+        self.assertIn("bob@127.0.0.1", captured[0])
+
+
 class TestRuntimeCheck(unittest.TestCase):
     def test_runtime_check_proxy_role_success(self):
         with tempfile.NamedTemporaryFile("w", suffix=".json") as f:

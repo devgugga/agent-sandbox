@@ -6,6 +6,7 @@ para host, proxy, SSH, keyring e workspaces, conforme o desenho §5.1.
 from __future__ import annotations
 
 import errno
+import getpass
 import os
 import shutil
 import socket
@@ -180,12 +181,23 @@ def probe_proxy(
 
 def probe_ssh(
     port: int,
-    user: str = "v",
+    user: str | None = None,
     key: Path | None = None,
     timeout: float = 5.0,
 ) -> ProbeResult:
-    """Executa 'true' via SSH com chave e porta informadas."""
+    """Executa 'true' via SSH com chave e porta informadas.
+
+    `user` omitido resolve para o usuario real do host (`getpass.getuser()`),
+    NUNCA para um nome literal: a imagem base e construida espelhando
+    `id -un` do host (`lifecycle.build`) e `emit` publica esse mesmo nome no
+    JSON de conexao. Um default literal fazia a sonda discar como outro
+    usuario em toda maquina cujo operador nao se chamasse assim — inclusive
+    dentro do ExecStartPost gravado em disco por `--runtime systemd`, onde a
+    falha marca como failed um container saudavel.
+    """
     started = monotonic()
+    if user is None:
+        user = getpass.getuser()
     if key is None:
         from .lifecycle import SSH_KEY
         key = SSH_KEY

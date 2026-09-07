@@ -795,11 +795,14 @@ def resume(root: Path, ws: str) -> int:
     """Religa o workspace.
 
     Em runtime gerenciado (systemd):
-    Habilita o target, executa reset-failed nas unidades do workspace,
-    inicia o target, e aguarda sondas de prontidão (readiness.probe_workspace).
+    Habilita o target, executa reset-failed nas unidades do workspace e
+    inicia o target.
 
     Em runtime legado:
     Religa os containers com podman start.
+
+    Nos DOIS runtimes, o JSON de conexão só é emitido depois que
+    readiness.probe_workspace reporta tudo saudável.
     """
     n, home, origin = _require_workspace(ws)
     layout = layout_for(origin, ws, home)
@@ -828,18 +831,6 @@ def resume(root: Path, ws: str) -> int:
             stderr=subprocess.DEVNULL,
         )
         supervisor.start_workspace(ws)
-
-        def check_ws(to: float) -> readiness.ProbeResult:
-            probes = readiness.probe_workspace(ws)
-            for p in probes:
-                if p.state != "healthy":
-                    return p
-            return readiness.ProbeResult("workspace", "healthy", "ok", 0, "")
-
-        probe_res = readiness.wait_until(check_ws, timeout=30.0)
-        if probe_res.state != "healthy":
-            print(f"erro: falha na prontidao do workspace ({probe_res.component}: {probe_res.code}): {probe_res.remediation}", file=sys.stderr)
-            return 1
     else:
         if podman.exists("container", n["proxy"]):
             podman.run("start", n["proxy"], check=False)
@@ -851,6 +842,25 @@ def resume(root: Path, ws: str) -> int:
         for container in sorted(found):
             if container != n["proxy"] and podman.exists("container", container):
                 podman.run("start", container, check=False)
+
+    # Gate de prontidao COMUM aos dois runtimes: `resume` so publica conexao
+    # depois que host, proxy, SSH e keyring respondem. O ramo legacy e o
+    # caminho default e usa `podman start ... check=False`, que engole todo
+    # erro; sem este gate ele retornava 0 e emitia o JSON de conexao para um
+    # workspace sem egresso. Infraestrutura quebrada impede emitir conexao
+    # (spec T1): stdout vazio, diagnostico em stderr, retorno 1 — e NENHUM
+    # dado do workspace destruido, os containers ficam de pe para diagnose.
+    def check_ws(to: float) -> readiness.ProbeResult:
+        probes = readiness.probe_workspace(ws)
+        for probe in probes:
+            if probe.state != "healthy":
+                return probe
+        return readiness.ProbeResult("workspace", "healthy", "ok", 0, "")
+
+    probe_res = readiness.wait_until(check_ws, timeout=30.0)
+    if probe_res.state != "healthy":
+        print(f"erro: falha na prontidao do workspace ({probe_res.component}: {probe_res.code}): {probe_res.remediation}", file=sys.stderr)
+        return 1
 
     return emit(ws, layout)
 

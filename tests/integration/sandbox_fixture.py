@@ -44,6 +44,7 @@ class SandboxFixture:
         use_launcher: bool = False,
         auto_setup: bool = True,
         extra_create_args: list[str] | None = None,
+        forwarder_ports: list[int] | tuple[int, ...] | None = None,
     ) -> None:
         if not label or not label.isalnum():
             raise ValueError(f"Label inválido: {label!r} (deve ser alfanumérico)")
@@ -56,6 +57,8 @@ class SandboxFixture:
         # Resource names adhering strictly to prefix
         self.container = f"{self._prefix}-pilot"
         self.unit = f"{self._prefix}-pilot.service"
+        self.forwarder_container = f"{self._prefix}-fwd"
+        self.forwarder_unit = f"{self._prefix}-fwd.service"
         self.credentials_volume = f"{self._prefix}-credentials"
         self.toolcache_volume = f"{self._prefix}-toolcache"
         self.keyring_runtime_volume = f"{self._prefix}-keyring-runtime"
@@ -63,6 +66,7 @@ class SandboxFixture:
         self.keyring_container = f"{self._prefix}-keyring"
         self.net_internal = f"{self._prefix}-net"
         self.net_out = f"{self._prefix}-out"
+        self.forwarder_ports = list(forwarder_ports) if forwarder_ports is not None else []
 
         self._port = port
         self._image = image
@@ -100,6 +104,7 @@ class SandboxFixture:
             self._unit_dir = Path.home() / ".config" / "systemd" / "user"
             self._unit_dir.mkdir(parents=True, exist_ok=True)
         self._unit_file = self._unit_dir / self.unit
+        self._forwarder_unit_file = self._unit_dir / self.forwarder_unit
 
         # Strict registration tracking
         self._registered_containers: set[str] = set()
@@ -145,7 +150,7 @@ class SandboxFixture:
     def _validate_path(self, path: Path | str) -> Path:
         p = Path(path).resolve()
         is_inside_state = self.state_root in p.parents or p == self.state_root
-        is_unit_file = p.parent == self._unit_dir and p.name == self.unit
+        is_unit_file = p.parent == self._unit_dir and (p.name == self.unit or p.name == self.forwarder_unit)
         if not (is_inside_state or is_unit_file):
             raise IsolationError(f"Caminho {p} recusado: fora da raiz temporária da fixture")
         return p
@@ -156,22 +161,24 @@ class SandboxFixture:
         self.config_dir.mkdir(parents=True, exist_ok=True)
 
         # Generate dedicated SSH key
-        subprocess.run(
-            [
-                "ssh-keygen",
-                "-t",
-                "ed25519",
-                "-N",
-                "",
-                "-f",
-                str(self.ssh_key),
-                "-C",
-                self.workspace,
-            ],
-            check=True,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
+        if not self.ssh_key.exists():
+            subprocess.run(
+                [
+                    "ssh-keygen",
+                    "-t",
+                    "ed25519",
+                    "-N",
+                    "",
+                    "-f",
+                    str(self.ssh_key),
+                    "-C",
+                    self.workspace,
+                ],
+                check=True,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
 
         # Generate dedicated passphrase
         self.passphrase_file.write_text(
@@ -436,6 +443,146 @@ class SandboxFixture:
         cmd.extend(args)
         return subprocess.run(cmd, capture_output=True, text=True, check=check)
 
+    def setup_forwarder(
+        self,
+        ports: list[int] | tuple[int, ...] | None = None,
+        *,
+        use_old_script: bool = False,
+    ) -> None:
+        """Sets up and starts the forwarder container with the declared ports."""
+        if ports is not None:
+            self.forwarder_ports = list(ports)
+        if not self.forwarder_ports:
+            return
+
+        self.register_container(self.forwarder_container)
+
+        port_args = [str(p) for p in self.forwarder_ports]
+
+        if use_old_script:
+            script = " ".join(
+                f"socat TCP-LISTEN:{port},fork,reuseaddr TCP:host.containers.internal:{port} &"
+                for port in self.forwarder_ports
+            )
+            cmd = [
+                self._podman_bin,
+                "run",
+                "-d",
+                "--name",
+                self.forwarder_container,
+                "--restart",
+                "always",
+                "--sysctl",
+                "net.ipv4.ip_unprivileged_port_start=0",
+                "--user",
+                "900",
+                "agent-sandbox-proxy:latest",
+                "sh",
+                "-c",
+                f"trap 'exit 0' TERM; {script} wait",
+            ]
+        else:
+            cmd = [
+                self._podman_bin,
+                "run",
+                "-d",
+                "--name",
+                self.forwarder_container,
+                "--restart",
+                "always",
+                "--sysctl",
+                "net.ipv4.ip_unprivileged_port_start=0",
+                "--user",
+                "900",
+                "--entrypoint",
+                "/usr/local/bin/asb-forwarder",
+                "agent-sandbox-proxy:latest",
+                *port_args,
+            ]
+
+        subprocess.run(cmd, check=True, capture_output=True, text=True)
+
+        for p in self.forwarder_ports:
+            if not self.wait_forwarder_listener(p, timeout=15.0):
+                raise RuntimeError(f"Forwarder listener não subiu na porta {p}")
+
+    def forwarder_restart_count(self) -> int:
+        """Returns the restart count of the forwarder from systemd or podman."""
+        restarts = 0
+        if self.forwarder_unit in self._registered_units:
+            res_unit = subprocess.run(
+                ["systemctl", "--user", "show", self.forwarder_unit, "-p", "NRestarts"],
+                capture_output=True,
+                text=True,
+            )
+            if res_unit.returncode == 0 and res_unit.stdout.strip().startswith("NRestarts="):
+                val = res_unit.stdout.strip().split("=", 1)[1]
+                if val.isdigit():
+                    restarts = max(restarts, int(val))
+
+        res = subprocess.run(
+            [self._podman_bin, "inspect", self.forwarder_container, "--format", "{{.RestartCount}}"],
+            capture_output=True,
+            text=True,
+        )
+        if res.returncode == 0:
+            out = res.stdout.strip()
+            if out.isdigit():
+                restarts = max(restarts, int(out))
+
+        return restarts
+
+    def fail_forwarder_listener(self, port: int) -> None:
+        """Kills the specific socat process listening on port inside the forwarder container.
+
+        Uses PID inside the container only, never pgrep on the host.
+        """
+        find_cmd = [
+            self._podman_bin,
+            "exec",
+            self.forwarder_container,
+            "bash",
+            "-c",
+            f"ss -tlnp 'sport = :{port}' 2>/dev/null | grep -o 'pid=[0-9]\\+' | head -n1 | cut -d= -f2",
+        ]
+        res = subprocess.run(find_cmd, capture_output=True, text=True)
+        pid = res.stdout.strip()
+        if not pid or not pid.isdigit():
+            raise RuntimeError(
+                f"Listener para a porta {port} não encontrado no container {self.forwarder_container}"
+            )
+
+        kill_cmd = [
+            self._podman_bin,
+            "exec",
+            self.forwarder_container,
+            "kill",
+            "-9",
+            pid,
+        ]
+        subprocess.run(kill_cmd, capture_output=True, text=True)
+
+    def wait_forwarder_listener(self, port: int, timeout: float = 30.0) -> bool:
+        """Waits until the forwarder has an active LISTEN socket on port."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            res = subprocess.run(
+                [
+                    self._podman_bin,
+                    "exec",
+                    self.forwarder_container,
+                    "ss",
+                    "-tln",
+                    f"sport = :{port}",
+                ],
+                capture_output=True,
+                text=True,
+            )
+            if res.returncode == 0 and "LISTEN" in res.stdout:
+                return True
+            time.sleep(0.2)
+        return False
+
     def break_proxy(self) -> None:
         """Simulates proxy failure for readiness testing."""
         self._proxy_broken = True
@@ -507,6 +654,9 @@ class SandboxFixture:
         if self._unit_file.exists():
             self._validate_path(self._unit_file)
             self._unit_file.unlink(missing_ok=True)
+        if self._forwarder_unit_file.exists():
+            self._validate_path(self._forwarder_unit_file)
+            self._forwarder_unit_file.unlink(missing_ok=True)
 
         subprocess.run(
             ["systemctl", "--user", "daemon-reload"],
@@ -551,6 +701,8 @@ class SandboxFixture:
         if self._auto_setup:
             self.setup_container()
             self.install_unit()
+            if self.forwarder_ports:
+                self.setup_forwarder()
         return self
 
     def __exit__(

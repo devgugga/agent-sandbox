@@ -477,5 +477,46 @@ class TestKeyringPreservation(unittest.TestCase):
             purge("demo", confirmed=True)
             mock_down.assert_called_once_with("demo")
 
+
+class TestStartForwarder(unittest.TestCase):
+    def test_start_forwarder_no_ports_is_noop(self):
+        from unittest import mock
+        from cli.asb.lifecycle import start_forwarder
+        from cli.asb.profile import Profile
+
+        profile = Profile(host_ports=())
+        with mock.patch("cli.asb.lifecycle.podman.run") as mock_run:
+            start_forwarder("demo", profile)
+            mock_run.assert_not_called()
+
+    def test_start_forwarder_invokes_podman_with_sysctl_and_entrypoint(self):
+        from unittest import mock
+        from cli.asb.lifecycle import start_forwarder
+        from cli.asb.profile import Profile
+
+        profile = Profile(host_ports=(80, 5432))
+        with mock.patch("cli.asb.lifecycle.podman.run") as mock_run:
+            start_forwarder("demo", profile)
+            mock_run.assert_called_once()
+            args = mock_run.call_args[0]
+            self.assertEqual(args[0], "run")
+            self.assertIn("--sysctl", args)
+            idx = args.index("--sysctl")
+            self.assertEqual(args[idx + 1], "net.ipv4.ip_unprivileged_port_start=0")
+            self.assertIn("--entrypoint", args)
+            e_idx = args.index("--entrypoint")
+            self.assertEqual(args[e_idx + 1], "/usr/local/bin/asb-forwarder")
+            self.assertEqual(args[-2:], ("80", "5432"))
+
+    def test_start_forwarder_invalid_ports_raise_value_error(self):
+        from cli.asb.lifecycle import start_forwarder
+        from cli.asb.profile import Profile
+
+        for invalid_port in (0, 70000, -1, "80"):
+            profile = Profile(host_ports=(invalid_port,))  # type: ignore
+            with self.assertRaises(ValueError):
+                start_forwarder("demo", profile)
+
+
 if __name__ == "__main__":
     unittest.main()

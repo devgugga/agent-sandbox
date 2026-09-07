@@ -399,17 +399,19 @@ def start_forwarder(ws: str, profile: Profile) -> None:
     """
     if not profile.host_ports:
         return
+    for port in profile.host_ports:
+        if not isinstance(port, int) or isinstance(port, bool) or not (1 <= port <= 65535):
+            raise ValueError(f"Porta invalida para forwarder: {port!r}")
     n = names(ws)
     forwarder = f"{n['net']}-fwd"
-    script = " ".join(
-        f"socat TCP-LISTEN:{port},fork,reuseaddr "
-        f"TCP:host.containers.internal:{port} &" for port in profile.host_ports)
+    port_args = [str(port) for port in profile.host_ports]
     podman.run("run", "-d", "--name", forwarder,
                "--label", f"asb.workspace={ws}",
                "--restart", "unless-stopped",
+               "--sysctl", "net.ipv4.ip_unprivileged_port_start=0",
                "--network", f"{n['net']},{n['out']}", "--user", "900",
-               "--entrypoint", "sh", PROXY_IMAGE,
-               "-c", f"trap 'exit 0' TERM; {script} wait")
+               "--entrypoint", "/usr/local/bin/asb-forwarder",
+               PROXY_IMAGE, *port_args)
 
 
 PRUNED_DIRS = {

@@ -101,9 +101,9 @@ def render_unit(unit: ContainerUnit) -> str:
     exec_start_post_line = ""
     if unit.role in ("proxy", "agent"):
         check_path = (
-            unit.helper_path.parent / "runtime_check.py"
-            if unit.helper_path.is_file()
-            else unit.helper_path / "runtime_check.py"
+            unit.helper_path / "runtime_check.py"
+            if unit.helper_path.is_dir()
+            else unit.helper_path.parent / "runtime_check.py"
         )
         exec_start_post_line = (
             f"ExecStartPost={escape_systemd_arg(check_path)} "

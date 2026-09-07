@@ -680,6 +680,19 @@
       "source_location": "L17"
     },
     {
+      "id": "tests_integration_test_credential_writers_testbindmountatomicreplace",
+      "label": "TestBindMountAtomicReplace",
+      "_callable": true,
+      "_callable_class": true,
+      "_origin": "ast",
+      "community": 77,
+      "community_name": "get_test_image",
+      "file_type": "code",
+      "norm_label": "testbindmountatomicreplace",
+      "source_file": "tests/integration/test_credential_writers.py",
+      "source_location": "L90"
+    },
+    {
       "id": "tests_integration_test_credential_writers_testcontainerpermissionsandpaths",
       "label": "TestContainerPermissionsAndPaths",
       "_callable": true,
@@ -690,7 +703,7 @@
       "file_type": "code",
       "norm_label": "testcontainerpermissionsandpaths",
       "source_file": "tests/integration/test_credential_writers.py",
-      "source_location": "L170"
+      "source_location": "L166"
     },
     {
       "id": "tests_integration_sandbox_fixture_sandboxfixture",
@@ -732,26 +745,13 @@
       "source_location": "L27"
     },
     {
-      "id": "tests_integration_test_credential_writers_testbindmountatomicreplace",
-      "label": "TestBindMountAtomicReplace",
-      "_callable": true,
-      "_callable_class": true,
-      "_origin": "ast",
-      "community": 90,
-      "community_name": "Path",
-      "file_type": "code",
-      "norm_label": "testbindmountatomicreplace",
-      "source_file": "tests/integration/test_credential_writers.py",
-      "source_location": "L90"
-    },
-    {
       "id": "tests_integration_test_credential_writers_testcredentialwritersfilesystem",
       "label": "TestCredentialWritersFilesystem",
       "_callable": true,
       "_callable_class": true,
       "_origin": "ast",
       "community": 90,
-      "community_name": "Path",
+      "community_name": "TestCredentialWritersFilesystem",
       "file_type": "code",
       "norm_label": "testcredentialwritersfilesystem",
       "source_file": "tests/integration/test_credential_writers.py",
@@ -1332,6 +1332,42 @@
       "norm_label": ".worktree_exists()",
       "source_file": "tests/integration/sandbox_fixture.py",
       "source_location": "L450"
+    },
+    {
+      "id": "tests_integration_sandbox_fixture_sandboxfixture_stop",
+      "label": ".stop()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 105,
+      "community_name": ".stop",
+      "file_type": "code",
+      "norm_label": ".stop()",
+      "source_file": "tests/integration/sandbox_fixture.py",
+      "source_location": "L283"
+    },
+    {
+      "id": "tests_integration_sandbox_fixture_sandboxfixture_fail_container",
+      "label": ".fail_container()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 106,
+      "community_name": ".fail_container",
+      "file_type": "code",
+      "norm_label": ".fail_container()",
+      "source_file": "tests/integration/sandbox_fixture.py",
+      "source_location": "L292"
+    },
+    {
+      "id": "tests_integration_sandbox_fixture_sandboxfixture_sentinel_exists",
+      "label": ".sentinel_exists()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 107,
+      "community_name": ".sentinel_exists",
+      "file_type": "code",
+      "norm_label": ".sentinel_exists()",
+      "source_file": "tests/integration/sandbox_fixture.py",
+      "source_location": "L416"
     },
     {
       "id": "tests_unit_test_project_projectdetectiontest_setup",
@@ -4358,6 +4394,18 @@
       "source_location": "L35"
     },
     {
+      "id": "tests_integration_test_credential_writers_testbindmountatomicreplace_test_bind_mount_file_vs_directory_atomic_replace",
+      "label": ".test_bind_mount_file_vs_directory_atomic_replace()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 77,
+      "community_name": "get_test_image",
+      "file_type": "code",
+      "norm_label": ".test_bind_mount_file_vs_directory_atomic_replace()",
+      "source_file": "tests/integration/test_credential_writers.py",
+      "source_location": "L93"
+    },
+    {
       "id": "tests_integration_test_credential_writers_testcontainerpermissionsandpaths_test_claude_cli_behavior_on_credential_states",
       "label": ".test_claude_cli_behavior_on_credential_states()",
       "_callable": true,
@@ -4367,7 +4415,7 @@
       "file_type": "code",
       "norm_label": ".test_claude_cli_behavior_on_credential_states()",
       "source_file": "tests/integration/test_credential_writers.py",
-      "source_location": "L317"
+      "source_location": "L319"
     },
     {
       "id": "tests_integration_test_credential_writers_testcontainerpermissionsandpaths_test_container_symlink_decoupling_under_atomic_replace_as_uid1000",
@@ -4391,7 +4439,7 @@
       "file_type": "code",
       "norm_label": ".test_credential_target_states_absent_empty_corrupted_broken()",
       "source_file": "tests/integration/test_credential_writers.py",
-      "source_location": "L206"
+      "source_location": "L204"
     },
     {
       "id": "tests_integration_test_credential_writers_testcontainerpermissionsandpaths_test_uid1000_credential_read_write_permissions",
@@ -4403,7 +4451,7 @@
       "file_type": "code",
       "norm_label": ".test_uid1000_credential_read_write_permissions()",
       "source_file": "tests/integration/test_credential_writers.py",
-      "source_location": "L173"
+      "source_location": "L169"
     },
     {
       "id": "tests_integration_sandbox_fixture_sandboxfixture_enter",
@@ -4416,18 +4464,6 @@
       "norm_label": ".__enter__()",
       "source_file": "tests/integration/sandbox_fixture.py",
       "source_location": "L549"
-    },
-    {
-      "id": "tests_integration_sandbox_fixture_sandboxfixture_fail_container",
-      "label": ".fail_container()",
-      "_callable": true,
-      "_origin": "ast",
-      "community": 78,
-      "community_name": "SandboxFixture",
-      "file_type": "code",
-      "norm_label": ".fail_container()",
-      "source_file": "tests/integration/sandbox_fixture.py",
-      "source_location": "L292"
     },
     {
       "id": "tests_integration_sandbox_fixture_sandboxfixture_install_unit",
@@ -4502,18 +4538,6 @@
       "source_location": "L235"
     },
     {
-      "id": "tests_integration_sandbox_fixture_sandboxfixture_sentinel_exists",
-      "label": ".sentinel_exists()",
-      "_callable": true,
-      "_origin": "ast",
-      "community": 78,
-      "community_name": "SandboxFixture",
-      "file_type": "code",
-      "norm_label": ".sentinel_exists()",
-      "source_file": "tests/integration/sandbox_fixture.py",
-      "source_location": "L416"
-    },
-    {
       "id": "tests_integration_sandbox_fixture_sandboxfixture_setup_container",
       "label": ".setup_container()",
       "_callable": true,
@@ -4538,16 +4562,28 @@
       "source_location": "L153"
     },
     {
-      "id": "tests_integration_sandbox_fixture_sandboxfixture_stop",
-      "label": ".stop()",
+      "id": "tests_integration_sandbox_fixture_sandboxfixture_teardown",
+      "label": ".teardown()",
       "_callable": true,
       "_origin": "ast",
       "community": 78,
       "community_name": "SandboxFixture",
       "file_type": "code",
-      "norm_label": ".stop()",
+      "norm_label": ".teardown()",
       "source_file": "tests/integration/sandbox_fixture.py",
-      "source_location": "L283"
+      "source_location": "L487"
+    },
+    {
+      "id": "tests_integration_sandbox_fixture_sandboxfixture_validate_path",
+      "label": "._validate_path()",
+      "_callable": true,
+      "_origin": "ast",
+      "community": 78,
+      "community_name": "SandboxFixture",
+      "file_type": "code",
+      "norm_label": "._validate_path()",
+      "source_file": "tests/integration/sandbox_fixture.py",
+      "source_location": "L145"
     },
     {
       "id": "tests_integration_sandbox_fixture_sandboxfixture_validate_resource_name",
@@ -4627,35 +4663,11 @@
       "_callable": true,
       "_origin": "ast",
       "community": 81,
-      "community_name": ".teardown",
+      "community_name": ".__exit__",
       "file_type": "code",
       "norm_label": ".__exit__()",
       "source_file": "tests/integration/sandbox_fixture.py",
       "source_location": "L556"
-    },
-    {
-      "id": "tests_integration_sandbox_fixture_sandboxfixture_teardown",
-      "label": ".teardown()",
-      "_callable": true,
-      "_origin": "ast",
-      "community": 81,
-      "community_name": ".teardown",
-      "file_type": "code",
-      "norm_label": ".teardown()",
-      "source_file": "tests/integration/sandbox_fixture.py",
-      "source_location": "L487"
-    },
-    {
-      "id": "tests_integration_sandbox_fixture_sandboxfixture_validate_path",
-      "label": "._validate_path()",
-      "_callable": true,
-      "_origin": "ast",
-      "community": 81,
-      "community_name": ".teardown",
-      "file_type": "code",
-      "norm_label": "._validate_path()",
-      "source_file": "tests/integration/sandbox_fixture.py",
-      "source_location": "L145"
     },
     {
       "id": "tests_integration_sandbox_fixture_sandboxfixture_assert_no_orphans",
@@ -4723,7 +4735,7 @@
       "_callable": true,
       "_origin": "ast",
       "community": 89,
-      "community_name": ".cli",
+      "community_name": "Path",
       "file_type": "code",
       "norm_label": ".cli()",
       "source_file": "tests/integration/sandbox_fixture.py",
@@ -4735,7 +4747,7 @@
       "_callable": true,
       "_origin": "ast",
       "community": 89,
-      "community_name": ".cli",
+      "community_name": "Path",
       "file_type": "code",
       "norm_label": ".exec()",
       "source_file": "tests/integration/sandbox_fixture.py",
@@ -4746,7 +4758,7 @@
       "label": ".__init__()",
       "_callable": true,
       "_origin": "ast",
-      "community": 90,
+      "community": 89,
       "community_name": "Path",
       "file_type": "code",
       "norm_label": ".__init__()",
@@ -4754,16 +4766,16 @@
       "source_location": "L35"
     },
     {
-      "id": "tests_integration_test_credential_writers_testbindmountatomicreplace_test_bind_mount_file_vs_directory_atomic_replace",
-      "label": ".test_bind_mount_file_vs_directory_atomic_replace()",
+      "id": "tests_integration_test_supervisor_pilot_testsupervisorpilot_test_isolation_guards_refuse_foreign_names_and_paths",
+      "label": ".test_isolation_guards_refuse_foreign_names_and_paths()",
       "_callable": true,
       "_origin": "ast",
-      "community": 90,
+      "community": 89,
       "community_name": "Path",
       "file_type": "code",
-      "norm_label": ".test_bind_mount_file_vs_directory_atomic_replace()",
-      "source_file": "tests/integration/test_credential_writers.py",
-      "source_location": "L93"
+      "norm_label": ".test_isolation_guards_refuse_foreign_names_and_paths()",
+      "source_file": "tests/integration/test_supervisor_pilot.py",
+      "source_location": "L169"
     },
     {
       "id": "tests_integration_test_credential_writers_testcredentialwritersfilesystem_test_o_nofollow_refuses_symlink_with_eloop",
@@ -4771,7 +4783,7 @@
       "_callable": true,
       "_origin": "ast",
       "community": 90,
-      "community_name": "Path",
+      "community_name": "TestCredentialWritersFilesystem",
       "file_type": "code",
       "norm_label": ".test_o_nofollow_refuses_symlink_with_eloop()",
       "source_file": "tests/integration/test_credential_writers.py",
@@ -4783,23 +4795,11 @@
       "_callable": true,
       "_origin": "ast",
       "community": 90,
-      "community_name": "Path",
+      "community_name": "TestCredentialWritersFilesystem",
       "file_type": "code",
       "norm_label": ".test_symlink_atomic_replace_decouples_target()",
       "source_file": "tests/integration/test_credential_writers.py",
       "source_location": "L47"
-    },
-    {
-      "id": "tests_integration_test_supervisor_pilot_testsupervisorpilot_test_isolation_guards_refuse_foreign_names_and_paths",
-      "label": ".test_isolation_guards_refuse_foreign_names_and_paths()",
-      "_callable": true,
-      "_origin": "ast",
-      "community": 90,
-      "community_name": "Path",
-      "file_type": "code",
-      "norm_label": ".test_isolation_guards_refuse_foreign_names_and_paths()",
-      "source_file": "tests/integration/test_supervisor_pilot.py",
-      "source_location": "L169"
     },
     {
       "id": "tests_integration_sandbox_fixture_sandboxfixture_break_proxy",
@@ -5464,6 +5464,39 @@
       "norm_label": "checks if worktree exists.",
       "source_file": "tests/integration/sandbox_fixture.py",
       "source_location": "L451"
+    },
+    {
+      "id": "tests_integration_sandbox_fixture_rationale_284",
+      "label": "Stops the supervised systemd unit.",
+      "_origin": "ast",
+      "community": 105,
+      "community_name": ".stop",
+      "file_type": "rationale",
+      "norm_label": "stops the supervised systemd unit.",
+      "source_file": "tests/integration/sandbox_fixture.py",
+      "source_location": "L284"
+    },
+    {
+      "id": "tests_integration_sandbox_fixture_rationale_293",
+      "label": "Simulates container failure by sending SIGKILL.",
+      "_origin": "ast",
+      "community": 106,
+      "community_name": ".fail_container",
+      "file_type": "rationale",
+      "norm_label": "simulates container failure by sending sigkill.",
+      "source_file": "tests/integration/sandbox_fixture.py",
+      "source_location": "L293"
+    },
+    {
+      "id": "tests_integration_sandbox_fixture_rationale_417",
+      "label": "Checks if the sentinel file exists inside the container.",
+      "_origin": "ast",
+      "community": 107,
+      "community_name": ".sentinel_exists",
+      "file_type": "rationale",
+      "norm_label": "checks if the sentinel file exists inside the container.",
+      "source_file": "tests/integration/sandbox_fixture.py",
+      "source_location": "L417"
     },
     {
       "id": "tests_unit_test_project",
@@ -13639,7 +13672,29 @@
       "source_location": "L260"
     },
     {
-      "id": "tests_integration_test_credential_writers_rationale_171",
+      "id": "tests_integration_test_credential_writers",
+      "label": "test_credential_writers.py",
+      "_origin": "ast",
+      "community": 77,
+      "community_name": "get_test_image",
+      "file_type": "code",
+      "norm_label": "test_credential_writers.py",
+      "source_file": "tests/integration/test_credential_writers.py",
+      "source_location": "L1"
+    },
+    {
+      "id": "tests_integration_test_credential_writers_rationale_1",
+      "label": "tests/integration/test_credential_writers.py \u2014 Empirical tests for credential\u2026",
+      "_origin": "ast",
+      "community": 77,
+      "community_name": "get_test_image",
+      "file_type": "rationale",
+      "norm_label": "tests/integration/test_credential_writers.py \u2014 empirical tests for credential...",
+      "source_file": "tests/integration/test_credential_writers.py",
+      "source_location": "L1"
+    },
+    {
+      "id": "tests_integration_test_credential_writers_rationale_167",
       "label": "Container-level validation using SandboxFixture under uid 1000.",
       "_origin": "ast",
       "community": 77,
@@ -13647,10 +13702,10 @@
       "file_type": "rationale",
       "norm_label": "container-level validation using sandboxfixture under uid 1000.",
       "source_file": "tests/integration/test_credential_writers.py",
-      "source_location": "L171"
+      "source_location": "L167"
     },
     {
-      "id": "tests_integration_test_credential_writers_rationale_174",
+      "id": "tests_integration_test_credential_writers_rationale_170",
       "label": "Proves uid 1000 can create, chmod 0600, write, and read credential files.",
       "_origin": "ast",
       "community": 77,
@@ -13658,10 +13713,10 @@
       "file_type": "rationale",
       "norm_label": "proves uid 1000 can create, chmod 0600, write, and read credential files.",
       "source_file": "tests/integration/test_credential_writers.py",
-      "source_location": "L174"
+      "source_location": "L170"
     },
     {
-      "id": "tests_integration_test_credential_writers_rationale_207",
+      "id": "tests_integration_test_credential_writers_rationale_205",
       "label": "Exercises absent destination, empty 0-byte file, malformed JSON, and broken\u2026",
       "_origin": "ast",
       "community": 77,
@@ -13669,7 +13724,7 @@
       "file_type": "rationale",
       "norm_label": "exercises absent destination, empty 0-byte file, malformed json, and broken...",
       "source_file": "tests/integration/test_credential_writers.py",
-      "source_location": "L207"
+      "source_location": "L205"
     },
     {
       "id": "tests_integration_test_credential_writers_rationale_271",
@@ -13683,7 +13738,7 @@
       "source_location": "L271"
     },
     {
-      "id": "tests_integration_test_credential_writers_rationale_318",
+      "id": "tests_integration_test_credential_writers_rationale_320",
       "label": "Proves Claude Code CLI (2.1.263) status handling under 0-byte, corrupt, broken,\u2026",
       "_origin": "ast",
       "community": 77,
@@ -13691,7 +13746,7 @@
       "file_type": "rationale",
       "norm_label": "proves claude code cli (2.1.263) status handling under 0-byte, corrupt, broken,...",
       "source_file": "tests/integration/test_credential_writers.py",
-      "source_location": "L318"
+      "source_location": "L320"
     },
     {
       "id": "tests_integration_test_credential_writers_rationale_36",
@@ -13703,6 +13758,28 @@
       "norm_label": "returns local agent-sandbox image if available, else alpine fallback.",
       "source_file": "tests/integration/test_credential_writers.py",
       "source_location": "L36"
+    },
+    {
+      "id": "tests_integration_test_credential_writers_rationale_91",
+      "label": "Tests atomic replace behavior on bind-mounted files vs bind-mounted directories.",
+      "_origin": "ast",
+      "community": 77,
+      "community_name": "get_test_image",
+      "file_type": "rationale",
+      "norm_label": "tests atomic replace behavior on bind-mounted files vs bind-mounted directories.",
+      "source_file": "tests/integration/test_credential_writers.py",
+      "source_location": "L91"
+    },
+    {
+      "id": "tests_integration_test_credential_writers_rationale_94",
+      "label": "Proves os.replace() fails with EBUSY on a bind-mounted file, but succeeds in a\u2026",
+      "_origin": "ast",
+      "community": 77,
+      "community_name": "get_test_image",
+      "file_type": "rationale",
+      "norm_label": "proves os.replace() fails with ebusy on a bind-mounted file, but succeeds in a...",
+      "source_file": "tests/integration/test_credential_writers.py",
+      "source_location": "L94"
     },
     {
       "id": "tests_integration_sandbox_fixture_rationale_154",
@@ -13749,28 +13826,6 @@
       "source_location": "L267"
     },
     {
-      "id": "tests_integration_sandbox_fixture_rationale_284",
-      "label": "Stops the supervised systemd unit.",
-      "_origin": "ast",
-      "community": 78,
-      "community_name": "SandboxFixture",
-      "file_type": "rationale",
-      "norm_label": "stops the supervised systemd unit.",
-      "source_file": "tests/integration/sandbox_fixture.py",
-      "source_location": "L284"
-    },
-    {
-      "id": "tests_integration_sandbox_fixture_rationale_293",
-      "label": "Simulates container failure by sending SIGKILL.",
-      "_origin": "ast",
-      "community": 78,
-      "community_name": "SandboxFixture",
-      "file_type": "rationale",
-      "norm_label": "simulates container failure by sending sigkill.",
-      "source_file": "tests/integration/sandbox_fixture.py",
-      "source_location": "L293"
-    },
-    {
       "id": "tests_integration_sandbox_fixture_rationale_33",
       "label": "Isolated sandbox fixture context manager for integration tests.",
       "_origin": "ast",
@@ -13782,15 +13837,15 @@
       "source_location": "L33"
     },
     {
-      "id": "tests_integration_sandbox_fixture_rationale_417",
-      "label": "Checks if the sentinel file exists inside the container.",
+      "id": "tests_integration_sandbox_fixture_rationale_488",
+      "label": "Cleans up all registered resources strictly.",
       "_origin": "ast",
       "community": 78,
       "community_name": "SandboxFixture",
       "file_type": "rationale",
-      "norm_label": "checks if the sentinel file exists inside the container.",
+      "norm_label": "cleans up all registered resources strictly.",
       "source_file": "tests/integration/sandbox_fixture.py",
-      "source_location": "L417"
+      "source_location": "L488"
     },
     {
       "id": "tests_integration_test_supervisor_pilot_rationale_106",
@@ -14323,7 +14378,7 @@
       "label": "BaseException",
       "_origin": "ast",
       "community": 81,
-      "community_name": ".teardown",
+      "community_name": ".__exit__",
       "file_type": "code",
       "norm_label": "baseexception",
       "source_file": "",
@@ -14334,22 +14389,11 @@
       "label": "TracebackType",
       "_origin": "ast",
       "community": 81,
-      "community_name": ".teardown",
+      "community_name": ".__exit__",
       "file_type": "code",
       "norm_label": "tracebacktype",
       "source_file": "",
       "source_location": ""
-    },
-    {
-      "id": "tests_integration_sandbox_fixture_rationale_488",
-      "label": "Cleans up all registered resources strictly.",
-      "_origin": "ast",
-      "community": 81,
-      "community_name": ".teardown",
-      "file_type": "rationale",
-      "norm_label": "cleans up all registered resources strictly.",
-      "source_file": "tests/integration/sandbox_fixture.py",
-      "source_location": "L488"
     },
     {
       "id": "exception",
@@ -14371,17 +14415,6 @@
       "file_type": "code",
       "norm_label": "sandbox_fixture.py",
       "source_file": "tests/integration/sandbox_fixture.py",
-      "source_location": "L1"
-    },
-    {
-      "id": "tests_integration_test_credential_writers",
-      "label": "test_credential_writers.py",
-      "_origin": "ast",
-      "community": 82,
-      "community_name": "IsolationError",
-      "file_type": "code",
-      "norm_label": "test_credential_writers.py",
-      "source_file": "tests/integration/test_credential_writers.py",
       "source_location": "L1"
     },
     {
@@ -14416,17 +14449,6 @@
       "norm_label": "raised when an operation attempts to access or mutate resources outside...",
       "source_file": "tests/integration/sandbox_fixture.py",
       "source_location": "L28"
-    },
-    {
-      "id": "tests_integration_test_credential_writers_rationale_1",
-      "label": "tests/integration/test_credential_writers.py \u2014 Empirical tests for credential\u2026",
-      "_origin": "ast",
-      "community": 82,
-      "community_name": "IsolationError",
-      "file_type": "rationale",
-      "norm_label": "tests/integration/test_credential_writers.py \u2014 empirical tests for credential...",
-      "source_file": "tests/integration/test_credential_writers.py",
-      "source_location": "L1"
     },
     {
       "id": "tests_integration_test_supervisor_pilot_rationale_1",
@@ -14725,9 +14747,20 @@
       "label": "CompletedProcess",
       "_origin": "ast",
       "community": 89,
-      "community_name": ".cli",
+      "community_name": "Path",
       "file_type": "code",
       "norm_label": "completedprocess",
+      "source_file": "",
+      "source_location": ""
+    },
+    {
+      "id": "path",
+      "label": "Path",
+      "_origin": "ast",
+      "community": 89,
+      "community_name": "Path",
+      "file_type": "code",
+      "norm_label": "path",
       "source_file": "",
       "source_location": ""
     },
@@ -14736,7 +14769,7 @@
       "label": "Runs a command inside the container via podman exec.",
       "_origin": "ast",
       "community": 89,
-      "community_name": ".cli",
+      "community_name": "Path",
       "file_type": "rationale",
       "norm_label": "runs a command inside the container via podman exec.",
       "source_file": "tests/integration/sandbox_fixture.py",
@@ -14747,11 +14780,22 @@
       "label": "Executes the ASB CLI within the isolated environment.",
       "_origin": "ast",
       "community": 89,
-      "community_name": ".cli",
+      "community_name": "Path",
       "file_type": "rationale",
       "norm_label": "executes the asb cli within the isolated environment.",
       "source_file": "tests/integration/sandbox_fixture.py",
       "source_location": "L455"
+    },
+    {
+      "id": "tests_integration_test_supervisor_pilot_rationale_170",
+      "label": "Proves SandboxFixture refuses foreign resources, production names, and external\u2026",
+      "_origin": "ast",
+      "community": 89,
+      "community_name": "Path",
+      "file_type": "rationale",
+      "norm_label": "proves sandboxfixture refuses foreign resources, production names, and external...",
+      "source_file": "tests/integration/test_supervisor_pilot.py",
+      "source_location": "L170"
     },
     {
       "id": "agents_agents_commit_curator_agent",
@@ -14900,22 +14944,11 @@
       "source_location": "L1"
     },
     {
-      "id": "path",
-      "label": "Path",
-      "_origin": "ast",
-      "community": 90,
-      "community_name": "Path",
-      "file_type": "code",
-      "norm_label": "path",
-      "source_file": "",
-      "source_location": ""
-    },
-    {
       "id": "tests_integration_test_credential_writers_rationale_45",
       "label": "Filesystem-level tests for atomic replacement, symlinks, and O_NOFOLLOW.",
       "_origin": "ast",
       "community": 90,
-      "community_name": "Path",
+      "community_name": "TestCredentialWritersFilesystem",
       "file_type": "rationale",
       "norm_label": "filesystem-level tests for atomic replacement, symlinks, and o_nofollow.",
       "source_file": "tests/integration/test_credential_writers.py",
@@ -14926,7 +14959,7 @@
       "label": "Proves atomic replace() replaces the symlink itself, leaving the stored target\u2026",
       "_origin": "ast",
       "community": 90,
-      "community_name": "Path",
+      "community_name": "TestCredentialWritersFilesystem",
       "file_type": "rationale",
       "norm_label": "proves atomic replace() replaces the symlink itself, leaving the stored target...",
       "source_file": "tests/integration/test_credential_writers.py",
@@ -14937,44 +14970,11 @@
       "label": "Proves opening a symlink with O_NOFOLLOW raises ELOOP (Errno 40) on Linux. This\u2026",
       "_origin": "ast",
       "community": 90,
-      "community_name": "Path",
+      "community_name": "TestCredentialWritersFilesystem",
       "file_type": "rationale",
       "norm_label": "proves opening a symlink with o_nofollow raises eloop (errno 40) on linux. this...",
       "source_file": "tests/integration/test_credential_writers.py",
       "source_location": "L66"
-    },
-    {
-      "id": "tests_integration_test_credential_writers_rationale_91",
-      "label": "Tests atomic replace behavior on bind-mounted files vs bind-mounted directories.",
-      "_origin": "ast",
-      "community": 90,
-      "community_name": "Path",
-      "file_type": "rationale",
-      "norm_label": "tests atomic replace behavior on bind-mounted files vs bind-mounted directories.",
-      "source_file": "tests/integration/test_credential_writers.py",
-      "source_location": "L91"
-    },
-    {
-      "id": "tests_integration_test_credential_writers_rationale_94",
-      "label": "Proves os.replace() fails with EBUSY on a bind-mounted file, but succeeds in a\u2026",
-      "_origin": "ast",
-      "community": 90,
-      "community_name": "Path",
-      "file_type": "rationale",
-      "norm_label": "proves os.replace() fails with ebusy on a bind-mounted file, but succeeds in a...",
-      "source_file": "tests/integration/test_credential_writers.py",
-      "source_location": "L94"
-    },
-    {
-      "id": "tests_integration_test_supervisor_pilot_rationale_170",
-      "label": "Proves SandboxFixture refuses foreign resources, production names, and external\u2026",
-      "_origin": "ast",
-      "community": 90,
-      "community_name": "Path",
-      "file_type": "rationale",
-      "norm_label": "proves sandboxfixture refuses foreign resources, production names, and external...",
-      "source_file": "tests/integration/test_supervisor_pilot.py",
-      "source_location": "L170"
     },
     {
       "id": "docs_superpowers_specs_2026_09_04_agent_sandbox_v2_design_6_1_host_ports_alcan\u00e7ar_servi\u00e7os_do_host",
@@ -18163,7 +18163,19 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "tests/integration/test_credential_writers.py",
-      "source_location": "L141",
+      "source_location": "L95",
+      "weight": 1.0
+    },
+    {
+      "source": "tests_integration_test_credential_writers_testbindmountatomicreplace_test_bind_mount_file_vs_directory_atomic_replace",
+      "target": "tests_integration_sandbox_fixture_sandboxfixture",
+      "relation": "calls",
+      "_origin": "ast",
+      "confidence": "EXTRACTED",
+      "confidence_score": 1.0,
+      "context": "call",
+      "source_file": "tests/integration/test_credential_writers.py",
+      "source_location": "L98",
       "weight": 1.0
     },
     {
@@ -18175,7 +18187,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "tests/integration/test_credential_writers.py",
-      "source_location": "L319",
+      "source_location": "L321",
       "weight": 1.0
     },
     {
@@ -18187,7 +18199,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "tests/integration/test_credential_writers.py",
-      "source_location": "L322",
+      "source_location": "L324",
       "weight": 1.0
     },
     {
@@ -18211,7 +18223,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "tests/integration/test_credential_writers.py",
-      "source_location": "L277",
+      "source_location": "L279",
       "weight": 1.0
     },
     {
@@ -18223,7 +18235,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "tests/integration/test_credential_writers.py",
-      "source_location": "L208",
+      "source_location": "L206",
       "weight": 1.0
     },
     {
@@ -18247,7 +18259,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "tests/integration/test_credential_writers.py",
-      "source_location": "L175",
+      "source_location": "L171",
       "weight": 1.0
     },
     {
@@ -18259,7 +18271,7 @@
       "confidence_score": 1.0,
       "context": "call",
       "source_file": "tests/integration/test_credential_writers.py",
-      "source_location": "L176",
+      "source_location": "L174",
       "weight": 1.0
     },
     {
@@ -22160,30 +22172,6 @@
       "context": "import",
       "source_file": "cli/asb/squid.py",
       "source_location": "L14",
-      "weight": 1.0
-    },
-    {
-      "source": "tests_integration_test_credential_writers",
-      "target": "tests_integration_sandbox_fixture_isolationerror",
-      "relation": "imports",
-      "_origin": "ast",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "context": "import",
-      "source_file": "tests/integration/test_credential_writers.py",
-      "source_location": "L28",
-      "weight": 1.0
-    },
-    {
-      "source": "tests_integration_test_credential_writers",
-      "target": "tests_integration_sandbox_fixture_sandboxfixture",
-      "relation": "imports",
-      "_origin": "ast",
-      "confidence": "EXTRACTED",
-      "confidence_score": 1.0,
-      "context": "import",
-      "source_file": "tests/integration/test_credential_writers.py",
-      "source_location": "L28",
       "weight": 1.0
     },
     {
@@ -29772,7 +29760,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "tests/integration/test_credential_writers.py",
-      "source_location": "L170",
+      "source_location": "L166",
       "weight": 1.0
     },
     {
@@ -31466,7 +31454,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "tests/integration/test_credential_writers.py",
-      "source_location": "L173",
+      "source_location": "L169",
       "weight": 1.0
     },
     {
@@ -31477,7 +31465,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "tests/integration/test_credential_writers.py",
-      "source_location": "L206",
+      "source_location": "L204",
       "weight": 1.0
     },
     {
@@ -31499,7 +31487,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "tests/integration/test_credential_writers.py",
-      "source_location": "L317",
+      "source_location": "L319",
       "weight": 1.0
     },
     {
@@ -34649,36 +34637,36 @@
       "weight": 1.0
     },
     {
-      "source": "tests_integration_test_credential_writers_rationale_171",
+      "source": "tests_integration_test_credential_writers_rationale_167",
       "target": "tests_integration_test_credential_writers_testcontainerpermissionsandpaths",
       "relation": "rationale_for",
       "_origin": "ast",
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "tests/integration/test_credential_writers.py",
-      "source_location": "L171",
+      "source_location": "L167",
       "weight": 1.0
     },
     {
-      "source": "tests_integration_test_credential_writers_rationale_174",
+      "source": "tests_integration_test_credential_writers_rationale_170",
       "target": "tests_integration_test_credential_writers_testcontainerpermissionsandpaths_test_uid1000_credential_read_write_permissions",
       "relation": "rationale_for",
       "_origin": "ast",
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "tests/integration/test_credential_writers.py",
-      "source_location": "L174",
+      "source_location": "L170",
       "weight": 1.0
     },
     {
-      "source": "tests_integration_test_credential_writers_rationale_207",
+      "source": "tests_integration_test_credential_writers_rationale_205",
       "target": "tests_integration_test_credential_writers_testcontainerpermissionsandpaths_test_credential_target_states_absent_empty_corrupted_broken",
       "relation": "rationale_for",
       "_origin": "ast",
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "tests/integration/test_credential_writers.py",
-      "source_location": "L207",
+      "source_location": "L205",
       "weight": 1.0
     },
     {
@@ -34693,14 +34681,14 @@
       "weight": 1.0
     },
     {
-      "source": "tests_integration_test_credential_writers_rationale_318",
+      "source": "tests_integration_test_credential_writers_rationale_320",
       "target": "tests_integration_test_credential_writers_testcontainerpermissionsandpaths_test_claude_cli_behavior_on_credential_states",
       "relation": "rationale_for",
       "_origin": "ast",
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "tests/integration/test_credential_writers.py",
-      "source_location": "L318",
+      "source_location": "L320",
       "weight": 1.0
     },
     {
@@ -35802,42 +35790,6 @@
       "weight": 1.0
     },
     {
-      "source": "tests_integration_test_credential_writers_testbindmountatomicreplace_test_bind_mount_file_vs_directory_atomic_replace",
-      "target": "path",
-      "relation": "calls",
-      "_origin": "ast",
-      "confidence": "INFERRED",
-      "confidence_score": 0.85,
-      "context": "call",
-      "source_file": "tests/integration/test_credential_writers.py",
-      "source_location": "L100",
-      "weight": 1.0
-    },
-    {
-      "source": "tests_integration_test_credential_writers_testcredentialwritersfilesystem_test_o_nofollow_refuses_symlink_with_eloop",
-      "target": "path",
-      "relation": "calls",
-      "_origin": "ast",
-      "confidence": "INFERRED",
-      "confidence_score": 0.85,
-      "context": "call",
-      "source_file": "tests/integration/test_credential_writers.py",
-      "source_location": "L73",
-      "weight": 1.0
-    },
-    {
-      "source": "tests_integration_test_credential_writers_testcredentialwritersfilesystem_test_symlink_atomic_replace_decouples_target",
-      "target": "path",
-      "relation": "calls",
-      "_origin": "ast",
-      "confidence": "INFERRED",
-      "confidence_score": 0.85,
-      "context": "call",
-      "source_file": "tests/integration/test_credential_writers.py",
-      "source_location": "L50",
-      "weight": 1.0
-    },
-    {
       "source": "tests_integration_test_supervisor_pilot_testsupervisorpilot_test_isolation_guards_refuse_foreign_names_and_paths",
       "target": "path",
       "relation": "calls",
@@ -36039,17 +35991,6 @@
       "context": "parameter_type",
       "source_file": "cli/asb/squid.py",
       "source_location": "L62",
-      "weight": 0.8
-    },
-    {
-      "source": "tests_integration_test_credential_writers_testcontainerpermissionsandpaths",
-      "target": "tests_integration_sandbox_fixture_sandboxfixture",
-      "relation": "uses",
-      "_origin": "ast",
-      "confidence": "INFERRED",
-      "confidence_score": 0.95,
-      "source_file": "tests/integration/test_credential_writers.py",
-      "source_location": "L176",
       "weight": 0.8
     },
     {
@@ -36585,5 +36526,5 @@
     }
   ],
   "hyperedges": [],
-  "built_at_commit": "0d1d54a6c0e4f340b6ff820aaaf0bf417bebe098"
+  "built_at_commit": "586e175928c93c012b6145e6c074ed8991999fab"
 }

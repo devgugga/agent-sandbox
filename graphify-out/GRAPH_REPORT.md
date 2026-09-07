@@ -1,16 +1,16 @@
 # Graph Report - agent-sandbox  (2026-09-07)
 
 ## Corpus Check
-- 114 files · ~127,475 words
+- 114 files · ~127,477 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 1265 nodes · 1863 edges · 105 communities (76 shown, 29 thin omitted)
-- Extraction: 97% EXTRACTED · 3% INFERRED · 0% AMBIGUOUS · INFERRED: 62 edges (avg confidence: 0.8)
+- 1265 nodes · 1858 edges · 108 communities (75 shown, 33 thin omitted)
+- Extraction: 97% EXTRACTED · 3% INFERRED · 0% AMBIGUOUS · INFERRED: 58 edges (avg confidence: 0.8)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `0d1d54a6`
+- Built from commit: `586e1759`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -94,7 +94,7 @@
 - SandboxFixture
 - TestSupervisorPilot
 - 3. Resultados dos Ensaios Empíricos
-- .teardown
+- .__exit__
 - IsolationError
 - .is_container_running
 - Secret Service singleton para credenciais dos agentes
@@ -102,8 +102,8 @@
 - .start
 - 2. Fatos verificados empiricamente
 - .write_sentinel
-- .cli
 - Path
+- TestCredentialWritersFilesystem
 - 6. Acesso a Docker
 - .break_proxy
 - CompletedProcess
@@ -118,9 +118,12 @@
 - .exit_zero
 - .inspect_identity
 - .worktree_exists
+- .stop
+- .fail_container
+- .sentinel_exists
 
 ## God Nodes (most connected - your core abstractions)
-1. `SandboxFixture` - 44 edges
+1. `SandboxFixture` - 43 edges
 2. `load_profile()` - 35 edges
 3. `up()` - 27 edges
 4. `run()` - 25 edges
@@ -128,8 +131,8 @@
 6. `PodmanError` - 21 edges
 7. `Profile` - 21 edges
 8. `TestDoctorSecretService` - 21 edges
-9. `layout_for()` - 21 edges
-10. `repo_with()` - 21 edges
+9. `repo_with()` - 21 edges
+10. `layout_for()` - 21 edges
 
 ## Surprising Connections (you probably didn't know these)
 - `TestPull` --uses--> `PodmanError`  [INFERRED]
@@ -146,7 +149,7 @@
 ## Import Cycles
 - None detected.
 
-## Communities (105 total, 29 thin omitted)
+## Communities (108 total, 33 thin omitted)
 
 ### Community 0 - "run"
 Cohesion: 0.11
@@ -373,12 +376,12 @@ Cohesion: 0.07
 Nodes (26): 1. Sumário Executivo, 2. Matriz de Contratos por Fornecedor, 3.1 Claude Code: Análise Forense do Binário e a Divergência do Libsecret, 3.2 OpenAI Codex: Análise de Armazenamento e Configuração Efetiva, 3.3 Google Antigravity: Análise de D-Bus, Secret Service e Sessão SSH, 3. Análise Detalhada dos Binários e Divergências Históricas, 4.1 Falha de Symlink sob `replace()` Atômico, 4.2 Rejeição de Symlinks por `O_NOFOLLOW` (+18 more)
 
 ### Community 77 - "get_test_image"
-Cohesion: 0.21
-Nodes (8): get_test_image(), Container-level validation using SandboxFixture under uid 1000., Proves uid 1000 can create, chmod 0600, write, and read credential files., Exercises absent destination, empty 0-byte file, malformed JSON, and broken…, Simulates the entrypoint.sh symlink layout inside the container as uid 1000.…, Proves Claude Code CLI (2.1.263) status handling under 0-byte, corrupt, broken,…, Returns local agent-sandbox image if available, else alpine fallback., TestContainerPermissionsAndPaths
+Cohesion: 0.14
+Nodes (12): get_test_image(), tests/integration/test_credential_writers.py — Empirical tests for credential…, Container-level validation using SandboxFixture under uid 1000., Proves uid 1000 can create, chmod 0600, write, and read credential files., Exercises absent destination, empty 0-byte file, malformed JSON, and broken…, Simulates the entrypoint.sh symlink layout inside the container as uid 1000.…, Proves Claude Code CLI (2.1.263) status handling under 0-byte, corrupt, broken,…, Returns local agent-sandbox image if available, else alpine fallback. (+4 more)
 
 ### Community 78 - "SandboxFixture"
-Cohesion: 0.14
-Nodes (9): Sets up dedicated isolated paths, keys, launcher, and volumes., Creates the synthetic persistent container., Renders the systemd unit content for the pilot., Installs and reloads the unit in user systemd., Stops the supervised systemd unit., Simulates container failure by sending SIGKILL., Isolated sandbox fixture context manager for integration tests., Checks if the sentinel file exists inside the container. (+1 more)
+Cohesion: 0.19
+Nodes (7): Sets up dedicated isolated paths, keys, launcher, and volumes., Creates the synthetic persistent container., Renders the systemd unit content for the pilot., Installs and reloads the unit in user systemd., Isolated sandbox fixture context manager for integration tests., Cleans up all registered resources strictly., SandboxFixture
 
 ### Community 79 - "TestSupervisorPilot"
 Cohesion: 0.17
@@ -388,13 +391,9 @@ Nodes (7): Proves runtime launcher helper seamlessly attaches to an already runn
 Cohesion: 0.15
 Nodes (12): 1. Objetivo e Escopo, 2. Artefatos Desenvolvidos, 3.1. Recuperação após Falha e Preservação de Identidade, 3.2. Saída Limpa Inesperada (Código 0), 3.3. Falha em `ExecStartPost` e Limpeza por `ExecStopPost`, 3.4. Reconexão a Container em Execução, 3.5. Proteção de Isolamento, 3. Resultados dos Ensaios Empíricos (+4 more)
 
-### Community 81 - ".teardown"
-Cohesion: 0.33
-Nodes (3): BaseException, Cleans up all registered resources strictly., TracebackType
-
 ### Community 82 - "IsolationError"
-Cohesion: 0.28
-Nodes (6): Exception, IsolationError, tests/integration/sandbox_fixture.py — isolated test fixture for systemd…, Raised when an operation attempts to access or mutate resources outside…, tests/integration/test_credential_writers.py — Empirical tests for credential…, tests/integration/test_supervisor_pilot.py — Empirical supervision pilot test.…
+Cohesion: 0.33
+Nodes (5): Exception, IsolationError, tests/integration/sandbox_fixture.py — isolated test fixture for systemd…, Raised when an operation attempts to access or mutate resources outside…, tests/integration/test_supervisor_pilot.py — Empirical supervision pilot test.…
 
 ### Community 83 - ".is_container_running"
 Cohesion: 0.33
@@ -408,13 +407,13 @@ Nodes (9): Ciclo de vida, Compatibilidade e migração, Contexto, Critérios de 
 Cohesion: 0.25
 Nodes (8): 2. Fatos verificados empiricamente, F1 — Rede `--internal` isola sem nftables e **persiste através de restart**, F2 — Proxy dual-homed funciona e é alcançável por nome, F3 — Publicação de porta funciona em rede interna, e a porta é estável, F4 — `podman-restart.service` já existe como unidade de usuário, F5 — O socket do Docker é inalcançável pelo usuário, F6 — Podman rootless aninhado funciona sem privilégio, F7 — O Orca cria a worktree como irmã do `projectRoot`
 
-### Community 89 - ".cli"
-Cohesion: 0.40
-Nodes (3): CompletedProcess, Runs a command inside the container via podman exec., Executes the ASB CLI within the isolated environment.
+### Community 89 - "Path"
+Cohesion: 0.22
+Nodes (5): CompletedProcess, Path, Runs a command inside the container via podman exec., Executes the ASB CLI within the isolated environment., Proves SandboxFixture refuses foreign resources, production names, and external…
 
-### Community 90 - "Path"
-Cohesion: 0.15
-Nodes (9): Path, Filesystem-level tests for atomic replacement, symlinks, and O_NOFOLLOW., Proves atomic replace() replaces the symlink itself, leaving the stored target…, Proves opening a symlink with O_NOFOLLOW raises ELOOP (Errno 40) on Linux. This…, Tests atomic replace behavior on bind-mounted files vs bind-mounted directories., Proves os.replace() fails with EBUSY on a bind-mounted file, but succeeds in a…, TestBindMountAtomicReplace, TestCredentialWritersFilesystem (+1 more)
+### Community 90 - "TestCredentialWritersFilesystem"
+Cohesion: 0.33
+Nodes (4): Filesystem-level tests for atomic replacement, symlinks, and O_NOFOLLOW., Proves atomic replace() replaces the symlink itself, leaving the stored target…, Proves opening a symlink with O_NOFOLLOW raises ELOOP (Errno 40) on Linux. This…, TestCredentialWritersFilesystem
 
 ### Community 91 - "6. Acesso a Docker"
 Cohesion: 0.40
@@ -445,24 +444,24 @@ Cohesion: 0.67
 Nodes (3): 1.1 Os problemas relatados, 1.2 A causa raiz, 1. Por que reconstruir
 
 ## Knowledge Gaps
-- **425 isolated node(s):** `1. Sumário Executivo`, `2. Matriz de Contratos por Fornecedor`, `Achados Forenses:`, `Achados Forenses:`, `Achados Forenses:` (+420 more)
+- **425 isolated node(s):** `For /graphify add and --watch`, `For /graphify query`, `For the commit hook and native AGENTS.md integration`, `For --update and --cluster-only`, `Honesty Rules` (+420 more)
   These have ≤1 connection - possible missing edges or undocumented components.
-- **29 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **33 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `Profile` connect `Profile` to `lifecycle.py`, `load_profile`, `layout_for`?**
-  _High betweenness centrality (0.024) - this node is a cross-community bridge._
-- **Why does `TestLifecycleHostApi` connect `Profile` to `permitted`?**
-  _High betweenness centrality (0.018) - this node is a cross-community bridge._
 - **Why does `load_profile()` connect `load_profile` to `lifecycle.py`, `layout_for`, `Profile`?**
+  _High betweenness centrality (0.024) - this node is a cross-community bridge._
+- **Why does `build_staging()` connect `build_staging` to `lifecycle.py`?**
   _High betweenness centrality (0.016) - this node is a cross-community bridge._
-- **Are the 2 inferred relationships involving `SandboxFixture` (e.g. with `TestContainerPermissionsAndPaths` and `TestSupervisorPilot`) actually correct?**
-  _`SandboxFixture` has 2 INFERRED edges - model-reasoned connections that need verification._
-- **What connects `1. Sumário Executivo`, `2. Matriz de Contratos por Fornecedor`, `Achados Forenses:` to the rest of the system?**
+- **What connects `For /graphify add and --watch`, `For /graphify query`, `For the commit hook and native AGENTS.md integration` to the rest of the system?**
   _425 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `run` be split into smaller, more focused modules?**
   _Cohesion score 0.10526315789473684 - nodes in this community are weakly interconnected._
 - **Should `Path` be split into smaller, more focused modules?**
   _Cohesion score 0.0960960960960961 - nodes in this community are weakly interconnected._
+- **Should `assert.sh` be split into smaller, more focused modules?**
+  _Cohesion score 0.05970149253731343 - nodes in this community are weakly interconnected._
+- **Should `load_profile` be split into smaller, more focused modules?**
+  _Cohesion score 0.09898242368177614 - nodes in this community are weakly interconnected._

@@ -118,12 +118,24 @@ Do not run graph rebuilds continuously during development. Run an incremental se
 graphify update .
 ```
 
-### 3. Two-Commit Workflow
+### 3. Rebuild Pause During Plan Execution
+The `post-commit` hook rebuilds the graph after **every** commit, which defeats §7.2: each code commit leaves `graphify-out/` dirty and produces a paired `🕸️ sync knowledge graph` commit. Measured on `feat/startup-auth-redesign`: 7 of 14 commits were graph syncs, carrying 28363 lines of `graphify-out/` churn against 5619 lines of actual work, and inflating code-review diffs roughly sixfold.
+
+Pause the automatic rebuild for the duration of a plan execution, then run the single update §7.2 requires:
+```bash
+touch  "$(git rev-parse --git-common-dir)/graphify-pause"   # pause
+rm -f  "$(git rev-parse --git-common-dir)/graphify-pause"   # resume
+```
+The sentinel gates only the hook. An explicit `graphify update .` still works, so an agent that genuinely needs a fresh graph mid-implementation runs it and commits the graph deliberately, per §7.4.
+
+`.git/hooks/` is not versioned and `graphify hook install` overwrites the hook; `./.graphify/setup.sh` re-applies the pause guard after installing hooks.
+
+### 4. Two-Commit Workflow
 Knowledge graph updates are versioned in a dedicated second commit following [`docs/domains/git/commit-conventions.md`](./docs/domains/git/commit-conventions.md):
 1. **Feature/Code Commit:** Code and docs without `graphify-out/**`, containing the mandatory structured body.
 2. **Graph Sync Commit:** Strictly `graphify-out/**` with title `🕸️ sync knowledge graph` (sole exception where structured body is omitted).
 
-### 4. Linked Worktrees & Environment Setup
+### 5. Linked Worktrees & Environment Setup
 In linked Git worktrees (e.g. `.worktrees/`) or new workspaces, Git hooks may not trigger automatically. Run manual updates or environment verification when needed:
 ```bash
 ./.graphify/setup.sh --verify-only

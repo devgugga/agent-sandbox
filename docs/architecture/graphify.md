@@ -44,6 +44,7 @@ The setup script guarantees:
 1. `graphifyy==0.9.51` is installed via `uv tool`.
 2. Project-scoped skills are deployed across `.claude/skills/`, `.agents/skills/`, and `.codex/skills/`.
 3. Git post-commit / post-checkout hooks and merge driver configurations are active (`graphify hook status`).
+4. The post-commit hook carries the rebuild **pause guard**, re-applied after every `graphify hook install` because `.git/hooks/` is not versioned. The hook otherwise rebuilds the graph on every commit; the guard honours the single-update rule. See [`AGENTS.md` §7.3](../../AGENTS.md#3-rebuild-pause-during-plan-execution).
 
 ---
 

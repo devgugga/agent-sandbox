@@ -103,7 +103,7 @@ All commits must follow [`docs/domains/git/commit-conventions.md`](./docs/domain
 
 ## 7. Graphify
 
-The repository maintains an automated, persistent knowledge graph in `graphify-out/` (`graph.json`, `graph.html`, `GRAPH_REPORT.md`) documenting code architecture, dependencies, and operational assets.
+The repository maintains an automated, persistent knowledge graph in `graphify-out/` (`graph.json`, `GRAPH_REPORT.md`) documenting code architecture, dependencies, and operational assets. The interactive web visualizer (`graph.html`) is ignored and generated strictly on demand via `graphify export html`.
 
 ### 1. Fast Path Querying
 When `graphify-out/graph.json` exists, agents must treat codebase architecture and relationship questions as Graphify queries first rather than brute-force grepping:

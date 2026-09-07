@@ -12,7 +12,7 @@ Key architectural boundaries:
 - **Engineering Tooling Only:** Graphify runs strictly on the developer host as developer and agent tooling. It is **never** a runtime dependency of the `agent-sandbox` software itself.
 - **No Container Ingestion:** Graphify is **never** installed into runtime container images (`image/Containerfile`, `image/Containerfile.proxy`, `asb-agent`, `asb-proxy`).
 - **Tri-Platform Parity:** Project-scoped skills equip Google Antigravity (`.agents/skills/graphify`), Claude Code (`.claude/skills/graphify`), and OpenAI Codex (`.codex/skills/graphify`) with identical query and navigation capabilities.
-- **Git-Native Versioning:** The knowledge graph (`graphify-out/graph.json`, `graphify-out/graph.html`, `graphify-out/GRAPH_REPORT.md`) is versioned directly in Git, protected by a dedicated custom merge driver.
+- **Git-Native Versioning:** The knowledge graph (`graphify-out/graph.json`, `graphify-out/GRAPH_REPORT.md`) is versioned directly in Git, protected by a dedicated custom merge driver. The interactive visualizer (`graph.html`) is ignored from Git tracking and generated on demand via `graphify export html`.
 
 ---
 
@@ -67,9 +67,9 @@ Sensitive data, credentials, and transient execution state must **never** enter 
    - Volatile and runtime directories: `.git/`, `graphify-out/`, `state/`, `scratch/`, `dist/`, `.venv/`, `__pycache__/`, `.pytest_cache/`, `.superpowers/`.
    - File size ceiling: Files exceeding 1 MB are bypassed to prevent token explosion and parser stalling.
 2. **Git Ignore Rules (`.gitignore` & `.graphifyignore`):**
-   - Ephemeral cache and cost files (`graphify-out/cache/`, `graphify-out/cost.json`, intermediate `.graphify_*.json`, logs, backups) are ignored.
+   - Ephemeral cache and cost files (`graphify-out/cache/`, `graphify-out/cost.json`, intermediate `.graphify_*.json`, logs, backups) and browser visualizers (`graphify-out/*.html`) are ignored.
    - Machine-specific configuration (`.claude/settings.json`, `.codex/hooks.json`) is ignored.
-   - Portable graph artifacts (`graph.json`, `graph.html`, `GRAPH_REPORT.md`) are explicitly tracked.
+   - Portable graph artifacts (`graph.json`, `GRAPH_REPORT.md`) are explicitly tracked.
 
 ---
 
@@ -116,7 +116,7 @@ Knowledge graph updates are **never** bundled into the same Git commit as produc
    - Update knowledge graph: `graphify update .`
    - Stage strictly graph artifacts:
      ```bash
-     git add graphify-out/graph.json graphify-out/graph.html graphify-out/GRAPH_REPORT.md
+     git add graphify-out/graph.json graphify-out/GRAPH_REPORT.md
      ```
    - Commit with exact title:
      ```bash

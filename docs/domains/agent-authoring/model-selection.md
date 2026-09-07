@@ -16,3 +16,23 @@ For every created or modified agent, select the **lowest-cost eligible model or 
 ## Escalation Governance
 
 Never alter an existing agent's model tier without explicit authorization or demonstrated evidence of task failure on the lighter tier.
+
+## Cross-Platform Tier Equivalence
+
+Equivalent tiers across the three supported platforms. Route by **tier**, then
+translate to the platform's identifier — never guess an identifier from another
+platform's naming.
+
+| Tier | Claude Code | OpenAI Codex | Antigravity |
+| :--- | :--- | :--- | :--- |
+| Frontier | `fable` (Fable 5.1) | `gpt-6-astra` | `pro` |
+| High capability | `opus` (Opus 5) | `gpt-5.6-sol` | `pro` |
+| Balanced | `sonnet` (Sonnet 5) | `gpt-5.6-terra` | `flash` / `inherit` |
+| Lightweight | `haiku` (Haiku 4.5) | `gpt-5.6-luna` | `flash_lite` |
+
+Codex additionally takes `model_reasoning_effort`; raise the effort before
+raising the tier, since effort is the cheaper lever.
+
+Reserve the Frontier and High capability rows for the workloads §Workload
+Classification calls Complex / High Risk. A reviewer role reading a bounded
+document against a diff is Balanced work, not high-capability work.

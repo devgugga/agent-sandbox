@@ -7,6 +7,9 @@ Project-wide governance, engineering guidelines, and agent workflow standards ar
 ## Available Subagents (`.claude/agents/`)
 
 * [`commit-curator`](.claude/agents/git/commit-curator.md): Normalizes and creates standardized local commits with Gitmoji and mandatory structured body.
+* [`regression-sentinel`](.claude/agents/review/regression-sentinel.md): Checks a diff against the catalogue of defects this repository has already fixed.
+* [`test-shape-auditor`](.claude/agents/review/test-shape-auditor.md): Checks that a test actually enters each conditional branch the diff introduces.
+* [`claim-verifier`](.claude/agents/review/claim-verifier.md): Verdicts each factual claim in an implementer report against the diff.
 
 ## Skills (`.claude/skills/`)
 

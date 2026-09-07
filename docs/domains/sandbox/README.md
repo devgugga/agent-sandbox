@@ -7,6 +7,7 @@ Single Source of Truth (SSoT) for the `agent-sandbox` (v2) runtime environment a
 - [Configuration Reference](./configuration.md): Complete `.agent-sandbox.toml` schema and worked examples (hexmed-stack and BlackICE).
 - [Security Boundaries](./security.md): Explicit boundary declarations, invariants, and what the sandbox does not protect.
 - [Failure Modes & Forensics](./failure-modes.md): Consolidated forensic record from production edge cases, symptoms, causes, and fixes.
+- [Known Regressions](./known-regressions.md): Catalogue of already-fixed defects, recorded by shape, for checking a diff against.
 
 ---
 

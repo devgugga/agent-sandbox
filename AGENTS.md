@@ -27,6 +27,9 @@ docs/domains/<domain>/    ← Portable knowledge base (Single Source of Truth - 
 | Subagent | Supported Platforms | Mode | Role & Responsibility |
 | :--- | :--- | :--- | :--- |
 | `commit-curator` | Antigravity, Claude Code, Codex | Read-Write | Normalizes and authors local Git commits adhering to Gitmoji, safe scope, structured body, and branch governance. |
+| `regression-sentinel` | Antigravity, Claude Code, Codex | Read-Only | Checks a diff against [`known-regressions.md`](./docs/domains/sandbox/known-regressions.md); reports each already-fixed defect shape the diff reproduces. |
+| `test-shape-auditor` | Antigravity, Claude Code, Codex | Read-Only | Checks that a test actually enters each conditional branch the diff introduces, per [`test-shape.md`](./docs/domains/review/test-shape.md). |
+| `claim-verifier` | Antigravity, Claude Code, Codex | Read-Only | Verdicts each factual claim in an implementer report against the diff, per [`claim-verification.md`](./docs/domains/review/claim-verification.md). |
 
 ---
 

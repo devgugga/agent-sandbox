@@ -330,115 +330,9 @@ class TestKeyringServiceLifecycle(unittest.TestCase):
                 self.assertIn(f"{custom_pass}:/run/asb-keyring-pass:ro,Z", args)
 
 
-class TestLoginKeyringIntegration(unittest.TestCase):
-    def test_login_ensures_keyring_service_and_passes_shared_bus_without_passphrase(self):
-        events = []
-        run_args_captured = []
-
-        def fake_podman_run(*args, **kwargs):
-            if len(args) >= 4 and args[0] == "run" and "--name" in args:
-                idx = args.index("--name") + 1
-                if args[idx] == "asb-login":
-                    events.append("run asb-login")
-                    run_args_captured.extend(args)
-            return mock.MagicMock(returncode=0)
-
-        with mock.patch("asb.lifecycle.podman.exists", side_effect=lambda kind, name: True if (kind == "image" or name == "asb-login") else False), \
-             mock.patch("asb.lifecycle.ensure_keyring_service", side_effect=lambda: events.append("ensure_keyring_service")), \
-             mock.patch("asb.lifecycle.ensure_keyring_runtime_volume", return_value="asb-keyring-runtime"), \
-             mock.patch("asb.lifecycle.ensure_credentials_volume", return_value="asb-credentials"), \
-             mock.patch("asb.lifecycle.podman.run", side_effect=fake_podman_run), \
-             mock.patch("asb.lifecycle.podman.require_binary", return_value="podman"), \
-             mock.patch("subprocess.run", return_value=mock.MagicMock(returncode=0)):
-            rc = lifecycle.login(Path("/fake/root"))
-            self.assertEqual(rc, 0)
-
-        self.assertIn("ensure_keyring_service", events)
-        self.assertIn("run asb-login", events)
-        self.assertLess(events.index("ensure_keyring_service"), events.index("run asb-login"))
-
-        self.assertIn("asb-keyring-runtime:/run/asb-keyring:ro,z", run_args_captured)
-        self.assertIn("asb-credentials:/run/asb-credentials:z", run_args_captured)
-        self.assertIn("type=tmpfs,destination=/run/asb-credentials/keyrings,ro,notmpcopyup,tmpfs-mode=000", run_args_captured)
-        self.assertIn(f"DBUS_SESSION_BUS_ADDRESS=unix:path={lifecycle.KEYRING_BUS}", run_args_captured)
-        self.assertFalse(any("ASB_KEYRING_PASS" in str(a) for a in run_args_captured))
-
-    def test_login_cleanup_removes_asb_login_without_touching_keyring_container(self):
-        removed_containers = []
-
-        def fake_podman_run(*args, **kwargs):
-            if len(args) >= 3 and args[0] == "rm" and "-f" in args:
-                idx = args.index("-f") + 1
-                removed_containers.append(args[idx])
-            return mock.MagicMock(returncode=0)
-
-        with mock.patch("asb.lifecycle.podman.exists", side_effect=lambda kind, name: True if (kind == "image" or name == "asb-login") else False), \
-             mock.patch("asb.lifecycle.ensure_keyring_service"), \
-             mock.patch("asb.lifecycle.ensure_keyring_runtime_volume", return_value="asb-keyring-runtime"), \
-             mock.patch("asb.lifecycle.ensure_credentials_volume", return_value="asb-credentials"), \
-             mock.patch("asb.lifecycle.podman.run", side_effect=fake_podman_run), \
-             mock.patch("asb.lifecycle.podman.require_binary", return_value="podman"), \
-             mock.patch("subprocess.run", return_value=mock.MagicMock(returncode=0)):
-            rc = lifecycle.login(Path("/fake/root"))
-            self.assertEqual(rc, 0)
-
-        self.assertIn("asb-login", removed_containers)
-        self.assertNotIn(lifecycle.KEYRING_CONTAINER, removed_containers)
-        self.assertNotIn("asb-keyring", removed_containers)
-
-    def test_login_failure_still_cleans_up_asb_login_and_preserves_keyring(self):
-        removed_containers = []
-
-        def fake_podman_run(*args, **kwargs):
-            if len(args) >= 3 and args[0] == "rm" and "-f" in args:
-                idx = args.index("-f") + 1
-                removed_containers.append(args[idx])
-            return mock.MagicMock(returncode=0)
-
-        # Fail one of the LOGIN_CHECKS
-        def fake_subproc_run(cmd, *args, **kwargs):
-            if any("timeout" in str(c) for c in cmd):
-                return mock.MagicMock(returncode=1)
-            return mock.MagicMock(returncode=0)
-
-        with mock.patch("asb.lifecycle.podman.exists", side_effect=lambda kind, name: True if (kind == "image" or name == "asb-login") else False), \
-             mock.patch("asb.lifecycle.ensure_keyring_service"), \
-             mock.patch("asb.lifecycle.ensure_keyring_runtime_volume", return_value="asb-keyring-runtime"), \
-             mock.patch("asb.lifecycle.ensure_credentials_volume", return_value="asb-credentials"), \
-             mock.patch("asb.lifecycle.podman.run", side_effect=fake_podman_run), \
-             mock.patch("asb.lifecycle.podman.require_binary", return_value="podman"), \
-             mock.patch("subprocess.run", side_effect=fake_subproc_run):
-            with self.assertRaises(lifecycle.podman.PodmanError):
-                lifecycle.login(Path("/fake/root"))
-
-        self.assertIn("asb-login", removed_containers)
-        self.assertNotIn(lifecycle.KEYRING_CONTAINER, removed_containers)
-
-    def test_login_executes_real_login_checks_inside_asb_login(self):
-        executed_commands = []
-
-        def fake_subproc_run(cmd, *args, **kwargs):
-            executed_commands.append(list(cmd))
-            return mock.MagicMock(returncode=0)
-
-        with mock.patch("asb.lifecycle.podman.exists", side_effect=lambda kind, name: True if (kind == "image" or name == "asb-login") else False), \
-             mock.patch("asb.lifecycle.ensure_keyring_service"), \
-             mock.patch("asb.lifecycle.ensure_keyring_runtime_volume", return_value="asb-keyring-runtime"), \
-             mock.patch("asb.lifecycle.ensure_credentials_volume", return_value="asb-credentials"), \
-             mock.patch("asb.lifecycle.podman.run"), \
-             mock.patch("asb.lifecycle.podman.require_binary", return_value="podman"), \
-             mock.patch("subprocess.run", side_effect=fake_subproc_run):
-            rc = lifecycle.login(Path("/fake/root"))
-            self.assertEqual(rc, 0)
-
-        # Each check in LOGIN_CHECKS must have been run against asb-login with timeout
-        for label, check_cmd in lifecycle.LOGIN_CHECKS:
-            matched = False
-            for cmd in executed_commands:
-                if "asb-login" in cmd and check_cmd in cmd and "timeout" in cmd:
-                    matched = True
-                    break
-            self.assertTrue(matched, f"check '{label}' ({check_cmd}) was not executed on asb-login")
+# TestLoginKeyringIntegration migrou para tests/unit/test_login_flow.py
+# (classe TestLoginKeyringContract) junto com o proprio login, que saiu de
+# lifecycle.py para auth.py na Tarefa A3.
 
 
 class TestCheckKeyringService(unittest.TestCase):
@@ -578,25 +472,7 @@ class TestCheckKeyringService(unittest.TestCase):
             self.assertNotIn("login", fix)
 
 
-class TestVerificacaoDeLogin(unittest.TestCase):
-    """A verificacao do login tem de EXERCITAR autenticacao.
-
-    `asb-agy --version` responde 0 com o agente deslogado: o `asb-agent login`
-    imprimia "Antigravity: ok" enquanto a CLI dizia "You are currently not
-    signed in". Um falso verde aqui e pior que nenhuma checagem, porque manda
-    o operador embora achando que a credencial foi gravada.
-    """
-
-    def test_nenhuma_checagem_e_consulta_de_versao(self):
-        from asb import lifecycle
-        for label, command in lifecycle.LOGIN_CHECKS:
-            with self.subTest(agente=label):
-                self.assertNotIn(
-                    "--version", command,
-                    f"a checagem do {label} e {command!r}, que responde 0 com "
-                    f"o agente deslogado")
-
-    def test_ha_uma_checagem_para_cada_agente_instalado(self):
-        from asb import lifecycle
-        labels = {label for label, _ in lifecycle.LOGIN_CHECKS}
-        self.assertEqual(labels, {"Codex", "Claude Code", "Antigravity"})
+# TestVerificacaoDeLogin migrou para tests/unit/test_login_flow.py. A tabela
+# `LOGIN_CHECKS` que ela guardava foi REMOVIDA, nao renomeada: `claude -p ping`
+# e `agy -p ping` mandavam um PROMPT ao modelo para descobrir se havia sessao,
+# e A1 mediu que o do agy bloqueia 60s quando deslogado.

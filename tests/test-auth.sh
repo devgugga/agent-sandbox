@@ -5,12 +5,12 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$ROOT/tests/assert.sh"
 
 TEST_ID="test-auth-$$-$(date +%s%N 2>/dev/null || date +%s)"
-WS_A="ws-a-${TEST_ID}"
-WS_B="ws-b-${TEST_ID}"
-TEST_CRED_VOL="test-cred-${TEST_ID}"
-TEST_KEYRING_DATA_VOL="test-kdata-${TEST_ID}"
-TEST_RUN_VOL="test-run-${TEST_ID}"
-TEST_KEYRING_CONTAINER="test-keyring-${TEST_ID}"
+WS_A="test-a-${TEST_ID}"
+WS_B="test-b-${TEST_ID}"
+TEST_CRED_VOL="asb-test-cred-${TEST_ID}"
+TEST_KEYRING_DATA_VOL="asb-test-kdata-${TEST_ID}"
+TEST_RUN_VOL="asb-test-run-${TEST_ID}"
+TEST_KEYRING_CONTAINER="asb-test-keyring-${TEST_ID}"
 TEST_PASS_FILE=$(mktemp "${TMPDIR:-/tmp}/asb-test-auth-pass-XXXXXX")
 printf 'synthetic-pass-%s\n' "$TEST_ID" > "$TEST_PASS_FILE"
 chmod 0600 "$TEST_PASS_FILE"
@@ -22,7 +22,7 @@ if [ "${ASB_KEYRING_PASS_FILE:-}" = "$REAL_PASS" ]; then
 fi
 
 # Abortar imediatamente se algum nome coincidir com recursos de produção
-TEST_LOGIN_CONTAINER="test-login-${TEST_ID}"
+TEST_LOGIN_CONTAINER="asb-test-login-${TEST_ID}"
 for res in "$TEST_CRED_VOL" "$TEST_RUN_VOL" "$TEST_KEYRING_DATA_VOL" "$TEST_KEYRING_CONTAINER" "$TEST_LOGIN_CONTAINER"; do
   case "$res" in
     asb-credentials|asb-keyring|asb-keyring-runtime|asb-keyring-data|asb-toolcache|asb-login)
@@ -99,12 +99,31 @@ assert_eq "sentinel-secret-token" \
   "$(podman run --rm --entrypoint cat -v "$TEST_CRED_VOL:/run/asb-credentials:ro,z" "$IMAGE" /run/asb-credentials/keyrings/sentinel.keyring 2>/dev/null || true)" \
   "arquivo sentinela preservado no volume de credenciais subjacente"
 
-# O caminho real e um LINK para o volume: o refresh de token que o agente faz
-# durante a sessao precisa aterrissar no volume, nao numa copia efemera.
-assert_eq "0" "$(podman exec "$A" sh -c "test -L '$HOME/.claude/.credentials.json'; echo \$?")" \
-  "a credencial do Claude e um link para o volume"
-assert_eq "0" "$(podman exec "$A" sh -c "test -L '$HOME/.codex/auth.json'; echo \$?")" \
-  "a credencial do Codex e um link para o volume"
+# O diretorio de credencial e MONTADO do volume, e nao um symlink de arquivo.
+# A1 mediu por que: `rename` atomico sobre um symlink substitui o proprio
+# symlink e corta o vinculo com o volume; o mesmo `rename` sobre um arquivo
+# bind-montado falha com EBUSY; e o Claude Code 2.1.263 abre a credencial com
+# `O_RDONLY | O_NOFOLLOW`, entao um symlink devolve ELOOP e ele trata a
+# credencial como AUSENTE. Só o diretorio montado sobrevive aos tres.
+for d in .claude .codex; do
+  assert_eq "0" "$(podman exec "$A" sh -c "test -d '$HOME/$d'; echo \$?")" \
+    "$d e um diretorio no agente"
+  assert_fails "$d NAO e um symlink no agente" \
+    podman exec "$A" sh -c "test -L '$HOME/$d'"
+done
+# `podman inspect` reporta o subpath no campo `SubPath` de cada mount (medido
+# no podman 6.1), e nao com a sintaxe da linha de comando.
+MOUNTS_A=$(podman inspect "$A" --format \
+  '{{range .Mounts}}{{.Name}}|{{.Destination}}|{{.SubPath}}{{"\n"}}{{end}}')
+assert_contains "$TEST_CRED_VOL|$HOME/.claude|claude" "$MOUNTS_A" \
+  "o agente monta o subpath claude do volume de credenciais em ~/.claude"
+assert_contains "$TEST_CRED_VOL|$HOME/.codex|codex" "$MOUNTS_A" \
+  "o agente monta o subpath codex do volume de credenciais em ~/.codex"
+
+# O subdiretorio legado `keyrings` do volume nao pode aparecer pelo caminho da
+# credencial: o subpath expoe SOMENTE o diretorio do fornecedor.
+assert_fails "o mount de credencial nao expoe o subdiretorio keyrings" \
+  podman exec "$A" test -e "$HOME/.claude/keyrings"
 
 # O cliente NÃO deve criar link para ~/.local/share/keyrings
 assert_fails "o keyring nao e um link no container cliente" \
@@ -150,12 +169,27 @@ assert_eq "$SYNTHETIC_SECRET" \
   "$(podman exec -u 1000 "$A" secret-tool lookup service "asb-test-auth" account "agent" 2>/dev/null || true)" \
   "cliente A le segredo gravado via Secret Service"
 
-# Escreve pelo CAMINHO REAL (como o agente faz) e confirma que aterrissou no
-# volume. Se algum agente substituir o link por arquivo comum, este teste e o
-# que acusa — e a correcao e trocar o link por bind mount do arquivo.
-podman exec "$A" sh -c "printf 'marca-do-teste' > '$HOME/.codex/auth.json'"
-assert_eq "0" "$(podman exec "$A" sh -c "test -L '$HOME/.codex/auth.json'; echo \$?")" \
-  "escrever pelo caminho real nao destruiu o link"
+# Escreve pelo CAMINHO REAL com RENAME ATOMICO, que e o padrao dos escritores
+# de credencial de verdade — e exatamente a operacao que, no arranjo antigo de
+# symlink, substituia o link e cortava o vinculo com o volume. Dado sintetico,
+# nunca uma credencial real.
+podman exec -u 1000 "$A" sh -c \
+  "printf 'marca-do-teste' > '$HOME/.codex/auth.json.tmp' \
+   && mv -f '$HOME/.codex/auth.json.tmp' '$HOME/.codex/auth.json'"
+assert_eq "marca-do-teste" \
+  "$(podman exec "$A" sh -c "cat '$HOME/.codex/auth.json'")" \
+  "o rename atomico aterrissou no caminho real"
+assert_fails "apos o rename, a credencial e arquivo comum e nao symlink" \
+  podman exec "$A" sh -c "test -L '$HOME/.codex/auth.json'"
+assert_eq "marca-do-teste" \
+  "$(podman run --rm --entrypoint cat -v "$TEST_CRED_VOL:/run/asb-credentials:ro,z" \
+      "$IMAGE" /run/asb-credentials/codex/auth.json 2>/dev/null || true)" \
+  "o rename atomico aterrissou DENTRO do volume, nao numa copia efemera"
+
+# A causa do defeito original, agora um asserto: nada pode precriar a
+# credencial do Claude como arquivo de 0 bytes.
+assert_fails "nada precria a credencial do Claude como arquivo vazio" \
+  podman exec "$A" test -e "$HOME/.claude/.credentials.json"
 
 "$ROOT/cli/asb-agent" down --workspace "$WS_A" >/dev/null
 

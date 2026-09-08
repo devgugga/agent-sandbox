@@ -220,6 +220,7 @@ class TestLifecycleOrdering(unittest.TestCase):
                  mock.patch("cli.asb.lifecycle.ensure_ssh_key", return_value=fake_key), \
                  mock.patch("cli.asb.lifecycle.ensure_keyring_pass", return_value=fake_pass), \
                  mock.patch("cli.asb.lifecycle.ensure_credentials_volume", return_value="cred-vol"), \
+                 mock.patch("cli.asb.lifecycle.credential_mount_args", return_value=[]), \
                  mock.patch("cli.asb.lifecycle.ensure_toolcache_volume", return_value="tool-vol"), \
                  mock.patch("cli.asb.lifecycle.discover_mise_dirs", return_value=[]), \
                  mock.patch("cli.asb.readiness.wait_until", return_value=mock.MagicMock(state="healthy", code="ok")), \
@@ -350,6 +351,7 @@ class TestLifecycleOrdering(unittest.TestCase):
                  mock.patch("cli.asb.lifecycle.ensure_keyring_service", side_effect=lambda: events.append("ensure_keyring_service")), \
                  mock.patch("cli.asb.lifecycle.ensure_keyring_runtime_volume", return_value="asb-keyring-runtime"), \
                  mock.patch("cli.asb.lifecycle.ensure_credentials_volume", return_value="asb-credentials"), \
+                 mock.patch("cli.asb.lifecycle.credential_mount_args", return_value=[]), \
                  mock.patch("cli.asb.lifecycle.podman.run", side_effect=fake_run), \
                  mock.patch("cli.asb.lifecycle.load_profile", return_value=fake_profile), \
                  mock.patch("cli.asb.lifecycle.layout_for", return_value=fake_layout), \
@@ -771,6 +773,7 @@ class TestTransactionalRollback(unittest.TestCase):
                 stack.enter_context(mock.patch("cli.asb.lifecycle.ensure_keyring_service"))
                 stack.enter_context(mock.patch("cli.asb.lifecycle.ensure_keyring_runtime_volume", return_value="k-run"))
                 stack.enter_context(mock.patch("cli.asb.lifecycle.ensure_credentials_volume", return_value="c-vol"))
+                stack.enter_context(mock.patch("cli.asb.lifecycle.credential_mount_args", return_value=[]))
                 stack.enter_context(mock.patch("cli.asb.lifecycle.ensure_toolcache_volume", return_value="t-vol"))
                 mock_install = stack.enter_context(mock.patch("cli.asb.lifecycle.supervisor.install_workspace", return_value=[]))
                 mock_start = stack.enter_context(mock.patch("cli.asb.lifecycle.supervisor.start_workspace"))
@@ -834,6 +837,7 @@ class TestTransactionalRollback(unittest.TestCase):
                  mock.patch("cli.asb.lifecycle.ensure_keyring_service"), \
                  mock.patch("cli.asb.lifecycle.ensure_keyring_runtime_volume", return_value="k-run"), \
                  mock.patch("cli.asb.lifecycle.ensure_credentials_volume", return_value="c-vol"), \
+                 mock.patch("cli.asb.lifecycle.credential_mount_args", return_value=[]), \
                  mock.patch("cli.asb.lifecycle.ensure_toolcache_volume", return_value="t-vol"), \
                  mock.patch("cli.asb.readiness.wait_until", return_value=failed_proxy), \
                  mock.patch("cli.asb.lifecycle.discover_mise_dirs") as mock_mise, \
@@ -885,6 +889,7 @@ class TestTransactionalRollback(unittest.TestCase):
                  mock.patch("cli.asb.lifecycle.ensure_keyring_service"), \
                  mock.patch("cli.asb.lifecycle.ensure_keyring_runtime_volume", return_value="k-run"), \
                  mock.patch("cli.asb.lifecycle.ensure_credentials_volume", return_value="c-vol"), \
+                 mock.patch("cli.asb.lifecycle.credential_mount_args", return_value=[]), \
                  mock.patch("cli.asb.lifecycle.ensure_toolcache_volume", return_value="t-vol"), \
                  mock.patch("cli.asb.readiness.wait_until", side_effect=fake_wait), \
                  mock.patch("cli.asb.lifecycle.discover_mise_dirs", return_value=[]), \
@@ -939,6 +944,7 @@ class TestTransactionalRollback(unittest.TestCase):
                  mock.patch("cli.asb.lifecycle.ensure_keyring_service"), \
                  mock.patch("cli.asb.lifecycle.ensure_keyring_runtime_volume", return_value="k-run"), \
                  mock.patch("cli.asb.lifecycle.ensure_credentials_volume", return_value="c-vol"), \
+                 mock.patch("cli.asb.lifecycle.credential_mount_args", return_value=[]), \
                  mock.patch("cli.asb.lifecycle.ensure_toolcache_volume", return_value="t-vol"), \
                  mock.patch("cli.asb.lifecycle.discover_mise_dirs", return_value=[]), \
                  mock.patch("cli.asb.readiness.wait_until", return_value=healthy_probe), \
@@ -1004,6 +1010,7 @@ class TestTransactionalRollback(unittest.TestCase):
                  mock.patch("cli.asb.lifecycle.ensure_keyring_service"), \
                  mock.patch("cli.asb.lifecycle.ensure_keyring_runtime_volume", return_value="run-vol"), \
                  mock.patch("cli.asb.lifecycle.ensure_credentials_volume", return_value="cred-vol"), \
+                 mock.patch("cli.asb.lifecycle.credential_mount_args", return_value=[]), \
                  mock.patch("cli.asb.lifecycle.ensure_toolcache_volume", return_value="tool-vol"), \
                  mock.patch("cli.asb.lifecycle.podman.run"), \
                  mock.patch("cli.asb.lifecycle.load_profile", return_value=fake_profile), \
@@ -1071,7 +1078,10 @@ class TestTransactionalRollback(unittest.TestCase):
                  mock.patch("cli.asb.lifecycle.ensure_ssh_key", return_value=fake_key), \
                  mock.patch("cli.asb.lifecycle.ensure_keyring_service"), \
                  mock.patch("cli.asb.lifecycle.ensure_keyring_runtime_volume", return_value="k-run"), \
-                 mock.patch("cli.asb.lifecycle.ensure_credentials_volume", return_value="c-vol"), \
+                 mock.patch.multiple(
+                     "cli.asb.lifecycle",
+                     ensure_credentials_volume=mock.Mock(return_value="c-vol"),
+                     credential_mount_args=mock.Mock(return_value=[])), \
                  mock.patch("cli.asb.lifecycle.ensure_toolcache_volume", return_value="t-vol"), \
                  mock.patch.object(Path, "home", return_value=fake_home), \
                  mock.patch("subprocess.run", return_value=mock.MagicMock(returncode=0)), \

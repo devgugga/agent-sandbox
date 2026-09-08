@@ -74,11 +74,78 @@ def ensure_ssh_key() -> Path:
     return SSH_KEY
 
 
+# Um DIRETORIO por fornecedor dentro do volume de credenciais, montado sobre
+# o diretorio de configuracao correspondente no home.
+#
+# A1 provou por que tem de ser diretorio: `rename`/`os.replace` sobre um
+# SYMLINK substitui o proprio symlink e corta o vinculo com o volume, e sobre
+# um arquivo BIND-MONTADO o mesmo `rename` falha com EBUSY. Só o diretorio
+# montado sobrevive ao padrao de escrita real dos fornecedores. O Claude ainda
+# soma um segundo motivo: ele abre a credencial com `O_RDONLY | O_NOFOLLOW`, e
+# num symlink o Linux devolve ELOOP, que ele trata como credencial AUSENTE.
+CREDENTIAL_DIRS: dict[str, str] = {"claude": ".claude", "codex": ".codex"}
+
+
 def ensure_credentials_volume() -> str:
+    """Garante que o volume de credenciais EXISTE, e devolve o nome dele.
+
+    Deliberadamente sem efeito no sistema de arquivos: quem so precisa citar o
+    volume num mount (o singleton do keyring, por exemplo) chama isto e nao
+    mexe em disco. A forma INTERNA do volume e responsabilidade de
+    `ensure_credential_dirs`, que so quem monta os subpaths chama.
+    """
     vol = os.environ.get("ASB_CREDENTIALS_VOLUME", CREDENTIALS_VOLUME)
     if not podman.exists("volume", vol):
         podman.run("volume", "create", vol)
     return vol
+
+
+def ensure_credential_dirs(vol: str) -> None:
+    """Cria, no host, um diretorio por fornecedor dentro do volume.
+
+    Pelo host porque `volume-subpath` do podman NAO cria o caminho: um subpath
+    ausente aborta o `podman run` com "no such file or directory" (medido).
+    Pelo host tambem resolve a posse: com `--userns keep-id:uid=1000,gid=1000`
+    o usuario do host mapeia para o uid 1000 do container, entao o diretorio
+    criado aqui ja chega gravavel para o agente — o oposto do
+    `Permission denied (os error 13)` que o piloto do operador viu num volume
+    cujo `_data` pertencia ao uid 0.
+
+    NUNCA cria arquivo de credencial, so diretorio. Era exatamente a criacao
+    de arquivo (`: > "$stored"` no entrypoint) que deixava `claude.json` com 0
+    bytes: um arquivo que jamais poderia ser lido como JSON e indistinguivel
+    de "sem credencial". Tambem nunca remove nem sobrescreve o que ja existe.
+    """
+    raw = podman.out("volume", "inspect", vol, "--format", "{{.Mountpoint}}")
+    mountpoint = Path(raw)
+    if not mountpoint.is_absolute() or not mountpoint.is_dir():
+        # Driver de volume nao-local, ou resposta inesperada do podman. Falhar
+        # aqui, com o valor a vista, e melhor que um mkdir num caminho
+        # relativo qualquer.
+        raise podman.PodmanError(
+            f"mountpoint do volume {vol} nao e um diretorio do host: {raw!r}")
+    for sub in CREDENTIAL_DIRS:
+        target = mountpoint / sub
+        target.mkdir(mode=0o700, exist_ok=True)
+        target.chmod(0o700)
+
+
+def credential_mount_args(home: Path) -> list[str]:
+    """Argumentos de mount das credenciais, para o agente e para os clientes
+    efemeros de login/verificacao.
+
+    `volume-subpath` monta SOMENTE o diretorio do fornecedor: o resto do
+    volume — inclusive o subdiretorio legado `keyrings/` — nao aparece por
+    este caminho.
+    """
+    vol = ensure_credentials_volume()
+    ensure_credential_dirs(vol)
+    args: list[str] = []
+    for sub, rel in CREDENTIAL_DIRS.items():
+        args += ["--mount",
+                 f"type=volume,src={vol},dst={home / rel},"
+                 f"volume-subpath={sub},relabel=shared"]
+    return args
 
 
 def ensure_toolcache_volume() -> str:
@@ -491,6 +558,7 @@ def prepare_workspace(
         "-e", f"DBUS_SESSION_BUS_ADDRESS=unix:path={KEYRING_BUS}",
         "-v", f"{ensure_credentials_volume()}:/run/asb-credentials:z",
         "--mount", "type=tmpfs,destination=/run/asb-credentials/keyrings,ro,notmpcopyup,tmpfs-mode=000",
+        *credential_mount_args(home),
         "-v", f"{ensure_toolcache_volume()}:/run/asb-toolcache:Z",
         *(["-e", f"DOCKER_HOST=tcp://{n['net']}-docker:2375"]
           if profile.host_api == "read" else []),
@@ -946,85 +1014,24 @@ def purge(ws: str, confirmed: bool) -> int:
     return 0
 
 
-# Verificar por CODIGO DE SAIDA de um comando que EXERCITA autenticacao.
-# `--version` responde 0 com o agente deslogado: era o que fazia o login
-# imprimir "Antigravity: ok" enquanto a CLI dizia "You are currently not
-# signed in". Um falso verde aqui e pior que nenhuma checagem, porque manda o
-# operador embora achando que a credencial foi gravada.
-# Tambem nao vale grepar "logged in": essa string casa "not logged in".
-LOGIN_CHECKS = (
-    ("Codex", "codex login status"),
-    ("Claude Code", "claude -p ping < /dev/null"),
-    ("Antigravity", "agy -p ping < /dev/null"),
-)
+def login(root: Path, provider: str = "all") -> int:
+    """Reexport de `auth.login` (Tarefa A3).
 
+    O fluxo de login inteiro mudou de casa: ele vive agora ao lado do
+    diagnostico que o verifica, em `cli/asb/auth.py`, e nao mais no meio do
+    ciclo de vida dos workspaces. Este invólucro existe apenas para nao
+    quebrar quem ja importava `lifecycle.login`; o import e adiado porque
+    `auth` importa `lifecycle`.
 
-def login(root: Path) -> int:
-    """Autentica os tres agentes UMA VEZ, num container fora da rede interna.
-
-    Fora da rede interna de proposito: o login por device-auth precisa de
-    egresso direto, e nao ha proxy algum neste caminho.
+    A tabela `LOGIN_CHECKS` que ficava aqui foi REMOVIDA, e nao migrada: as
+    checagens `claude -p ping` e `agy -p ping` mandavam um PROMPT ao modelo
+    para descobrir se havia sessao, e A1 mediu que a do agy bloqueia 60s
+    quando deslogado. A verificacao correta e `auth.verify_fresh_client`, que
+    pergunta a um cliente NOVO usando o status nativo do fornecedor.
     """
-    if not podman.exists("image", IMAGE):
-        raise podman.PodmanError(
-            f"imagem {IMAGE} ausente; execute 'asb-agent build'")
-    ensure_keyring_service()
-    name = "asb-login"
-    if podman.exists("container", name):
-        podman.run("rm", "-f", name, check=False)
+    from . import auth
 
-    podman.run(
-        "run", "-d", "--name", name,
-        "--userns", "keep-id:uid=1000,gid=1000",
-        "-v", f"{ensure_keyring_runtime_volume()}:/run/asb-keyring:ro,z",
-        "-e", f"DBUS_SESSION_BUS_ADDRESS=unix:path={KEYRING_BUS}",
-        "-v", f"{ensure_credentials_volume()}:/run/asb-credentials:z",
-        "--mount", "type=tmpfs,destination=/run/asb-credentials/keyrings,ro,notmpcopyup,tmpfs-mode=000",
-        IMAGE)
-    try:
-        print("\nEntre em cada agente. Use SEMPRE fluxos de device-auth: o "
-              "OAuth padrao abre um servidor de callback numa porta do "
-              "container que o navegador do host nao alcanca, e trava.\n",
-              file=sys.stderr)
-        for label, command in (
-                ("Claude Code", "claude /login"),
-                ("Codex", "codex login --device-auth"),
-                # `agy` nao tem subcomando `login`: o binario nu abre a TUI,
-                # que autentica no primeiro uso. `agy login` falha com
-                # "unexpected argument".
-                ("Antigravity", "agy")):
-            print(f"--- {label} ---", file=sys.stderr)
-            if label == "Claude Code":
-                print("Aviso: se o Claude Code solicitar 'Quick safety check', use a seta\n"
-                      "para baixo e selecione 'Yes, I trust this folder' (o padrao 'No, exit' aborta o login).\n",
-                      file=sys.stderr)
-            # `bash -lc` nao e decoracao: sem shell de login o agy nao esta no
-            # PATH e DBUS_SESSION_BUS_ADDRESS esta ausente, que e exatamente
-            # como a credencial acaba em texto claro em vez do keyring.
-            # -w garante execucao no HOME do usuario em vez da raiz /.
-            subprocess.run([podman.require_binary(), "exec", "-it",
-                            "-u", "1000", "-w", str(Path.home()), name,
-                            "bash", "-lc", command])
-
-        # Verificar por CODIGO DE SAIDA, nunca por grep de "logged in": essa
-        # string casa tambem com "not logged in".
-        failed = []
-        for label, command in LOGIN_CHECKS:
-            result = subprocess.run(
-                [podman.require_binary(), "exec", "-u", "1000", name,
-                 "timeout", "120", "bash", "-lc", command],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            state = "ok" if result.returncode == 0 else "FALHOU"
-            print(f"  {label}: {state}", file=sys.stderr)
-            if result.returncode != 0:
-                failed.append(label)
-        if failed:
-            raise podman.PodmanError(
-                "nao autenticado: " + ", ".join(failed))
-        print("credenciais gravadas no volume asb-credentials", file=sys.stderr)
-        return 0
-    finally:
-        podman.run("rm", "-f", name, check=False)
+    return auth.login(root, provider)
 
 
 def list_workspaces() -> int:

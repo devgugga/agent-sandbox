@@ -44,38 +44,50 @@ if [ -f /run/asb-config/manifest.tsv ]; then
   while IFS=$'\t' read -r src dst; do
     [ -n "$src" ] || continue
     install -d -o "$ASB_USER" -g "$ASB_USER" "$(dirname "$dst")"
+    # Trocar por rename, nao apagar no lugar. Com `~/.claude` e `~/.codex`
+    # agora montados de um volume COMPARTILHADO entre workspaces, um
+    # `rm -rf "$dst"` seguido de `cp -a` deixaria outro workspace lendo um
+    # diretorio meio copiado durante a partida deste. A copia acontece ao
+    # lado e so entra no lugar pronta.
+    staged="${dst}.asb-staging.$$"
+    rm -rf "$staged"
+    cp -a "/run/asb-config/$src" "$staged"
+    chown -R "$ASB_USER:$ASB_USER" "$staged"
     rm -rf "$dst"
-    cp -a "/run/asb-config/$src" "$dst"
-    chown -R "$ASB_USER:$ASB_USER" "$dst"
+    mv "$staged" "$dst"
   done < /run/asb-config/manifest.tsv
 fi
 
-# Credenciais: o volume e a fonte, e o caminho real e um LINK para dentro dele.
-# Nao uma copia: os agentes renovam o token durante a sessao, e uma copia
-# perderia a renovacao na proxima partida — que e exatamente o sintoma de
-# "perdi a sessao" que este redesenho existe para eliminar.
-if [ -d /run/asb-credentials ]; then
-  link_credential() {
-    real="$1"; stored="/run/asb-credentials/$2"
-    install -d -o "$ASB_USER" -g "$ASB_USER" "$(dirname "$real")"
-    if [ -w /run/asb-credentials ]; then
-      [ -e "$stored" ] || [ -d "$stored" ] || {
-        : > "$stored"; chmod 0600 "$stored"; }
-    fi
-    rm -rf "$real"
-    ln -s "$stored" "$real"
-    chown -h "$ASB_USER:$ASB_USER" "$real"
-  }
-  link_credential "$ASB_HOME/.claude/.credentials.json" claude.json
-  link_credential "$ASB_HOME/.codex/auth.json"          codex-auth.json
-  if [ -w /run/asb-credentials ]; then
-    chown "$ASB_USER:$ASB_USER" /run/asb-credentials
-    for f in /run/asb-credentials/*; do
-      [ -e "$f" ] || continue
-      [ "$(basename "$f")" = "keyrings" ] && continue
-      chown -R "$ASB_USER:$ASB_USER" "$f" 2>/dev/null || true
-    done
-  fi
+# Credenciais: NADA a fazer aqui. Os diretorios de credencial chegam como
+# mounts (`~/.claude`, `~/.codex`, subpaths do volume asb-credentials), feitos
+# por quem cria o container. O entrypoint nao os toca.
+#
+# O que existia aqui era a causa medida do "Claude perde o login a cada
+# partida" (Tarefa A1):
+#   1. `: > "$stored"` precriava a credencial como arquivo de 0 BYTES, que
+#      jamais poderia ser lido como JSON. O volume de producao tinha
+#      literalmente `claude.json` com 0 bytes.
+#   2. `rm -rf "$real"; ln -s "$stored" "$real"` refazia um SYMLINK a cada
+#      partida. O Claude Code 2.1.263 abre a credencial com
+#      `O_RDONLY | O_NOFOLLOW`; num symlink o Linux devolve ELOOP, que ele
+#      classifica como `refused-symlink` e trata como credencial AUSENTE.
+#   3. Qualquer escritor que use `rename` atomico sobre o symlink substitui o
+#      proprio symlink e corta o vinculo com o volume.
+# O Codex sobrevivia a esse arranjo so porque o escritor dele tolera o
+# symlink. Nao reintroduzir link nem precriacao de arquivo aqui.
+if [ -d /run/asb-credentials ] && [ -w /run/asb-credentials ]; then
+  chown "$ASB_USER:$ASB_USER" /run/asb-credentials
+  for f in /run/asb-credentials/*; do
+    [ -e "$f" ] || continue
+    case "$(basename "$f")" in
+      # keyrings: mascarado por tmpfs, e nao e nosso.
+      # claude/codex: os diretorios de credencial, criados pelo host ja com o
+      # uid certo e montados por cima. Um `chown -R` aqui reescreveria
+      # metadado de credencial viva a cada partida sem corrigir nada.
+      keyrings|claude|codex) continue ;;
+    esac
+    chown -R "$ASB_USER:$ASB_USER" "$f" 2>/dev/null || true
+  done
 fi
 
 if [ -d /run/asb-toolcache ]; then

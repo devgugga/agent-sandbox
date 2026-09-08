@@ -6,10 +6,19 @@ esta autenticada, se a REDE alcanca o fornecedor, e se a INFRAESTRUTURA local
 pergunta. Rede e infraestrutura ja tem seus proprios sensores dedicados
 (cli/asb/readiness.py, cli/asb/keyring.py).
 
-Diagnostico puro: nenhuma funcao aqui inicia login, faz logout ou envia
-prompt. `check_status`/`status` apenas LEEM o estado corrente do fornecedor,
-executando como uid 1000 com o mesmo ambiente do workspace e timeout
-limitado (10s) — o mesmo perfil de execucao usado pelas demais sondas.
+Duas metades com fronteira explicita:
+
+* DIAGNOSTICO (`check_status`, `status`, os `parse_*`): nunca inicia login,
+  nunca faz logout, nunca envia prompt. Apenas LE o estado corrente do
+  fornecedor, como uid 1000, com o ambiente do workspace e timeout limitado
+  (10s) — o mesmo perfil das demais sondas.
+* LOGIN (`login`, `login_command`, `operator_lock`, `verify_fresh_client`,
+  Tarefa A3): unico caminho que muta estado, sempre sob pedido explicito do
+  operador, sempre com TTY, sempre com lock por fornecedor.
+
+Nenhuma das duas metades interpola saida capturada do fornecedor em evidencia
+ou remediacao: e ali que tokens e codigos OAuth apareceriam. A evidencia e
+sempre texto enlatado somado a um codigo de retorno.
 
 Um retorno "authenticated" aqui prova que o comando de status do fornecedor
 respondeu como autenticado agora; nao e prova de que uma chamada real foi
@@ -17,13 +26,18 @@ aceita pelo servidor remoto (isso cabe a `verify`, Tarefa A4).
 """
 from __future__ import annotations
 
+import fcntl
 import json
+import os
+import secrets
 import subprocess
 import sys
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
+from pathlib import Path
 
-from . import lifecycle, podman
+from . import keyring, lifecycle, podman
 
 
 @dataclass(frozen=True)
@@ -116,7 +130,7 @@ def parse_codex_status(returncode: int, stdout: str, stderr: str) -> AuthResult:
     A negativa explicita ('not logged in') tem PRECEDENCIA sobre qualquer
     substring positiva: 'Not logged in' contem 'logged in', e grepar
     'logged in' sem checar a negativa primeiro casaria os dois estados (o
-    mesmo erro historico documentado em LOGIN_CHECKS/lifecycle.py). Sem essa
+    mesmo erro historico da tabela LOGIN_CHECKS, removida na A3). Sem essa
     negativa, `authenticated` exige codigo 0 E a substring positiva; formato
     desconhecido vira `unknown`, nunca `authenticated` por otimismo.
     """
@@ -301,3 +315,287 @@ def status(ws: str, provider: str, *, json_output: bool) -> int:
             print(line, file=sys.stderr)
 
     return _aggregate_exit_code(results)
+
+
+# ---------------------------------------------------------------------------
+# LOGIN (Tarefa A3) — a unica metade deste modulo que muta estado.
+# ---------------------------------------------------------------------------
+
+# Comandos de LOGIN, um por fornecedor, verbatim do brief da A3.
+#
+# `claude auth login`: `claude /login` responde "isn't available in this
+# environment" e sai com codigo 0 SEM logar (A1, Claude Code 2.1.263). Um
+# codigo 0 de CLI de fornecedor nunca e prova de que a acao aconteceu — e por
+# isso que todo login aqui termina em `verify_fresh_client`.
+# `codex login --device-auth`: device-auth de proposito. O OAuth padrao abre
+# um servidor de callback numa porta do container que o navegador do host nao
+# alcanca, e trava.
+# `agy`: o binario nu abre a TUI, que autentica no primeiro uso. Nao ha
+# subcomando `login`; `agy login` falha com "unexpected argument".
+LOGIN_COMMANDS: dict[str, tuple[str, ...]] = {
+    "claude": ("claude", "auth", "login"),
+    "codex": ("codex", "login", "--device-auth"),
+    "agy": ("agy",),
+}
+
+_LOGIN_ORDER = ("claude", "codex", "agy")
+
+# Codigo de saida com que a maioria dos shells reporta SIGINT.
+_SIGINT_EXIT = 130
+
+
+class LoginBusy(Exception):
+    """Ja existe uma sessao de login deste fornecedor nesta maquina."""
+
+    def __init__(self, provider: str):
+        super().__init__(
+            f"ja existe uma sessao de login de {provider} em andamento; "
+            f"conclua ou cancele a outra antes de repetir")
+        self.provider = provider
+
+
+def login_command(provider: str) -> tuple[str, ...]:
+    """Comando interativo de login de UM fornecedor. 'all' e rejeitado: quem
+    resolve o conjunto e `login()`, uma chamada por fornecedor."""
+    try:
+        return LOGIN_COMMANDS[provider]
+    except KeyError:
+        raise ValueError(
+            f"provedor invalido para login: {provider!r} "
+            "(use 'claude', 'codex' ou 'agy')") from None
+
+
+def _lock_path(provider: str) -> Path:
+    return keyring.CONFIG / "locks" / f"login-{provider}.lock"
+
+
+@contextmanager
+def operator_lock(provider: str):
+    """Lock por FORNECEDOR, `flock` NAO bloqueante.
+
+    Nao bloqueante de proposito: um login e interativo e pode ficar dezenas de
+    minutos aberto esperando o operador. Um lock bloqueante deixaria a segunda
+    invocacao pendurada sem explicacao; aqui ela recebe `LoginBusy` na hora e
+    o operador decide.
+
+    O lock e por fornecedor, e nao global, porque logins de fornecedores
+    diferentes sao independentes e o contrato do projeto e um login por
+    fornecedor compartilhado entre workspaces — nunca um login por workspace.
+    """
+    path = _lock_path(provider)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.parent.chmod(0o700)
+    handle = os.open(path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
+    try:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            raise LoginBusy(provider) from exc
+        try:
+            yield path
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+    finally:
+        os.close(handle)
+
+
+def _client_name(kind: str, provider: str) -> str:
+    """Nome UNICO por execucao.
+
+    O nome fixo `asb-login` era compartilhado: duas execucoes concorrentes
+    removiam o container uma da outra. Com pid + sufixo aleatorio, o cleanup
+    so pode citar o ID que a propria execucao criou.
+    """
+    return f"asb-{kind}-{provider}-{os.getpid()}-{secrets.token_hex(3)}"
+
+
+def _client_run_args(name: str) -> tuple[str, ...]:
+    """Cliente efemero de login/verificacao.
+
+    FORA da rede interna de proposito: o device-auth precisa de egresso
+    direto, e nao ha proxy algum neste caminho.
+
+    As credenciais chegam como DIRETORIOS montados (`~/.claude`, `~/.codex`),
+    nunca como symlink de arquivo: A1 provou que `rename` sobre symlink
+    substitui o proprio symlink e corta o vinculo com o volume, e que sobre um
+    arquivo bind-montado o mesmo `rename` falha com EBUSY.
+    """
+    home = Path(os.path.expanduser("~"))
+    return (
+        "run", "-d", "--name", name,
+        "--userns", "keep-id:uid=1000,gid=1000",
+        "-v", f"{lifecycle.ensure_keyring_runtime_volume()}:/run/asb-keyring:ro,z",
+        "-e", f"DBUS_SESSION_BUS_ADDRESS=unix:path={lifecycle.KEYRING_BUS}",
+        "-v", f"{lifecycle.ensure_credentials_volume()}:/run/asb-credentials:z",
+        "--mount", "type=tmpfs,destination=/run/asb-credentials/keyrings,"
+                   "ro,notmpcopyup,tmpfs-mode=000",
+        *lifecycle.credential_mount_args(home),
+        lifecycle.IMAGE,
+    )
+
+
+def verify_fresh_client(provider: str) -> AuthResult:
+    """Sobe um cliente NOVO e pergunta a ele se a credencial pegou.
+
+    Perguntar ao proprio cliente de login provaria pouco: ele tem o estado
+    quente do fluxo que acabou de rodar. O que este redesenho existe para
+    garantir e que a credencial sobreviva ao container, entao a verificacao
+    acontece num container que nunca viu o login — exatamente o que o piloto
+    do operador fez a mao com os clientes `-fresh`.
+    """
+    if provider not in _INDIVIDUAL_PROVIDERS:
+        raise ValueError(
+            f"provedor invalido para verificacao: {provider!r} "
+            "(use 'claude', 'codex' ou 'agy')")
+
+    if provider == "agy":
+        # A1: agy nao tem status local, e `agy -p ping` bloqueia 60s quando
+        # deslogado. Ate a A4 integrar `verify_client`, o resultado e
+        # explicitamente PENDENTE — jamais "authenticated" por otimismo, e
+        # jamais autorizando anunciar login completo de `all`.
+        return AuthResult(
+            provider="agy",
+            state="pending",
+            checked_at=_now_iso(),
+            evidence=("agy nao possui status local comprovado; a verificacao "
+                      "depende do verify_client limitado da Tarefa A4"),
+            remediation="asb-agent auth verify --agent agy (Tarefa A4)",
+        )
+
+    name = _client_name("verify", provider)
+    try:
+        # A criacao fica DENTRO do try: um Ctrl-C entre o `run` retornar e o
+        # `try` comecar deixaria o cliente de pe para sempre. `rm -f` de um
+        # container que nunca existiu e inofensivo.
+        podman.run(*_client_run_args(name))
+        return check_status(provider, name)
+    finally:
+        podman.run("rm", "-f", name, check=False)
+
+
+def _run_interactive_login(provider: str) -> None:
+    """Roda o login interativo num cliente proprio e o encerra em seguida.
+
+    A saida NAO e capturada: o exec herda o TTY do operador. Capturar traria
+    codigo de device-auth e token para dentro deste processo, de onde vazariam
+    para qualquer log — e o codigo de retorno do fornecedor nao e evidencia de
+    nada (A1), entao nao ha o que ganhar capturando.
+    """
+    name = _client_name("login", provider)
+    home = str(Path(os.path.expanduser("~")))
+    try:
+        podman.run(*_client_run_args(name))
+        # `bash -lc` nao e decoracao: sem shell de login o agy nao esta no
+        # PATH e DBUS_SESSION_BUS_ADDRESS esta ausente, que e exatamente como
+        # a credencial acaba em texto claro em vez do keyring.
+        # -w garante execucao no HOME do usuario em vez da raiz /.
+        result = subprocess.run(
+            [podman.require_binary(), "exec", "-it", "-u", "1000",
+             "-w", home, name, "bash", "-lc",
+             " ".join(login_command(provider))])
+        if result.returncode == _SIGINT_EXIT:
+            raise KeyboardInterrupt
+    finally:
+        # Encerrar o cliente de login ANTES de verificar: a verificacao so
+        # prova persistencia se o container que fez o login ja nao existe.
+        podman.run("rm", "-f", name, check=False)
+
+
+def _login_exit_code(results: list[AuthResult]) -> int:
+    """0 so quando TODOS os fornecedores pedidos foram verificados como
+    autenticados por um cliente novo.
+
+    Mesma precedencia do agregado de `status()`: 2 (infraestrutura) ganha de
+    1 (conta). `pending` entra em 1 — nao e falha de infraestrutura, mas
+    tambem nao e prova de login, e nao pode virar 0.
+    """
+    states = {r.state for r in results}
+    if states & {"unknown", "unreachable", "provider_error"}:
+        return 2
+    if states & {"unauthenticated", "pending"}:
+        return 1
+    return 0
+
+
+def _report_login(result: AuthResult) -> None:
+    marker = {"authenticated": "ok      ",
+              "pending": "PENDENTE"}.get(result.state, "FALHOU  ")
+    line = f"  {marker} {result.provider}: {result.state} ({result.evidence})"
+    if result.remediation:
+        line += f"  ->  {result.remediation}"
+    print(line, file=sys.stderr)
+
+
+def login(root: Path, provider: str = "all") -> int:
+    """`asb-agent login [--agent X]`: autentica UM fornecedor, ou todos.
+
+    Seletivo de proposito. O laco indiscriminado do v1 obrigava o operador a
+    passar pelos tres para consertar um, e um fornecedor que falhava no meio
+    levava os outros junto. Aqui cada fornecedor tem lock, cliente, resultado
+    e erro proprios, e o codigo agregado nunca e 0 sem prova de todos.
+    """
+    if provider not in _PUBLIC_PROVIDERS:
+        raise ValueError(
+            f"provedor invalido: {provider!r} (use claude, codex, agy ou all)")
+
+    providers = _LOGIN_ORDER if provider == "all" else (provider,)
+
+    if not sys.stdin.isatty():
+        # Sem TTY o `podman exec -it` nao tem como apresentar o fluxo e o
+        # processo ficaria pendurado. Falhar com orientacao e melhor que
+        # travar num cron ou num pipe.
+        print("asb-agent login precisa de um terminal interativo: o fluxo de "
+              "device-auth le codigo do operador.\n"
+              "Rode o comando direto no seu terminal, sem pipe, sem redirecionar "
+              "a entrada e sem 'ssh -T'.", file=sys.stderr)
+        return 2
+
+    if not podman.exists("image", lifecycle.IMAGE):
+        raise podman.PodmanError(
+            f"imagem {lifecycle.IMAGE} ausente; execute 'asb-agent build'")
+
+    lifecycle.ensure_keyring_service()
+
+    print("\nEntre em cada agente. Use SEMPRE fluxos de device-auth: o OAuth "
+          "padrao abre um servidor de callback numa porta do container que o "
+          "navegador do host nao alcanca, e trava.\n", file=sys.stderr)
+
+    results: list[AuthResult] = []
+    for name in providers:
+        print(f"--- {name} ---", file=sys.stderr)
+        if name == "claude":
+            print("Aviso: se o Claude Code solicitar 'Quick safety check', use "
+                  "a seta\npara baixo e selecione 'Yes, I trust this folder' "
+                  "(o padrao 'No, exit' aborta o login).\n", file=sys.stderr)
+        try:
+            with operator_lock(name):
+                _run_interactive_login(name)
+                results.append(verify_fresh_client(name))
+        except LoginBusy as exc:
+            # Sessao ocupada e infraestrutura, nao conta ausente: nada foi
+            # perguntado ao fornecedor.
+            results.append(AuthResult(
+                provider=name,
+                state="provider_error",
+                checked_at=_now_iso(),
+                evidence="ja existe uma sessao de login deste fornecedor",
+                remediation="conclua ou cancele a outra sessao e repita"))
+            print(f"asb-agent: {exc}", file=sys.stderr)
+        except KeyboardInterrupt:
+            # Cancelar preserva dados: o cliente efemero desta execucao ja foi
+            # removido pelo `finally`, e nenhuma credencial e apagada. Nunca
+            # apagamos credencial para "recuperar" de um cancelamento.
+            print(f"\nlogin de {name} cancelado; nenhuma credencial foi "
+                  "alterada", file=sys.stderr)
+            # O que ja foi verificado antes do cancelamento continua valendo e
+            # e reportado; so o codigo de saida vira 130.
+            for done in results:
+                _report_login(done)
+            return _SIGINT_EXIT
+
+    for result in results:
+        _report_login(result)
+    if any(r.state == "pending" for r in results):
+        print("um resultado PENDENTE nao autoriza declarar login concluido; "
+              "a verificacao do agy depende da Tarefa A4", file=sys.stderr)
+    return _login_exit_code(results)

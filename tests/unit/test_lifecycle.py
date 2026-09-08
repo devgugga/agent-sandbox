@@ -847,6 +847,59 @@ class TestTransactionalRollback(unittest.TestCase):
                 self.assertIn("proxy nao esta pronto", str(ctx.exception))
                 mock_mise.assert_not_called()
 
+    def test_up_rolls_back_when_credential_mount_setup_fails(self):
+        """`credential_mount_args` toca o disco (resolve o mountpoint do
+        volume e cria os diretorios do fornecedor) e e avaliada DENTRO da
+        lista de argumentos do agente. E um ponto de falha novo no meio da
+        transacao: se ele levantar, o rollback tem de rodar, senao o proxy e a
+        rede ja criados vazam."""
+        from unittest import mock
+        from cli.asb import lifecycle
+        from cli.asb.profile import Profile
+        from cli.asb.workspace import Layout
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            fake_layout = Layout(ws="demo", project="proj", mount=tmp / "mount",
+                                 project_root=tmp / "mount" / "proj",
+                                 state=tmp / "state")
+            fake_profile = Profile(services=[], host_ports=[], publish_ports=[],
+                                   host_api="none", container_mode="standard",
+                                   allow=[])
+            fake_key = tmp / "key"
+            fake_key.write_text("k")
+            (tmp / "key.pub").write_text("k.pub")
+
+            boom = lifecycle.podman.PodmanError(
+                "mountpoint do volume c-vol nao e um diretorio do host")
+
+            with mock.patch("cli.asb.podman.exists", side_effect=lambda kind, name: kind == "image"), \
+                 mock.patch("cli.asb.podman.ensure_rootless_netns"), \
+                 mock.patch("cli.asb.podman.run"), \
+                 mock.patch("cli.asb.podman.out", return_value="cid-1"), \
+                 mock.patch("cli.asb.lifecycle.load_profile", return_value=fake_profile), \
+                 mock.patch("cli.asb.lifecycle.layout_for", return_value=fake_layout), \
+                 mock.patch("cli.asb.lifecycle.prepare_clone"), \
+                 mock.patch("cli.asb.lifecycle.render", return_value="acl x"), \
+                 mock.patch("cli.asb.lifecycle.build_staging", return_value=0), \
+                 mock.patch("cli.asb.lifecycle.ensure_ssh_key", return_value=fake_key), \
+                 mock.patch("cli.asb.lifecycle.ensure_keyring_service"), \
+                 mock.patch("cli.asb.lifecycle.ensure_keyring_runtime_volume", return_value="k-run"), \
+                 mock.patch.multiple(
+                     "cli.asb.lifecycle",
+                     ensure_credentials_volume=mock.Mock(return_value="c-vol"),
+                     credential_mount_args=mock.Mock(side_effect=boom)), \
+                 mock.patch("cli.asb.lifecycle.ensure_toolcache_volume", return_value="t-vol"), \
+                 mock.patch("cli.asb.readiness.wait_until",
+                            return_value=mock.MagicMock(state="healthy", code="ok")), \
+                 mock.patch("cli.asb.install.podman_restart"), \
+                 mock.patch.object(lifecycle.WorkspaceTransaction, "rollback") as rollback:
+                with self.assertRaises(lifecycle.podman.PodmanError) as ctx:
+                    lifecycle.up(tmp, "demo", tmp / "origin")
+
+            self.assertIn("mountpoint do volume", str(ctx.exception))
+            rollback.assert_called_once()
+
     def test_up_ssh_readiness_failure_propagates_and_does_not_emit(self):
         from unittest import mock
         from cli.asb import lifecycle

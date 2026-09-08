@@ -188,7 +188,17 @@ Ran 7 tests in 9.650s — OK
 
 ## 6. Protocolo de Validação Real (Gate de Autenticação — Runbook do Piloto)
 
-Este protocolo destina-se à execução assistida com o operador humano quando a conectividade de rede do ambiente piloto estiver estabelecida.
+> **2026-09-07 — roteiro abaixo suspenso. Não executar os comandos de §6.1–6.2.**
+> A montagem em `/run/asb-credentials` aciona os mesmos symlinks recusados pelo
+> Claude. Além disso, `--userns keep-id` não substitui `--user`: a imagem termina
+> com `USER root` e o entrypoint executa `bash` sem baixar privilégios. O keyring
+> exclusivo também não é preparado pelos comandos abaixo. O registro é mantido
+> para rastreabilidade, não como instrução operacional.
+>
+> Usar o [piloto assistido atualizado](2026-09-07-auth-pilot-live.md).
+> Nenhuma autenticação real nem aprovação de A1 é inferida dessa preparação.
+
+O protocolo histórico abaixo ainda não havia sido executado pelo operador.
 
 ### 6.1 Pré-requisitos do Piloto
 1. Volume exclusivo e isolado para credenciais do piloto:

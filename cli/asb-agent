@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from asb import install, lifecycle  # noqa: E402
 from asb.auth import login as auth_login  # noqa: E402
 from asb.auth import status as auth_status  # noqa: E402
+from asb.auth import verify as auth_verify  # noqa: E402
 from asb.doctor import doctor  # noqa: E402
 from asb.podman import PodmanError  # noqa: E402
 from asb.profile import ProfileError  # noqa: E402
@@ -72,6 +73,16 @@ def build_parser() -> argparse.ArgumentParser:
         "--json", action="store_true", dest="as_json",
         help="emite relatorio em formato JSON schema 1")
 
+    auth_verify_parser = auth_sub.add_parser(
+        "verify",
+        help="chamada REAL ao fornecedor (orcamento: 1 por fornecedor, sem retry)")
+    auth_verify_parser.add_argument("--workspace", required=True)
+    auth_verify_parser.add_argument(
+        "--agent", choices=["claude", "codex", "agy", "all"], default="all")
+    auth_verify_parser.add_argument(
+        "--json", action="store_true", dest="as_json",
+        help="emite relatorio em formato JSON schema 1")
+
     doc_parser = sub.add_parser("doctor", help="diagnostica o ambiente")
     doc_parser.add_argument("--json", action="store_true", dest="as_json", help="emite diagnostico em formato JSON schema 1")
     sub.add_parser("list", help="lista os workspaces conhecidos")
@@ -88,6 +99,9 @@ def main() -> int:
         if args.command == "auth":
             if args.auth_command == "status":
                 return auth_status(
+                    args.workspace, args.agent, json_output=args.as_json)
+            if args.auth_command == "verify":
+                return auth_verify(
                     args.workspace, args.agent, json_output=args.as_json)
         if args.command == "up":
             return lifecycle.up(

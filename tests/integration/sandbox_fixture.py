@@ -115,6 +115,10 @@ class SandboxFixture:
 
         self._proxy_broken = False
         self._cleaned_up = False
+        # Cliente NAO-fresco por fornecedor (Tarefa A4): `provider_client`
+        # reaproveita o mesmo nome enquanto `fresh=False`, simulando o
+        # cliente "de login" do piloto real.
+        self._provider_clients: dict[str, str] = {}
 
     def register_container(self, name: str) -> str:
         self._validate_resource_name(name)
@@ -440,14 +444,108 @@ class SandboxFixture:
         *args: str,
         user: str | None = None,
         check: bool = False,
+        container: str | None = None,
     ) -> subprocess.CompletedProcess[str]:
-        """Runs a command inside the container via podman exec."""
+        """Runs a command inside a container via podman exec.
+
+        `container` defaults to the fixture's main supervised container
+        (`self.container`); pass the name returned by `provider_client()` to
+        reach one of those instead.
+        """
         cmd = [self._podman_bin, "exec"]
         if user is not None:
             cmd.extend(["-u", user])
-        cmd.append(self.container)
+        cmd.append(container if container is not None else self.container)
         cmd.extend(args)
         return subprocess.run(cmd, capture_output=True, text=True, check=check)
+
+    # Espelha `cli/asb/lifecycle.py::CREDENTIAL_DIRS` sem importar `asb`: a
+    # fixture fala com o CLI real por subprocesso (`self.cli()`), nunca
+    # importa o pacote diretamente.
+    _CREDENTIAL_DIRS: dict[str, str] = {"claude": ".claude", "codex": ".codex"}
+
+    def _credentials_mountpoint(self) -> Path:
+        raw = subprocess.run(
+            [self._podman_bin, "volume", "inspect", self.credentials_volume,
+             "--format", "{{.Mountpoint}}"],
+            check=True, capture_output=True, text=True,
+        ).stdout.strip()
+        return Path(raw)
+
+    def provider_client(self, provider: str, fresh: bool) -> str:
+        """Sobe (ou reaproveita) um cliente PROPRIO da fixture, montando
+        SOMENTE as credenciais SINTETICAS desta fixture (Tarefa A4) — nunca
+        `asb-credentials` de producao.
+
+        Espelha o cliente efemero de `cli/asb/auth.py::_client_run_args`
+        (mesmos mounts: credenciais em `/run/asb-credentials`, keyring em
+        `/run/asb-keyring` somente leitura, `keyrings/` como tmpfs vazio),
+        mas usa os volumes ISOLADOS que `setup_environment()` ja criou para
+        esta fixture, registrados e limpos pelo `teardown()` normal.
+
+        `fresh=True` sempre cria um container NOVO com sufixo aleatorio,
+        simulando o cenario "cliente novo" do piloto (A1/A4: prova que a
+        persistencia sobrevive a um container que nunca viu o login).
+        `fresh=False` reaproveita um unico cliente por fornecedor durante o
+        tempo de vida da fixture — o cenario "cliente de login" — criando-o
+        somente na primeira chamada.
+        """
+        if provider not in ("claude", "codex", "agy"):
+            raise ValueError(
+                f"fornecedor invalido: {provider!r} "
+                "(use 'claude', 'codex' ou 'agy')")
+
+        if not fresh and provider in self._provider_clients:
+            return self._provider_clients[provider]
+
+        # Os subdiretorios por fornecedor tem de existir no HOST antes do
+        # mount: `volume-subpath` nao cria o caminho, e um subpath ausente
+        # aborta o `podman run` (mesma causa documentada em
+        # `lifecycle.ensure_credential_dirs`). Feito uma vez por fixture.
+        mountpoint = self._credentials_mountpoint()
+        for sub in self._CREDENTIAL_DIRS:
+            target = mountpoint / sub
+            target.mkdir(mode=0o700, parents=True, exist_ok=True)
+            target.chmod(0o700)
+
+        suffix = "fresh" if fresh else "login"
+        name = self.register_container(
+            f"{self._prefix}-{provider}-{suffix}-{uuid.uuid4().hex[:6]}")
+
+        # Mesmo HOME que o `cli/asb/auth.py::_client_run_args` real usa: a
+        # imagem e construida espelhando `id -un` do host (lifecycle.build),
+        # entao o caminho dentro do container e literalmente o HOME do host.
+        home = Path(os.path.expanduser("~"))
+        credential_mounts: list[str] = []
+        for sub, rel in self._CREDENTIAL_DIRS.items():
+            credential_mounts += [
+                "--mount",
+                f"type=volume,src={self.credentials_volume},dst={home / rel},"
+                f"volume-subpath={sub},relabel=shared",
+            ]
+
+        # Sem `--cap-drop`/`--security-opt no-new-privileges`: o entrypoint
+        # da imagem precisa de CAP_CHOWN para ajustar a posse de `.claude` /
+        # `.codex` antes de baixar para uid 1000 (medido: com as capabilities
+        # retiradas, `install` falha com "Operation not permitted" e o
+        # container sai). Mesmo perfil de `cli/asb/auth.py::_client_run_args`.
+        cmd = [
+            self._podman_bin, "run", "-d", "--name", name,
+            "--userns", "keep-id:uid=1000,gid=1000",
+            "-v", f"{self.keyring_runtime_volume}:/run/asb-keyring:ro,z",
+            "-e", "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/asb-keyring/bus",
+            "-v", f"{self.credentials_volume}:/run/asb-credentials:z",
+            "--mount", "type=tmpfs,destination=/run/asb-credentials/keyrings,"
+                       "ro,notmpcopyup,tmpfs-mode=000",
+            *credential_mounts,
+            self._image,
+            "sleep", "infinity",
+        ]
+        subprocess.run(cmd, check=True, capture_output=True, text=True)
+
+        if not fresh:
+            self._provider_clients[provider] = name
+        return name
 
     def setup_forwarder(
         self,

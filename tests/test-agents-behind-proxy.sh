@@ -56,21 +56,40 @@ sa 'mkdir -p /tmp/relay-probe && cd /tmp/relay-probe && npm install \
 assert_eq "ok" "$(sa 'test -f /tmp/relay-probe/node_modules/node-pty/build/Release/pty.node && echo ok')" \
   "node-gyp compila modulo nativo atras do proxy (relay do Orca)"
 
-# Chamadas vivas de modelo: executadas apos o login no volume asb-credentials.
-claude_check=$(sa 'claude -p ping < /dev/null 2>&1 || true')
-if [[ "$claude_check" == *"Not logged in"* ]]; then
-  echo "  (Claude nao autenticado no volume; execute 'asb-agent login' para testar chamadas vivas de modelo)"
+# Chamadas vivas de modelo: uma por fornecedor, via `asb-agent auth verify`
+# (Tarefa A4) -- roda no HOST, exec dentro do container do proprio workspace,
+# atras do MESMO proxy/allowlist testado acima. Substitui o grep cru de "ok"
+# ou de mensagem de login (nao prova execucao real) por um relatorio
+# estruturado com orcamento de UMA chamada por fornecedor, sem retry.
+#
+# Fornecedor deslogado nunca vira aprovacao silenciosa: o brief exige SKIP
+# EXPLICITO no relatorio final, nunca a pratica antiga de pular calado e
+# ainda declarar validacao completa.
+_skip=0
+verify_out=$("$ROOT/cli/asb-agent" auth verify --workspace "$WS" --agent all --json 2>/dev/null)
+if ! printf '%s' "$verify_out" | jq -e . >/dev/null 2>&1; then
+  echo "  SKIP: 'asb-agent auth verify' nao devolveu JSON valido; nenhum fornecedor foi verificado"
+  _skip=$((_skip+3))
 else
-  claude_out=$(sa 'claude -p "responda apenas: ok" < /dev/null 2>&1 | tail -1')
-  assert_contains "ok" "$claude_out" "Claude Code responde atras do proxy"
-fi
-
-agy_check=$(sa 'asb-agy -p "ping" --print-timeout 10s 2>&1 || true')
-if [[ "$agy_check" == *"authentication required"* || "$agy_check" == *"authentication failed"* ]]; then
-  echo "  (Antigravity nao autenticado no volume; execute 'asb-agent login' para testar chamadas vivas de modelo)"
-else
-  assert_contains "ok" "$(sa 'asb-agy -p "responda apenas ok" --print-timeout 45s 2>&1 | tail -1')" \
-    "agy autentica por SSH quando lancado pelo guarda"
+  for provider in claude codex agy; do
+    result=$(printf '%s' "$verify_out" | jq -c --arg p "$provider" \
+      '.results[] | select(.provider==$p)')
+    state=$(printf '%s' "$result" | jq -r '.state')
+    evidence=$(printf '%s' "$result" | jq -r '.evidence')
+    case "$state" in
+      authenticated)
+        _pass=$((_pass+1))
+        echo "  ok: $provider responde atras do proxy (chamada real, verify: $evidence)"
+        ;;
+      *)
+        _skip=$((_skip+1))
+        echo "  SKIP: $provider nao verificado ($state: $evidence)"
+        echo "        rode 'asb-agent login --agent $provider' e repita este script;"
+        echo "        SKIP nao e evidencia de aprovacao"
+        ;;
+    esac
+  done
 fi
 
 report
+echo "pulou: $_skip (fornecedor deslogado ou infraestrutura -- SKIP explicito, nao aprovacao)"

@@ -1,3 +1,5 @@
+import asb_test_isolation  # noqa: F401  (guarda de isolamento da suite: nenhum volume real)
+
 import os
 import tempfile
 import unittest
@@ -220,7 +222,9 @@ class TestLifecycleOrdering(unittest.TestCase):
                  mock.patch("cli.asb.lifecycle.ensure_ssh_key", return_value=fake_key), \
                  mock.patch("cli.asb.lifecycle.ensure_keyring_pass", return_value=fake_pass), \
                  mock.patch("cli.asb.lifecycle.ensure_credentials_volume", return_value="cred-vol"), \
-                 mock.patch("cli.asb.lifecycle.credential_mount_args", return_value=[]), \
+                 mock.patch.multiple("cli.asb.lifecycle",
+                                     credential_mount_args=mock.Mock(return_value=[]),
+                                     ensure_session_volume=mock.Mock(return_value="asb-test-ws-session")), \
                  mock.patch("cli.asb.lifecycle.ensure_toolcache_volume", return_value="tool-vol"), \
                  mock.patch("cli.asb.lifecycle.discover_mise_dirs", return_value=[]), \
                  mock.patch("cli.asb.readiness.wait_until", return_value=mock.MagicMock(state="healthy", code="ok")), \
@@ -351,7 +355,9 @@ class TestLifecycleOrdering(unittest.TestCase):
                  mock.patch("cli.asb.lifecycle.ensure_keyring_service", side_effect=lambda: events.append("ensure_keyring_service")), \
                  mock.patch("cli.asb.lifecycle.ensure_keyring_runtime_volume", return_value="asb-keyring-runtime"), \
                  mock.patch("cli.asb.lifecycle.ensure_credentials_volume", return_value="asb-credentials"), \
-                 mock.patch("cli.asb.lifecycle.credential_mount_args", return_value=[]), \
+                 mock.patch.multiple("cli.asb.lifecycle",
+                                     credential_mount_args=mock.Mock(return_value=[]),
+                                     ensure_session_volume=mock.Mock(return_value="asb-test-ws-session")), \
                  mock.patch("cli.asb.lifecycle.podman.run", side_effect=fake_run), \
                  mock.patch("cli.asb.lifecycle.load_profile", return_value=fake_profile), \
                  mock.patch("cli.asb.lifecycle.layout_for", return_value=fake_layout), \
@@ -620,14 +626,29 @@ class TestKeyringPreservation(unittest.TestCase):
 
     def test_purge_preserves_keyring_container_and_volumes(self):
         from unittest import mock
+        from cli.asb import lifecycle
         from cli.asb.lifecycle import purge
 
         with mock.patch("cli.asb.lifecycle._origin_of", return_value=Path("/origin")), \
              mock.patch("cli.asb.lifecycle.layout_for"), \
              mock.patch("cli.asb.lifecycle.down") as mock_down, \
+             mock.patch("cli.asb.lifecycle.podman.exists", return_value=True), \
+             mock.patch("cli.asb.lifecycle.podman.run") as mock_run, \
              mock.patch("cli.asb.lifecycle.remove_workspace"):
             purge("demo", confirmed=True)
             mock_down.assert_called_once_with("demo")
+
+        # O purge remove o volume de SESSAO deste workspace — e so ele. O
+        # volume de credenciais e o keyring sao compartilhados: nenhum purge
+        # pode encostar neles.
+        removed = [" ".join(str(a) for a in call.args)
+                   for call in mock_run.call_args_list]
+        self.assertEqual(removed, ["volume rm -f asb-demo-session"])
+        joined = " ".join(removed)
+        for shared in ("asb-credentials", lifecycle.KEYRING_CONTAINER,
+                       lifecycle.KEYRING_DATA_VOLUME,
+                       lifecycle.KEYRING_RUNTIME_VOLUME):
+            self.assertNotIn(str(shared), joined)
 
 
 class TestStartForwarder(unittest.TestCase):
@@ -774,6 +795,7 @@ class TestTransactionalRollback(unittest.TestCase):
                 stack.enter_context(mock.patch("cli.asb.lifecycle.ensure_keyring_runtime_volume", return_value="k-run"))
                 stack.enter_context(mock.patch("cli.asb.lifecycle.ensure_credentials_volume", return_value="c-vol"))
                 stack.enter_context(mock.patch("cli.asb.lifecycle.credential_mount_args", return_value=[]))
+                stack.enter_context(mock.patch("cli.asb.lifecycle.ensure_session_volume", return_value="asb-test-ws-session"))
                 stack.enter_context(mock.patch("cli.asb.lifecycle.ensure_toolcache_volume", return_value="t-vol"))
                 mock_install = stack.enter_context(mock.patch("cli.asb.lifecycle.supervisor.install_workspace", return_value=[]))
                 mock_start = stack.enter_context(mock.patch("cli.asb.lifecycle.supervisor.start_workspace"))
@@ -837,7 +859,9 @@ class TestTransactionalRollback(unittest.TestCase):
                  mock.patch("cli.asb.lifecycle.ensure_keyring_service"), \
                  mock.patch("cli.asb.lifecycle.ensure_keyring_runtime_volume", return_value="k-run"), \
                  mock.patch("cli.asb.lifecycle.ensure_credentials_volume", return_value="c-vol"), \
-                 mock.patch("cli.asb.lifecycle.credential_mount_args", return_value=[]), \
+                 mock.patch.multiple("cli.asb.lifecycle",
+                                     credential_mount_args=mock.Mock(return_value=[]),
+                                     ensure_session_volume=mock.Mock(return_value="asb-test-ws-session")), \
                  mock.patch("cli.asb.lifecycle.ensure_toolcache_volume", return_value="t-vol"), \
                  mock.patch("cli.asb.readiness.wait_until", return_value=failed_proxy), \
                  mock.patch("cli.asb.lifecycle.discover_mise_dirs") as mock_mise, \
@@ -888,6 +912,7 @@ class TestTransactionalRollback(unittest.TestCase):
                  mock.patch.multiple(
                      "cli.asb.lifecycle",
                      ensure_credentials_volume=mock.Mock(return_value="c-vol"),
+                     ensure_session_volume=mock.Mock(return_value="s-vol"),
                      credential_mount_args=mock.Mock(side_effect=boom)), \
                  mock.patch("cli.asb.lifecycle.ensure_toolcache_volume", return_value="t-vol"), \
                  mock.patch("cli.asb.readiness.wait_until",
@@ -942,7 +967,9 @@ class TestTransactionalRollback(unittest.TestCase):
                  mock.patch("cli.asb.lifecycle.ensure_keyring_service"), \
                  mock.patch("cli.asb.lifecycle.ensure_keyring_runtime_volume", return_value="k-run"), \
                  mock.patch("cli.asb.lifecycle.ensure_credentials_volume", return_value="c-vol"), \
-                 mock.patch("cli.asb.lifecycle.credential_mount_args", return_value=[]), \
+                 mock.patch.multiple("cli.asb.lifecycle",
+                                     credential_mount_args=mock.Mock(return_value=[]),
+                                     ensure_session_volume=mock.Mock(return_value="asb-test-ws-session")), \
                  mock.patch("cli.asb.lifecycle.ensure_toolcache_volume", return_value="t-vol"), \
                  mock.patch("cli.asb.readiness.wait_until", side_effect=fake_wait), \
                  mock.patch("cli.asb.lifecycle.discover_mise_dirs", return_value=[]), \
@@ -997,7 +1024,9 @@ class TestTransactionalRollback(unittest.TestCase):
                  mock.patch("cli.asb.lifecycle.ensure_keyring_service"), \
                  mock.patch("cli.asb.lifecycle.ensure_keyring_runtime_volume", return_value="k-run"), \
                  mock.patch("cli.asb.lifecycle.ensure_credentials_volume", return_value="c-vol"), \
-                 mock.patch("cli.asb.lifecycle.credential_mount_args", return_value=[]), \
+                 mock.patch.multiple("cli.asb.lifecycle",
+                                     credential_mount_args=mock.Mock(return_value=[]),
+                                     ensure_session_volume=mock.Mock(return_value="asb-test-ws-session")), \
                  mock.patch("cli.asb.lifecycle.ensure_toolcache_volume", return_value="t-vol"), \
                  mock.patch("cli.asb.lifecycle.discover_mise_dirs", return_value=[]), \
                  mock.patch("cli.asb.readiness.wait_until", return_value=healthy_probe), \
@@ -1063,7 +1092,9 @@ class TestTransactionalRollback(unittest.TestCase):
                  mock.patch("cli.asb.lifecycle.ensure_keyring_service"), \
                  mock.patch("cli.asb.lifecycle.ensure_keyring_runtime_volume", return_value="run-vol"), \
                  mock.patch("cli.asb.lifecycle.ensure_credentials_volume", return_value="cred-vol"), \
-                 mock.patch("cli.asb.lifecycle.credential_mount_args", return_value=[]), \
+                 mock.patch.multiple("cli.asb.lifecycle",
+                                     credential_mount_args=mock.Mock(return_value=[]),
+                                     ensure_session_volume=mock.Mock(return_value="asb-test-ws-session")), \
                  mock.patch("cli.asb.lifecycle.ensure_toolcache_volume", return_value="tool-vol"), \
                  mock.patch("cli.asb.lifecycle.podman.run"), \
                  mock.patch("cli.asb.lifecycle.load_profile", return_value=fake_profile), \
@@ -1134,6 +1165,7 @@ class TestTransactionalRollback(unittest.TestCase):
                  mock.patch.multiple(
                      "cli.asb.lifecycle",
                      ensure_credentials_volume=mock.Mock(return_value="c-vol"),
+                     ensure_session_volume=mock.Mock(return_value="s-vol"),
                      credential_mount_args=mock.Mock(return_value=[])), \
                  mock.patch("cli.asb.lifecycle.ensure_toolcache_volume", return_value="t-vol"), \
                  mock.patch.object(Path, "home", return_value=fake_home), \

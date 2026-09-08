@@ -260,15 +260,34 @@ def check_status(provider: str, container: str) -> AuthResult:
     return replace(parsed, checked_at=checked_at)
 
 
+# Os dois conjuntos abaixo sao ALLOWLISTS, nunca blocklists. A versao antiga
+# testava os estados RUINS e devolvia 0 para todo o resto: qualquer estado novo
+# — `pending`, criado nesta mesma tarefa — nascia valendo "exit 0 = todos
+# autenticados". "Sucesso sem prova" e a falha que este redesenho existe para
+# eliminar, entao a funcao nega por padrao: so o conjunto explicito de estados
+# saudaveis produz 0, e um estado desconhecido cai no 2 junto da infraestrutura.
+_AUTHENTICATED_STATES = frozenset({"authenticated"})
+_ACCOUNT_MISSING_STATES = frozenset({"unauthenticated", "pending"})
+
+
 def _aggregate_exit_code(results: list[AuthResult]) -> int:
-    """0 se todos authenticated; 1 se conta ausente/expirada; 2 se algum
-    unknown/unreachable/provider_error — com precedencia sobre 1."""
-    states = {r.state for r in results}
-    if states & {"unknown", "unreachable", "provider_error"}:
+    """Codigo agregado, NEGANDO POR PADRAO.
+
+    0 exige que todo resultado esteja num estado comprovadamente saudavel;
+    1 e reservado a "conta ausente ou nao comprovada" (`unauthenticated`,
+    `pending`); qualquer outra coisa — infraestrutura (`unknown`,
+    `unreachable`, `provider_error`) ou um estado que ninguem previu — vira 2,
+    mantendo a precedencia 2 > 1 > 0. Lista vazia tambem e 2: nao ter
+    perguntado a ninguem nao e prova de nada.
+    """
+    if not results:
         return 2
-    if "unauthenticated" in states:
+    states = {r.state for r in results}
+    if states <= _AUTHENTICATED_STATES:
+        return 0
+    if states <= _AUTHENTICATED_STATES | _ACCOUNT_MISSING_STATES:
         return 1
-    return 0
+    return 2
 
 
 def status(ws: str, provider: str, *, json_output: bool) -> int:
@@ -501,22 +520,6 @@ def _run_interactive_login(provider: str) -> None:
         podman.run("rm", "-f", name, check=False)
 
 
-def _login_exit_code(results: list[AuthResult]) -> int:
-    """0 so quando TODOS os fornecedores pedidos foram verificados como
-    autenticados por um cliente novo.
-
-    Mesma precedencia do agregado de `status()`: 2 (infraestrutura) ganha de
-    1 (conta). `pending` entra em 1 — nao e falha de infraestrutura, mas
-    tambem nao e prova de login, e nao pode virar 0.
-    """
-    states = {r.state for r in results}
-    if states & {"unknown", "unreachable", "provider_error"}:
-        return 2
-    if states & {"unauthenticated", "pending"}:
-        return 1
-    return 0
-
-
 def _report_login(result: AuthResult) -> None:
     marker = {"authenticated": "ok      ",
               "pending": "PENDENTE"}.get(result.state, "FALHOU  ")
@@ -581,6 +584,20 @@ def login(root: Path, provider: str = "all") -> int:
                 evidence="ja existe uma sessao de login deste fornecedor",
                 remediation="conclua ou cancele a outra sessao e repita"))
             print(f"asb-agent: {exc}", file=sys.stderr)
+        except podman.PodmanError as exc:
+            # Falha de infraestrutura de UM fornecedor nao pode levar os
+            # outros junto: deixar a excecao escapar do laco descartava em
+            # silencio um sucesso ja verificado momentos antes, e o brief
+            # exige resultado separado por fornecedor com os erros
+            # PRESERVADOS. A evidencia continua sendo texto enlatado somado
+            # ao erro do podman (que nunca carrega saida do fornecedor).
+            results.append(AuthResult(
+                provider=name,
+                state="provider_error",
+                checked_at=_now_iso(),
+                evidence=f"falha de infraestrutura durante o login: {exc}",
+                remediation="asb-agent doctor"))
+            print(f"asb-agent: login de {name} falhou: {exc}", file=sys.stderr)
         except KeyboardInterrupt:
             # Cancelar preserva dados: o cliente efemero desta execucao ja foi
             # removido pelo `finally`, e nenhuma credencial e apagada. Nunca
@@ -598,4 +615,7 @@ def login(root: Path, provider: str = "all") -> int:
     if any(r.state == "pending" for r in results):
         print("um resultado PENDENTE nao autoriza declarar login concluido; "
               "a verificacao do agy depende da Tarefa A4", file=sys.stderr)
-    return _login_exit_code(results)
+    # Mesmo agregado do `status()`, de proposito: um unico lugar decide o que
+    # vale 0, e ele nega por padrao. Duas copias da regra eram como `pending`
+    # ficou correto num caminho e valendo 0 no outro.
+    return _aggregate_exit_code(results)

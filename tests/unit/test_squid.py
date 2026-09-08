@@ -1,4 +1,6 @@
 """Testes de cli/asb/squid.py — geracao do squid.conf."""
+
+import asb_test_isolation  # noqa: F401  (guarda de isolamento da suite: nenhum volume real)
 import sys
 import tempfile
 import unittest

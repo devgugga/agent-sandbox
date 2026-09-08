@@ -1,3 +1,5 @@
+
+import asb_test_isolation  # noqa: F401  (guarda de isolamento da suite: nenhum volume real)
 import importlib.util
 import os
 import sys
@@ -220,6 +222,7 @@ class TestLifecycleHostApi(unittest.TestCase):
              mock.patch("asb.lifecycle.ensure_keyring_runtime_volume", return_value="asb-keyring-runtime"), \
              mock.patch("asb.lifecycle.ensure_credentials_volume", return_value="asb-credentials"), \
              mock.patch("asb.lifecycle.credential_mount_args", return_value=[]), \
+             mock.patch("asb.lifecycle.ensure_session_volume", return_value="asb-test-ws-session"), \
              mock.patch("asb.readiness.wait_until", return_value=mock.MagicMock(state="healthy", code="ok")), \
              mock.patch("asb.install.podman_restart"), \
              mock.patch("pathlib.Path.exists", return_value=True), \

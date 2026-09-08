@@ -1,6 +1,8 @@
 """Unit tests for cli/asb/readiness.py and cli/asb/runtime_check.py."""
 from __future__ import annotations
 
+import asb_test_isolation  # noqa: F401  (guarda de isolamento da suite: nenhum volume real)
+
 import errno
 import json
 import socket

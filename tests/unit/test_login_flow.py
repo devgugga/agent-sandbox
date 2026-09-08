@@ -20,12 +20,16 @@ Contexto empirico (Tarefa A1, docs/validation/2026-09-07-*.md):
   codigo 0 SEM logar. O comando real e `claude auth login`.
 * `agy` nao tem status local e `agy -p ping` bloqueia 60s quando deslogado.
 
-ATENCAO: `lifecycle.ensure_credential_dirs` resolve o mountpoint REAL do
-volume via `podman volume inspect` e cria diretorios nele. Qualquer teste que
-chegue a `credential_mount_args` PRECISA mocka-lo, sob pena de escrever no
-volume de credenciais de producao do operador.
+ISOLAMENTO: `lifecycle.ensure_credential_dirs` resolve o mountpoint REAL do
+volume via `podman volume inspect` e cria diretorios nele — foi assim que dois
+testes desta suite escreveram no volume de credenciais de PRODUCAO. Isso deixou
+de depender de boa vontade: `asb_test_isolation` (importado no topo de todo
+modulo de teste) impede qualquer invocacao real de podman que NOMEIE um volume,
+e `TestUnitSuiteIsolation` reprova o modulo que esquecer o import.
 """
 from __future__ import annotations
+
+import asb_test_isolation  # noqa: F401  (guarda de isolamento da suite: nenhum volume real)
 
 import io
 import sys
@@ -94,6 +98,78 @@ def login_harness(*, exec_returncode: int = 0, tty: bool = True,
             mock.patch.object(auth, "operator_lock", fake_lock), \
             mock.patch.object(auth.sys.stdin, "isatty", return_value=tty), \
             redirect_stderr(io.StringIO()):
+        yield captured
+
+
+FAKE_CREDENTIALS_VOLUME = "asb-test-credentials"
+
+
+@contextmanager
+def prepare_workspace_harness(ws: str):
+    """Roda `lifecycle.prepare_workspace` DE VERDADE e devolve o `podman run`
+    do agente.
+
+    Os mounts de credencial e de sessao nao sao mockados: eles rodam contra um
+    mountpoint de volume falso, num diretorio temporario. Assim o teste afirma
+    sobre a linha de comando que o podman receberia, e nao sobre a existencia
+    de um nome no arquivo-fonte.
+
+    Nenhuma chamada chega ao podman: `podman.out` responde o diretorio
+    temporario e `podman.run` apenas registra.
+    """
+    from asb.profile import Profile
+    from asb.workspace import Layout
+
+    captured: dict = {"run": [], "agent_args": []}
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp = Path(tmp_dir)
+        mountpoint = tmp / "volume-data"
+        home = tmp / "home"
+        for path in (mountpoint, home, tmp / "mount", tmp / "state",
+                     tmp / "origin", tmp / "root"):
+            path.mkdir(parents=True)
+        key = tmp / "id_ed25519"
+        key.write_text("dummy")
+        (tmp / "id_ed25519.pub").write_text("ssh-ed25519 AAAA dummy")
+        captured["home"] = home
+        captured["mountpoint"] = mountpoint
+
+        def fake_run(*args, **kwargs):
+            captured["run"].append(list(args))
+            if args and args[0] == "run" and "--name" in args:
+                if args[args.index("--name") + 1] == f"asb-{ws}-agent":
+                    captured["agent_args"] = list(args)
+            return _ok()
+
+        layout = Layout(ws=ws, project="proj", mount=tmp / "mount",
+                        project_root=tmp / "mount" / "proj",
+                        state=tmp / "state")
+        profile = Profile(services=[], host_ports=[], publish_ports=[],
+                          host_api="none", container_mode="standard", allow=[])
+
+        with mock.patch.object(lifecycle.podman, "exists", return_value=True), \
+                mock.patch.object(lifecycle.podman, "run", side_effect=fake_run), \
+                mock.patch.object(lifecycle.podman, "out",
+                                  return_value=str(mountpoint)), \
+                mock.patch.object(lifecycle.podman, "ensure_rootless_netns"), \
+                mock.patch.object(lifecycle, "load_profile", return_value=profile), \
+                mock.patch.object(lifecycle, "layout_for", return_value=layout), \
+                mock.patch.object(lifecycle, "prepare_clone"), \
+                mock.patch.object(lifecycle, "render", return_value="acl x"), \
+                mock.patch.object(lifecycle, "build_staging", return_value=0), \
+                mock.patch.object(lifecycle, "ensure_ssh_key", return_value=key), \
+                mock.patch.object(lifecycle, "ensure_keyring_service"), \
+                mock.patch.object(lifecycle, "ensure_keyring_runtime_volume",
+                                  return_value="asb-keyring-runtime"), \
+                mock.patch.object(lifecycle, "ensure_credentials_volume",
+                                  return_value=FAKE_CREDENTIALS_VOLUME), \
+                mock.patch.object(lifecycle, "ensure_toolcache_volume",
+                                  return_value="asb-test-toolcache"), \
+                mock.patch.object(lifecycle.os.path, "expanduser",
+                                  return_value=str(home)), \
+                redirect_stderr(io.StringIO()):
+            lifecycle.prepare_workspace(tmp / "root", ws, tmp / "origin")
         yield captured
 
 
@@ -402,11 +478,14 @@ class TestLoginKeyringContract(unittest.TestCase):
         self.assertNotIn(lifecycle.KEYRING_CONTAINER, captured["removed"])
 
     def test_the_client_is_removed_even_when_verification_raises(self):
+        """`PodmanError` na verificacao nao escapa mais do laco (I5): vira
+        resultado `provider_error` deste fornecedor. O cliente efemero
+        continua sendo removido pelo `finally`, e o keyring compartilhado
+        nunca entra na lista de remocao."""
         with login_harness() as captured, \
                 mock.patch("asb.auth.verify_fresh_client",
                            side_effect=auth.podman.PodmanError("boom")):
-            with self.assertRaises(auth.podman.PodmanError):
-                auth.login(FAKE_ROOT, "codex")
+            self.assertEqual(auth.login(FAKE_ROOT, "codex"), 2)
 
         self.assertTrue(captured["removed"])
         self.assertNotIn(lifecycle.KEYRING_CONTAINER, captured["removed"])
@@ -479,6 +558,8 @@ class TestVerifyFreshClient(unittest.TestCase):
         with mock.patch.object(auth.podman, "run", side_effect=fake_run), \
                 mock.patch.object(auth.lifecycle, "ensure_keyring_runtime_volume",
                                   return_value="asb-keyring-runtime"), \
+                mock.patch.object(auth.lifecycle, "ensure_credentials_volume",
+                                  return_value="asb-credentials"), \
                 mock.patch.object(auth.lifecycle, "credential_mount_args",
                                   return_value=["--mount", "type=volume,fake"]), \
                 mock.patch("asb.auth.check_status") as check:
@@ -503,6 +584,8 @@ class TestVerifyFreshClient(unittest.TestCase):
         with mock.patch.object(auth.podman, "run", side_effect=fake_run), \
                 mock.patch.object(auth.lifecycle, "ensure_keyring_runtime_volume",
                                   return_value="asb-keyring-runtime"), \
+                mock.patch.object(auth.lifecycle, "ensure_credentials_volume",
+                                  return_value="asb-credentials"), \
                 mock.patch.object(auth.lifecycle, "credential_mount_args",
                                   return_value=[]), \
                 mock.patch("asb.auth.check_status",
@@ -526,6 +609,8 @@ class TestVerifyFreshClient(unittest.TestCase):
         with mock.patch.object(auth.podman, "run", side_effect=fake_run), \
                 mock.patch.object(auth.lifecycle, "ensure_keyring_runtime_volume",
                                   return_value="asb-keyring-runtime"), \
+                mock.patch.object(auth.lifecycle, "ensure_credentials_volume",
+                                  return_value="asb-credentials"), \
                 mock.patch.object(auth.lifecycle, "credential_mount_args",
                                   return_value=[]):
             with self.assertRaises(auth.podman.PodmanError):
@@ -652,6 +737,29 @@ class TestCredentialDirectoryMounts(unittest.TestCase):
             files = [p for p in mountpoint.rglob("*") if p.is_file()]
             self.assertEqual(files, [])
 
+    def test_a_volume_we_cannot_write_becomes_an_actionable_error(self):
+        """M10: um volume cujo `_data` nao aceita escrita — o estado que o
+        piloto real encontrou, com `_data` do uid 0 — levantava
+        `PermissionError` cru e o operador recebia traceback em vez de
+        diagnostico."""
+        with tempfile.TemporaryDirectory() as tmp:
+            mountpoint = Path(tmp) / "_data"
+            mountpoint.mkdir(mode=0o500)
+            try:
+                with mock.patch.object(lifecycle.podman, "exists",
+                                       return_value=True), \
+                        mock.patch.object(lifecycle.podman, "out",
+                                          return_value=str(mountpoint)):
+                    with self.assertRaises(lifecycle.podman.PodmanError) as ctx:
+                        lifecycle.credential_mount_args(Path("/home/tester"))
+            finally:
+                mountpoint.chmod(0o700)
+
+        message = str(ctx.exception)
+        self.assertIn(str(mountpoint), message, "o erro nao diz ONDE falhou")
+        self.assertIn("podman unshare chown", message,
+                      "o erro nao traz remediacao acionavel")
+
     def test_credential_setup_preserves_existing_content(self):
         with tempfile.TemporaryDirectory() as tmp:
             mountpoint = Path(tmp) / "_data"
@@ -666,8 +774,35 @@ class TestCredentialDirectoryMounts(unittest.TestCase):
             self.assertEqual(existing.read_text(), '{"token": "preservado"}')
 
     def test_up_mounts_the_credential_directories_into_the_agent(self):
-        source = (ROOT / "cli" / "asb" / "lifecycle.py").read_text()
-        self.assertIn("credential_mount_args", source)
+        """O ponto de integracao inteiro do diff: os mounts tem de chegar a
+        LINHA DE COMANDO do agente.
+
+        A versao anterior deste teste lia `lifecycle.py` e afirmava que a
+        string "credential_mount_args" estava la — a funcao e DEFINIDA ali,
+        entao ele passava mesmo que `prepare_workspace` nunca a chamasse. Aqui
+        `prepare_workspace` roda de verdade e os argumentos sao lidos do
+        `podman run` que ela emite.
+        """
+        with prepare_workspace_harness("ws-mount") as captured:
+            agent = captured["agent_args"]
+
+        joined = " ".join(agent)
+        for rel in (".claude", ".codex"):
+            self.assertIn(
+                f"type=volume,src={FAKE_CREDENTIALS_VOLUME},"
+                f"dst={captured['home'] / rel},"
+                f"volume-subpath={rel.lstrip('.')},relabel=shared",
+                joined)
+        self.assertIn("--mount", agent)
+
+    def test_the_credential_directories_reach_the_agent_created_by_up(self):
+        """Guarda do proprio teste acima: uma harness que nao chegasse a
+        emitir o `podman run` do agente deixaria as asercoes vazias."""
+        with prepare_workspace_harness("ws-mount-guard") as captured:
+            pass
+        self.assertTrue(captured["agent_args"])
+        self.assertEqual(captured["agent_args"][0], "run")
+        self.assertIn("asb-ws-mount-guard-agent", captured["agent_args"])
 
 
 class TestEntrypointCredentialLayout(unittest.TestCase):
@@ -705,11 +840,10 @@ class TestEntrypointCredentialLayout(unittest.TestCase):
         self.assertIn("0 BYTES", self.text)
 
     def test_config_staging_replacement_is_not_destructive_in_place(self):
-        """Com `~/.claude` virando diretorio COMPARTILHADO, o `rm -rf "$dst"`
-        seguido de `cp -a` abria uma janela em que outro workspace lia um
-        diretorio parcialmente copiado. A troca passa a ser por rename."""
+        """A copia acontece ao lado e so entra no lugar pronta. O contrato
+        completo — inclusive que o destino nunca e apagado no lugar — esta em
+        `TestEntrypointNeverDestroysSharedDirectories`."""
         self.assertIn("asb-staging", self.code)
-        self.assertNotIn('rm -rf "$dst"\n    cp -a', self.code)
 
 
 class TestImageVersionPinning(unittest.TestCase):
@@ -780,6 +914,357 @@ class TestLifecycleLoginReexport(unittest.TestCase):
         """`claude -p ping` e `agy -p ping` mandavam PROMPT ao modelo para
         checar sessao, e o do agy bloqueia 60s quando deslogado."""
         self.assertFalse(hasattr(lifecycle, "LOGIN_CHECKS"))
+
+
+class TestAggregateExitCodeDeniesByDefault(unittest.TestCase):
+    """C1: o agregado nega por padrao.
+
+    A versao anterior testava os estados RUINS e devolvia 0 para todo o resto.
+    `pending` — estado criado por esta mesma tarefa — nascia valendo
+    "exit 0 = todos autenticados" no caminho de `auth status`, e ficava inerte
+    so porque a A4 ainda nao alimenta esse caminho.
+    """
+
+    @staticmethod
+    def _result(state: str, provider: str = "claude") -> AuthResult:
+        return AuthResult(provider, state, "2026-09-08T00:00:00Z",
+                          "evidencia enlatada", "")
+
+    def test_an_invented_state_can_never_become_zero(self):
+        """A regressao propriamente dita: um estado que ninguem previu."""
+        for invented in ("quantum", "refreshing", "expired-soon", ""):
+            with self.subTest(state=invented):
+                code = auth._aggregate_exit_code([self._result(invented)])
+                self.assertNotEqual(code, 0)
+                self.assertEqual(code, 2)
+
+    def test_an_invented_state_taints_an_otherwise_healthy_set(self):
+        code = auth._aggregate_exit_code(
+            [self._result("authenticated"), self._result("quantum", "codex")])
+        self.assertNotEqual(code, 0)
+
+    def test_pending_is_one_not_zero(self):
+        self.assertEqual(auth._aggregate_exit_code([self._result("pending")]), 1)
+
+    def test_pending_reaching_auth_status_is_not_reported_as_success(self):
+        """O caminho exato do achado: quando a A4 alimentar `pending` no
+        `auth status`, um fornecedor NAO VERIFICADO nao pode sair com 0."""
+        pending = self._result("pending", "agy")
+        with mock.patch("asb.auth.check_status", return_value=pending), \
+                mock.patch.object(auth.lifecycle, "names",
+                                  return_value={"agent": "asb-x-agent"}), \
+                redirect_stderr(io.StringIO()):
+            code = auth.status("x", "agy", json_output=False)
+        self.assertNotEqual(code, 0)
+        self.assertEqual(code, 1)
+
+    def test_only_authenticated_produces_zero(self):
+        self.assertEqual(
+            auth._aggregate_exit_code(
+                [self._result("authenticated"),
+                 self._result("authenticated", "codex")]),
+            0)
+
+    def test_infrastructure_states_keep_precedence_over_account_states(self):
+        for infra in ("unknown", "unreachable", "provider_error"):
+            with self.subTest(state=infra):
+                self.assertEqual(
+                    auth._aggregate_exit_code(
+                        [self._result("unauthenticated"),
+                         self._result(infra, "codex")]),
+                    2)
+
+    def test_unauthenticated_alone_is_one(self):
+        self.assertEqual(
+            auth._aggregate_exit_code([self._result("unauthenticated")]), 1)
+
+    def test_an_empty_result_list_is_not_success(self):
+        """Nao ter perguntado a ninguem nao e prova de nada."""
+        self.assertNotEqual(auth._aggregate_exit_code([]), 0)
+
+    def test_login_and_status_share_the_same_aggregate(self):
+        """Duas copias da regra foi como `pending` ficou certo num caminho e
+        valendo 0 no outro."""
+        source = (ROOT / "cli" / "asb" / "auth.py").read_text(encoding="utf-8")
+        self.assertNotIn("_login_exit_code", source)
+
+
+class TestUnitSuiteIsolation(unittest.TestCase):
+    """C2: o isolamento da suite e IMPOSTO, nao pedido em docstring.
+
+    O que aconteceu duas vezes: um teste mockou so
+    `ensure_credentials_volume` e deixou a chamada seguinte chegar a um
+    `podman volume inspect asb-credentials` REAL, criando diretorios dentro do
+    volume de producao do operador.
+    """
+
+    def test_every_unit_test_module_imports_the_isolation_guard(self):
+        missing = [
+            path.name
+            for path in sorted((ROOT / "tests" / "unit").glob("test_*.py"))
+            if "asb_test_isolation" not in path.read_text(encoding="utf-8")]
+        self.assertEqual(
+            missing, [],
+            "modulo de teste sem o guarda de isolamento: um teste ali pode "
+            "alcancar um volume real do host")
+
+    def test_the_guard_blocks_a_real_podman_volume_inspect(self):
+        with self.assertRaises(asb_test_isolation.RealPodmanVolumeAccess):
+            asb_test_isolation.subprocess.run(
+                ["/usr/bin/podman", "volume", "inspect", "asb-credentials",
+                 "--format", "{{.Mountpoint}}"])
+
+    def test_the_guard_blocks_every_way_of_naming_a_volume(self):
+        cases = [
+            ["podman", "volume", "create", "asb-credentials"],
+            ["podman", "volume", "rm", "-f", "asb-credentials"],
+            ["podman", "volume", "exists", "asb-test-unit-credentials"],
+            ["podman", "run", "-v", "asb-credentials:/run/asb-credentials:z",
+             "img"],
+            ["podman", "run", "--mount",
+             "type=volume,src=asb-credentials,dst=/home/x/.claude,"
+             "volume-subpath=claude", "img"],
+        ]
+        for argv in cases:
+            with self.subTest(argv=argv):
+                self.assertTrue(asb_test_isolation.named_volumes(argv),
+                                "o guarda nao enxergou o volume nesta linha")
+
+    def test_the_guard_is_not_a_blanket_refusal(self):
+        """Guarda do proprio guarda: um invólucro que recusasse tudo faria os
+        testes acima passarem sem provar nada, e quebraria o resto da suite."""
+        for argv in (["podman", "ps", "--filter", "name=x"],
+                     ["podman", "--version"],
+                     ["podman", "image", "exists", "agent-sandbox:latest"],
+                     ["podman", "run", "-v", "/tmp/host:/run/x:ro", "img"],
+                     ["git", "rev-parse", "HEAD"]):
+            with self.subTest(argv=argv):
+                self.assertEqual(asb_test_isolation.named_volumes(argv), [])
+        self.assertEqual(
+            asb_test_isolation.subprocess.run(
+                ["/usr/bin/true"]).returncode, 0)
+
+    def test_credential_mount_args_without_mocks_cannot_reach_a_real_volume(self):
+        """A costura exata que contaminou o volume de producao, agora com o
+        guarda no lugar: sem mock nenhum, a chamada MORRE antes do podman."""
+        with self.assertRaises(asb_test_isolation.RealPodmanVolumeAccess):
+            lifecycle.credential_mount_args(Path("/home/tester"))
+
+    def test_ensure_session_volume_without_mocks_cannot_reach_a_real_volume(self):
+        with self.assertRaises(asb_test_isolation.RealPodmanVolumeAccess):
+            lifecycle.ensure_session_volume("ws-sem-mock")
+
+
+class TestLegacyCredentialLayoutWarning(unittest.TestCase):
+    """I3: o layout de raiz e detectado e ANUNCIADO. Nada e apagado."""
+
+    @contextmanager
+    def _volume(self, *names: str):
+        with tempfile.TemporaryDirectory() as tmp:
+            mountpoint = Path(tmp) / "_data"
+            mountpoint.mkdir()
+            for name in names:
+                (mountpoint / name).write_text('{"legado": true}')
+            err = io.StringIO()
+            with mock.patch.object(lifecycle.podman, "exists",
+                                   return_value=True), \
+                    mock.patch.object(lifecycle.podman, "out",
+                                      return_value=str(mountpoint)), \
+                    redirect_stderr(err):
+                lifecycle.credential_mount_args(Path("/home/tester"))
+            yield mountpoint, err.getvalue()
+
+    def test_the_root_layout_is_named_out_loud(self):
+        with self._volume("codex-auth.json", "claude.json") as (_, err):
+            self.assertIn("codex-auth.json", err)
+            self.assertIn("claude.json", err)
+            self.assertIn("aviso", err.lower())
+
+    def test_the_warning_states_the_exposure_and_the_relogin(self):
+        with self._volume("codex-auth.json") as (_, err):
+            self.assertIn("/run/asb-credentials/", err)
+            self.assertIn("login", err.lower())
+
+    def test_the_warning_never_deletes_or_moves_anything(self):
+        """A politica de migracao nao e desta funcao, e apagar credencial
+        nunca e recuperacao valida."""
+        with self._volume("codex-auth.json") as (mountpoint, _):
+            legacy = mountpoint / "codex-auth.json"
+            self.assertTrue(legacy.is_file())
+            self.assertEqual(legacy.read_text(), '{"legado": true}')
+
+    def test_a_clean_volume_produces_no_warning(self):
+        with self._volume() as (_, err):
+            self.assertNotIn("aviso", err.lower())
+
+    def test_the_new_layout_alone_produces_no_warning(self):
+        """Um `claude/auth.json` DENTRO do subdiretorio e o layout novo: nao
+        pode ser confundido com a copia orfa da raiz."""
+        with tempfile.TemporaryDirectory() as tmp:
+            mountpoint = Path(tmp) / "_data"
+            (mountpoint / "codex").mkdir(parents=True)
+            (mountpoint / "codex" / "auth.json").write_text("{}")
+            err = io.StringIO()
+            with mock.patch.object(lifecycle.podman, "exists",
+                                   return_value=True), \
+                    mock.patch.object(lifecycle.podman, "out",
+                                      return_value=str(mountpoint)), \
+                    redirect_stderr(err):
+                lifecycle.credential_mount_args(Path("/home/tester"))
+            self.assertEqual(err.getvalue(), "")
+
+
+class TestLoginPreservesResultsAcrossFailures(unittest.TestCase):
+    """I5: erro de infraestrutura de UM fornecedor nao apaga o resultado ja
+    conquistado de outro."""
+
+    def test_a_podman_failure_does_not_discard_a_verified_provider(self):
+        verified = AuthResult("claude", "authenticated", "x",
+                              "native_status", "")
+
+        def verify(provider: str):
+            if provider == "claude":
+                return verified
+            raise auth.podman.PodmanError("podman ps falhou")
+
+        err = io.StringIO()
+        with login_harness(), \
+                mock.patch("asb.auth.verify_fresh_client", side_effect=verify), \
+                redirect_stderr(err):
+            code = auth.login(FAKE_ROOT, "all")
+
+        report = err.getvalue()
+        # O sucesso do claude sobreviveu ao erro do codex...
+        self.assertIn("claude: authenticated", report)
+        # ...e o erro do codex foi PRESERVADO, nao engolido.
+        self.assertIn("codex: provider_error", report)
+        # ...e o agy continuou sendo tentado depois do erro.
+        self.assertIn("agy: ", report)
+        self.assertEqual(code, 2)
+
+    def test_the_podman_error_never_carries_provider_output(self):
+        """A evidencia continua sendo texto enlatado: o erro do podman nao e
+        saida capturada do fornecedor."""
+        secret = "sk-ant-oat01-SEGREDO"
+        err = io.StringIO()
+        with login_harness(), \
+                mock.patch("asb.auth.verify_fresh_client",
+                           side_effect=auth.podman.PodmanError("falha")), \
+                redirect_stderr(err):
+            auth.login(FAKE_ROOT, "codex")
+        self.assertNotIn(secret, err.getvalue())
+
+
+class TestSessionStateIsolation(unittest.TestCase):
+    """I6: a credencial e compartilhada; a transcricao nao.
+
+    Medido no podman 6.1 antes de escrever o codigo: o mount do workspace
+    entra POR CIMA do subdiretorio de `~/.claude`, dois workspaces leem a
+    MESMA credencial e nenhum enxerga o `projects/` do outro.
+    """
+
+    def test_the_session_directories_are_mounted_from_the_workspace_volume(self):
+        args = lifecycle.session_mount_args("asb-demo-session",
+                                            Path("/home/tester"))
+        joined = " ".join(args)
+        for rel, sub in ((".claude/projects", "claude-projects"),
+                         (".claude/todos", "claude-todos"),
+                         (".codex/sessions", "codex-sessions")):
+            self.assertIn(f"dst=/home/tester/{rel}", joined)
+            self.assertIn(f"volume-subpath={sub}", joined)
+        self.assertIn("src=asb-demo-session", joined)
+
+    def test_the_credential_volume_is_never_the_session_volume(self):
+        with prepare_workspace_harness("ws-a") as captured:
+            agent = " ".join(captured["agent_args"])
+        self.assertIn(f"src={FAKE_CREDENTIALS_VOLUME},"
+                      f"dst={captured['home'] / '.claude'},"
+                      f"volume-subpath=claude", agent)
+        self.assertIn(f"src=asb-ws-a-session,"
+                      f"dst={captured['home'] / '.claude/projects'},"
+                      f"volume-subpath=claude-projects", agent)
+
+    def test_two_workspaces_never_share_a_session_volume(self):
+        with prepare_workspace_harness("ws-a") as first:
+            pass
+        with prepare_workspace_harness("ws-b") as second:
+            pass
+        a = " ".join(first["agent_args"])
+        b = " ".join(second["agent_args"])
+        self.assertIn("src=asb-ws-a-session", a)
+        self.assertNotIn("asb-ws-b-session", a)
+        self.assertIn("src=asb-ws-b-session", b)
+        self.assertNotIn("asb-ws-a-session", b)
+        # ...e mesmo assim os dois montam a MESMA credencial: o
+        # compartilhamento exigido pela spec continua de pe.
+        self.assertIn(f"src={FAKE_CREDENTIALS_VOLUME}", a)
+        self.assertIn(f"src={FAKE_CREDENTIALS_VOLUME}", b)
+
+    def test_the_session_source_subpaths_are_created_on_the_host(self):
+        """`volume-subpath` NAO cria o caminho de origem (A1): um subpath
+        ausente aborta o `podman run`."""
+        with prepare_workspace_harness("ws-subpaths") as captured:
+            # Dentro do bloco: o mountpoint e um diretorio temporario que
+            # some quando a harness fecha.
+            mountpoint = captured["mountpoint"]
+            for sub in lifecycle.SESSION_STATE_DIRS:
+                with self.subTest(sub=sub):
+                    self.assertTrue((mountpoint / sub).is_dir())
+                    self.assertEqual(
+                        (mountpoint / sub).stat().st_mode & 0o077, 0)
+
+    def test_the_session_volume_holds_no_credential_path(self):
+        joined = " ".join(lifecycle.SESSION_STATE_DIRS.values())
+        self.assertNotIn(".credentials.json", joined)
+        self.assertNotIn("auth.json", joined)
+
+    def test_purge_removes_the_session_volume_and_nothing_shared(self):
+        removed = []
+
+        def fake_run(*args, **kwargs):
+            removed.append(list(args))
+            return _ok()
+
+        with mock.patch.object(lifecycle, "_origin_of",
+                               return_value=Path("/origin")), \
+                mock.patch.object(lifecycle, "layout_for"), \
+                mock.patch.object(lifecycle, "down", return_value=0), \
+                mock.patch.object(lifecycle, "remove_workspace"), \
+                mock.patch.object(lifecycle.podman, "exists",
+                                  return_value=True), \
+                mock.patch.object(lifecycle.podman, "run",
+                                  side_effect=fake_run), \
+                redirect_stderr(io.StringIO()):
+            lifecycle.purge("demo", confirmed=True)
+
+        self.assertEqual(removed, [["volume", "rm", "-f", "asb-demo-session"]])
+
+
+class TestEntrypointNeverDestroysSharedDirectories(unittest.TestCase):
+    """I6, segunda metade: com `~/.claude` compartilhado, todo `up` apagava e
+    recriava `plugins`/`skills` DENTRO do volume compartilhado, a vista de
+    todo workspace em execucao."""
+
+    def setUp(self):
+        self.code = "\n".join(
+            line for line in ENTRYPOINT.read_text(encoding="utf-8").splitlines()
+            if not line.lstrip().startswith("#"))
+
+    def test_the_destination_is_never_removed_in_place(self):
+        self.assertNotIn('rm -rf "$dst"', self.code,
+                         "o entrypoint ainda apaga o destino no lugar")
+
+    def test_the_old_directory_leaves_by_rename_before_being_removed(self):
+        self.assertIn('mv "$dst" "$previous"', self.code)
+        self.assertIn('mv "$staged" "$dst"', self.code)
+        self.assertLess(self.code.index('mv "$dst" "$previous"'),
+                        self.code.index('rm -rf "$previous"'))
+
+    def test_the_residual_window_is_declared_in_the_file(self):
+        """O limite fica escrito: `mv` sobre diretorio nao e
+        `renameat2(RENAME_EXCHANGE)`, entao a troca nao e atomica."""
+        text = ENTRYPOINT.read_text(encoding="utf-8")
+        self.assertIn("RENAME_EXCHANGE", text)
 
 
 if __name__ == "__main__":

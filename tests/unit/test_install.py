@@ -1,6 +1,8 @@
 """Testes de cli/asb/install.py — instaladores do host."""
 from __future__ import annotations
 
+import asb_test_isolation  # noqa: F401  (guarda de isolamento da suite: nenhum volume real)
+
 import sys
 import tempfile
 import unittest

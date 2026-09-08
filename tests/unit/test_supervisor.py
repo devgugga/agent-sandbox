@@ -1,6 +1,8 @@
 """Unit tests for cli/asb/supervisor.py — systemd supervision and unit generation."""
 from __future__ import annotations
 
+import asb_test_isolation  # noqa: F401  (guarda de isolamento da suite: nenhum volume real)
+
 import json
 import shutil
 import subprocess

@@ -1,6 +1,8 @@
 """tests/unit/test_forwarder_script.py — Unit tests for image/forwarder.sh behavior."""
 from __future__ import annotations
 
+import asb_test_isolation  # noqa: F401  (guarda de isolamento da suite: nenhum volume real)
+
 import os
 import shutil
 import subprocess

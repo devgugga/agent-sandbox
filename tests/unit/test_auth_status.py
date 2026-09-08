@@ -6,6 +6,8 @@ inicia login, logout ou envia prompt — e diagnostico puro.
 """
 from __future__ import annotations
 
+import asb_test_isolation  # noqa: F401  (guarda de isolamento da suite: nenhum volume real)
+
 import io
 import json
 import subprocess

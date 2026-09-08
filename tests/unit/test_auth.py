@@ -1,6 +1,8 @@
 """Testes de autenticação e volume de credenciais em cli/asb/lifecycle.py."""
 from __future__ import annotations
 
+import asb_test_isolation  # noqa: F401  (guarda de isolamento da suite: nenhum volume real)
+
 import base64
 import json
 import sys

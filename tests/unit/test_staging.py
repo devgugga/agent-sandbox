@@ -1,4 +1,6 @@
 """Testes de cli/asb/staging.py — o que sai do host para o sandbox."""
+
+import asb_test_isolation  # noqa: F401  (guarda de isolamento da suite: nenhum volume real)
 import os
 import sys
 import tempfile
@@ -64,6 +66,91 @@ class TestDenyList(Fixture):
                 '[[entry]]\nsrc = "~/.claude/settings.json"\n'
                 'dst = "~/.ssh/authorized_keys"\n'),
                 self.stage, self.home)
+
+
+class TestMountPointDestinationsAreRefused(Fixture):
+    """I4: `~/.claude` e `~/.codex` viraram PONTOS DE MONTAGEM do volume
+    compartilhado, e os subdiretorios de sessao viraram pontos de montagem do
+    volume do workspace.
+
+    O entrypoint substitui cada destino do manifesto, e nao se substitui um
+    mountpoint: na raiz da credencial isso apagaria o
+    `.credentials.json`/`auth.json` de TODOS os workspaces antes de falhar;
+    num subdiretorio de sessao o `rename` devolve EBUSY e derruba o entrypoint
+    inteiro com `set -e`. Nenhuma entrega nossa faz isso; UMA linha de
+    operador bastava.
+    """
+
+    def _entry(self, dst: str, src: str = "~/.claude/plugins") -> Path:
+        return self.manifest(f'[[entry]]\nsrc = "{src}"\ndst = "{dst}"\n')
+
+    def test_the_claude_mount_root_is_refused(self):
+        (self.home / ".claude" / "plugins").mkdir()
+        with self.assertRaises(StagingError) as ctx:
+            build_staging(self._entry("~/.claude"), self.stage, self.home)
+        self.assertIn("ponto de montagem", str(ctx.exception))
+
+    def test_the_codex_mount_root_is_refused(self):
+        (self.home / ".codex" / "plugins").mkdir()
+        with self.assertRaises(StagingError):
+            build_staging(self._entry("~/.codex", "~/.codex/plugins"),
+                          self.stage, self.home)
+
+    def test_a_trailing_slash_does_not_slip_past(self):
+        (self.home / ".claude" / "plugins").mkdir()
+        with self.assertRaises(StagingError):
+            build_staging(self._entry("~/.claude/"), self.stage, self.home)
+
+    def test_subdirectories_of_the_mount_root_stay_allowed(self):
+        """A recusa e da RAIZ. Todo destino real do `provision.toml` esta um
+        nivel abaixo, e continua valendo."""
+        (self.home / ".claude" / "plugins").mkdir()
+        build_staging(self._entry("~/.claude/plugins"), self.stage, self.home)
+        self.assertIn(str(self.home / ".claude" / "plugins"), self.staged())
+
+    def test_the_gemini_root_is_not_a_mount_and_stays_allowed(self):
+        """`~/.gemini` nao e montado de volume algum: a credencial do agy vai
+        para o Secret Service pelo socket do keyring."""
+        (self.home / ".gemini").mkdir()
+        (self.home / ".gemini" / "config").mkdir()
+        build_staging(
+            self.manifest('[[entry]]\nsrc = "~/.gemini/config"\n'
+                          'dst = "~/.gemini"\n'),
+            self.stage, self.home)
+        self.assertIn(str(self.home / ".gemini"), self.staged())
+
+    def test_the_session_mount_points_are_refused_too(self):
+        """Estes viraram mountpoints no MESMO commit que o resto do I6. Um
+        `dst` igual a um deles nao apaga nada compartilhado, mas o `rename`
+        sobre mountpoint devolve EBUSY e o agente nunca sobe."""
+        for rel in (".claude/todos", ".claude/shell-snapshots",
+                    ".claude/projects", ".codex/sessions"):
+            with self.subTest(dst=rel):
+                (self.home / ".claude" / "plugins").mkdir(exist_ok=True)
+                with self.assertRaises(StagingError):
+                    build_staging(self._entry(f"~/{rel}"), self.stage,
+                                  self.home)
+
+    def test_a_path_inside_a_session_mount_point_stays_allowed(self):
+        """So o mountpoint e recusado. O que esta DENTRO dele aterrissa no
+        volume de sessao do proprio workspace e nao alcanca nada
+        compartilhado."""
+        from asb.staging import _mount_point_destinations
+        self.assertNotIn(self.home / ".claude" / "todos" / "algo",
+                         _mount_point_destinations(self.home))
+
+    def test_the_refused_destinations_match_every_mount_point(self):
+        """Guarda de deriva: `staging` repete a lista em vez de importar
+        `lifecycle` (que importa `staging` — o import inverso fecharia um
+        ciclo). Cobre as DUAS familias: se qualquer uma crescer sem a lista
+        crescer junto, este teste cai."""
+        from asb.lifecycle import CREDENTIAL_DIRS, SESSION_STATE_DIRS
+        from asb.staging import _mount_point_destinations
+
+        self.assertEqual(
+            set(_mount_point_destinations(self.home)),
+            {self.home / rel for rel in CREDENTIAL_DIRS.values()}
+            | {self.home / rel for rel in SESSION_STATE_DIRS.values()})
 
 
 class TestMaterialization(Fixture):

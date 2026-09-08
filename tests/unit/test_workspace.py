@@ -1,4 +1,6 @@
 """Testes de cli/asb/workspace.py — identidade, layout e clone."""
+
+import asb_test_isolation  # noqa: F401  (guarda de isolamento da suite: nenhum volume real)
 import subprocess
 import sys
 import tempfile

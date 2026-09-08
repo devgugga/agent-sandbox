@@ -49,12 +49,28 @@ if [ -f /run/asb-config/manifest.tsv ]; then
     # `rm -rf "$dst"` seguido de `cp -a` deixaria outro workspace lendo um
     # diretorio meio copiado durante a partida deste. A copia acontece ao
     # lado e so entra no lugar pronta.
+    #
+    # O antigo tambem sai por RENAME, e so e apagado DEPOIS que o novo ja
+    # esta no lugar: um `rm -rf "$dst"` aqui destruia, a cada `up`, um
+    # diretorio que outro workspace estava lendo naquele instante — a janela
+    # era a copia inteira, nao um instante.
+    #
+    # LIMITE, declarado em vez de escondido: nao ha troca atomica de
+    # diretorio em POSIX. `mv` sobre diretorio nao vazio nao e
+    # `renameat2(RENAME_EXCHANGE)`, entao resta uma janela entre os dois
+    # renames — na ordem de microssegundos — em que "$dst" nao existe. Um
+    # leitor que ja tenha os arquivos abertos nao e afetado (o inode antigo
+    # so e desligado no fim), e nenhum leitor jamais ve conteudo pela metade.
     staged="${dst}.asb-staging.$$"
-    rm -rf "$staged"
+    previous="${dst}.asb-previous.$$"
+    rm -rf "$staged" "$previous"
     cp -a "/run/asb-config/$src" "$staged"
     chown -R "$ASB_USER:$ASB_USER" "$staged"
-    rm -rf "$dst"
+    if [ -e "$dst" ]; then
+      mv "$dst" "$previous"
+    fi
     mv "$staged" "$dst"
+    rm -rf "$previous"
   done < /run/asb-config/manifest.tsv
 fi
 

@@ -41,6 +41,39 @@ def _allowed_destination_roots(home: Path) -> tuple[Path, ...]:
     return (home / ".claude", home / ".codex", home / ".gemini")
 
 
+def _mount_point_destinations(home: Path) -> tuple[Path, ...]:
+    """Todo caminho que e PONTO DE MONTAGEM dentro do agente.
+
+    Duas familias, e as duas doem de maneiras diferentes:
+
+    * as raizes do volume de credenciais COMPARTILHADO
+      (`lifecycle.CREDENTIAL_DIRS`) — substituir uma delas apagaria a
+      credencial de todos os workspaces;
+    * os subdiretorios de estado de sessao POR WORKSPACE
+      (`lifecycle.SESSION_STATE_DIRS`) — substituir um deles nem chega a
+      apagar nada, mas o `rename` sobre mountpoint devolve EBUSY e mata o
+      entrypoint com `set -e`, deixando o agente sem subir e o erro longe do
+      manifesto que o causou.
+
+    So os mountpoints entram. Um `dst` DENTRO de `~/.claude/projects/...`
+    aterrissa no volume de sessao do proprio workspace e nao alcanca nada
+    compartilhado.
+
+    Repetidos aqui em vez de importados porque `lifecycle` importa este
+    modulo: o import inverso fecharia um ciclo. Ha teste que compara os dois
+    lados para que nao divirjam.
+
+    `~/.gemini` NAO entra: nao e montado de volume algum, e continua sendo
+    destino valido. A credencial do `agy` vai para o Secret Service pelo
+    socket do keyring, nao para este volume.
+    """
+    return (home / ".claude", home / ".codex",
+            home / ".claude" / "projects",
+            home / ".claude" / "todos",
+            home / ".claude" / "shell-snapshots",
+            home / ".codex" / "sessions")
+
+
 def denied(path: Path) -> str | None:
     for part in path.parts:
         if part in DENY:
@@ -187,6 +220,17 @@ def build_staging(manifest: Path, stage: Path, home: Path) -> int:
                 dst == root or dst.is_relative_to(root)
                 for root in _allowed_destination_roots(home)):
             raise StagingError(f"destino fora das raizes permitidas: {dst}")
+        if dst in _mount_point_destinations(home):
+            # O entrypoint SUBSTITUI cada destino do manifesto, e nao se
+            # substitui um mountpoint: na raiz da credencial isso apagaria o
+            # `.credentials.json`/`auth.json` de TODOS os workspaces antes de
+            # falhar; num subdiretorio de sessao o `rename` devolve EBUSY e
+            # derruba o entrypoint inteiro. Nenhuma entrega nossa faz isso;
+            # UMA linha de operador bastava.
+            raise StagingError(
+                f"destino e um ponto de montagem dentro do agente: {dst}. "
+                f"Declare o arquivo ou subdiretorio especifico "
+                f"(ex: {dst}/settings.json), nunca o proprio mountpoint.")
 
         if (name := entry.get("filter")):
             staged = FILTERS[name](src, stage)

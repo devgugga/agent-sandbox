@@ -118,7 +118,16 @@ def main() -> int:
             return install.guards(ROOT)
         if args.command == "install-broker":
             return install.broker(ROOT)
-    except (PodmanError, ProfileError, WorkspaceError) as error:
+    except PodmanError as error:
+        # 2, e nao 1: em todo este CLI 1 significa "conta ausente" e 2
+        # significa "infraestrutura", com 2 tendo precedencia (asb-agent auth
+        # status, asb-agent login, doctor). `PodmanError` e sempre
+        # infraestrutura — podman ausente, volume que nao inspeciona, imagem
+        # faltando —, e reporta-la como 1 mandava o operador procurar login
+        # onde o problema era o podman.
+        print(f"asb-agent: {error}", file=sys.stderr)
+        return 2
+    except (ProfileError, WorkspaceError) as error:
         print(f"asb-agent: {error}", file=sys.stderr)
         return 1
     except KeyboardInterrupt:

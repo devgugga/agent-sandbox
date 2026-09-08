@@ -1,6 +1,8 @@
 """Testes de cli/asb/doctor.py e pull/purge em cli/asb/lifecycle.py."""
 from __future__ import annotations
 
+import asb_test_isolation  # noqa: F401  (guarda de isolamento da suite: nenhum volume real)
+
 import io
 import json
 import sys
@@ -390,7 +392,8 @@ class TestPurge(unittest.TestCase):
             mock_origin.return_value = origin
 
             err = io.StringIO()
-            with mock.patch("sys.stderr", err):
+            with mock.patch("sys.stderr", err), \
+                    mock.patch("asb.lifecycle.podman.exists", return_value=False):
                 code = lifecycle.purge("test-ws", confirmed=True)
 
             self.assertEqual(code, 0)

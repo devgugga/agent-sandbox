@@ -14,8 +14,11 @@ dois sentidos: nenhum despacho sem registro, nenhum registro sem despacho.
 """
 from __future__ import annotations
 
+import asb_test_isolation  # noqa: F401  (guarda de isolamento da suite: nenhum volume real)
+
 import argparse
 import ast
+import io
 import importlib.machinery
 import importlib.util
 import unittest
@@ -102,6 +105,51 @@ class TestCliParserDispatchParity(unittest.TestCase):
         args = self.module.build_parser().parse_args(["login"])
         self.assertEqual(args.command, "login")
         self.assertFalse(hasattr(args, "workspace"))
+
+
+class TestCliExitCodes(unittest.TestCase):
+    """I5: `PodmanError` e INFRAESTRUTURA, e infraestrutura vale 2.
+
+    O CLI inteiro usa 1 para "conta ausente" e 2 para "infraestrutura", com 2
+    tendo precedencia (`auth status`, `login`, `doctor`). O handler mapeava
+    `PodmanError` para 1, entao uma falha de podman — imagem ausente, volume
+    que nao inspeciona — reportava como "conta ausente" e mandava o operador
+    procurar login onde o problema era outro.
+    """
+
+    def setUp(self):
+        self.module = _load_cli_module()
+
+    def _run(self, argv, **patches):
+        from unittest import mock
+        with mock.patch.object(self.module.sys, "argv", argv), \
+                mock.patch.object(self.module.sys, "stderr", io.StringIO()):
+            with mock.patch.multiple(self.module.lifecycle, **patches):
+                return self.module.main()
+
+    def test_podman_failure_exits_with_the_infrastructure_code(self):
+        from unittest import mock
+        code = self._run(
+            ["asb-agent", "build"],
+            build=mock.Mock(side_effect=self.module.PodmanError(
+                "imagem agent-sandbox:latest ausente")))
+        self.assertEqual(code, 2)
+
+    def test_profile_and_workspace_errors_still_exit_one(self):
+        from unittest import mock
+        for error in (self.module.ProfileError("perfil invalido"),
+                      self.module.WorkspaceError("workspace desconhecido")):
+            with self.subTest(error=type(error).__name__):
+                code = self._run(["asb-agent", "build"],
+                                 build=mock.Mock(side_effect=error))
+                self.assertEqual(code, 1)
+
+    def test_a_successful_command_still_exits_zero(self):
+        """Guarda do proprio teste: um `main()` que sempre devolvesse 2
+        passaria no primeiro asserto sem provar nada."""
+        from unittest import mock
+        code = self._run(["asb-agent", "build"], build=mock.Mock(return_value=0))
+        self.assertEqual(code, 0)
 
 
 if __name__ == "__main__":

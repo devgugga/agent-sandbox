@@ -1,4 +1,6 @@
 """Testes de cli/asb/profile.py — leitura de .agent-sandbox.toml."""
+
+import asb_test_isolation  # noqa: F401  (guarda de isolamento da suite: nenhum volume real)
 import sys
 import tempfile
 import unittest

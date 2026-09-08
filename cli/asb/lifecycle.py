@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import sys
+from collections.abc import Iterable
 from pathlib import Path
 
 from . import install, podman, readiness, supervisor
@@ -60,6 +61,9 @@ def names(ws: str) -> dict[str, str]:
         "out": f"asb-{ws}-out",
         "agent": f"asb-{ws}-agent",
         "proxy": f"asb-{ws}-proxy",
+        # Volume de ESTADO DE SESSAO deste workspace (transcricoes, todos).
+        # Nao e container: derivado aqui pelo mesmo motivo dos demais nomes.
+        "session": f"asb-{ws}-session",
     }
 
 
@@ -84,6 +88,41 @@ def ensure_ssh_key() -> Path:
 # soma um segundo motivo: ele abre a credencial com `O_RDONLY | O_NOFOLLOW`, e
 # num symlink o Linux devolve ELOOP, que ele trata como credencial AUSENTE.
 CREDENTIAL_DIRS: dict[str, str] = {"claude": ".claude", "codex": ".codex"}
+
+# Arquivos que o layout ANTIGO (removido na A3) deixava na RAIZ do volume,
+# fora de qualquer subdiretorio de fornecedor. O layout novo nao os enxerga,
+# entao eles nao sao lidos nem escritos por ninguem — mas continuam legiveis
+# em /run/asb-credentials/<nome> por TODO container de agente, porque o volume
+# inteiro e montado rw com apenas `keyrings` mascarado. Detectar e AVISAR: a
+# politica de migracao (copiar, mover ou deixar) nao e desta funcao, e apagar
+# credencial nunca e recuperacao valida.
+LEGACY_ROOT_CREDENTIAL_FILES: tuple[str, ...] = (
+    "claude.json", "codex-auth.json", ".credentials.json", "auth.json",
+    "agy.json", "gemini.json",
+)
+
+# Estado de SESSAO por workspace, sobreposto ao diretorio de credencial
+# COMPARTILHADO. A credencial precisa ser compartilhada (um login por
+# fornecedor, spec); a transcricao nao — e o isolamento entre workspaces
+# continua valendo. Cada entrada vira um mount aninhado: o volume do workspace
+# entra POR CIMA do subdiretorio correspondente do volume compartilhado.
+#
+# Medido no podman 6.1 (nao suposto): o mount pai (`~/.claude`) e aplicado
+# antes do filho (`~/.claude/projects`); o diretorio de destino NAO precisa
+# existir dentro do volume pai (o runtime o cria); e a ORIGEM, sim, precisa
+# existir no volume do workspace — dai o mkdir de `ensure_session_volume`.
+#
+# LIMITE EXPLICITO: so DIRETORIOS entram aqui. Estado de sessao gravado como
+# ARQUIVO solto na raiz do diretorio do fornecedor (`~/.claude/history.jsonl`,
+# `~/.codex/history.jsonl`) continua compartilhado: sobrepor arquivo exigiria
+# bind de arquivo, e A1 mediu que `rename` sobre arquivo bind-montado falha
+# com EBUSY — a mesma armadilha que este redesenho existe para sair.
+SESSION_STATE_DIRS: dict[str, str] = {
+    "claude-projects": ".claude/projects",
+    "claude-todos": ".claude/todos",
+    "claude-shell-snapshots": ".claude/shell-snapshots",
+    "codex-sessions": ".codex/sessions",
+}
 
 
 def ensure_credentials_volume() -> str:
@@ -115,7 +154,17 @@ def ensure_credential_dirs(vol: str) -> None:
     de arquivo (`: > "$stored"` no entrypoint) que deixava `claude.json` com 0
     bytes: um arquivo que jamais poderia ser lido como JSON e indistinguivel
     de "sem credencial". Tambem nunca remove nem sobrescreve o que ja existe.
+
+    Por ser a unica funcao que enxerga a forma INTERNA do volume, e tambem
+    daqui que sai o aviso do layout ANTIGO (credencial na raiz) — avisar, sem
+    apagar nem mover.
     """
+    mountpoint = _volume_mountpoint(vol)
+    _mkdir_private(mountpoint, CREDENTIAL_DIRS, vol)
+    warn_about_legacy_credential_layout(mountpoint)
+
+
+def _volume_mountpoint(vol: str) -> Path:
     raw = podman.out("volume", "inspect", vol, "--format", "{{.Mountpoint}}")
     mountpoint = Path(raw)
     if not mountpoint.is_absolute() or not mountpoint.is_dir():
@@ -124,10 +173,62 @@ def ensure_credential_dirs(vol: str) -> None:
         # relativo qualquer.
         raise podman.PodmanError(
             f"mountpoint do volume {vol} nao e um diretorio do host: {raw!r}")
-    for sub in CREDENTIAL_DIRS:
+    return mountpoint
+
+
+def _mkdir_private(mountpoint: Path, subs: Iterable[str], vol: str) -> None:
+    """`mkdir -m 700` de cada subpath, com erro TRADUZIDO.
+
+    Um volume cujo `_data` pertence ao uid 0 — o estado que o piloto real
+    encontrou — fazia `PermissionError` cru subir ate o operador como
+    traceback. O rollback do `up` rodava, mas o diagnostico nao existia.
+    """
+    for sub in subs:
         target = mountpoint / sub
-        target.mkdir(mode=0o700, exist_ok=True)
-        target.chmod(0o700)
+        try:
+            target.mkdir(mode=0o700, parents=True, exist_ok=True)
+            target.chmod(0o700)
+        except OSError as exc:
+            raise podman.PodmanError(
+                f"nao foi possivel preparar {target} no volume {vol}: {exc}. "
+                f"O `_data` do volume precisa pertencer ao SEU usuario; um "
+                f"`_data` de outro dono vem de um container que escreveu ali "
+                f"como root. Devolva a posse com "
+                f"'podman unshare chown -R 0:0 {mountpoint}' — dentro do "
+                f"`podman unshare` o uid 0 e o seu proprio usuario. Se isso "
+                f"falhar com EPERM, o diretorio pertence ao root do host "
+                f"(podman rootful escreveu nele) e a correcao pede sudo."
+            ) from exc
+
+
+def warn_about_legacy_credential_layout(mountpoint: Path) -> None:
+    """Avisa, alto, quando o volume ainda guarda credencial na RAIZ.
+
+    Esta e a unica funcao que enxerga a forma INTERNA do volume, entao e a
+    unica capaz de detectar o layout antigo. Ela NAO apaga, NAO move e NAO
+    copia nada: a politica de migracao e de outra tarefa. O silencio e que era
+    o defeito — depois de um re-login o volume passa a guardar as DUAS coisas,
+    e a copia orfa da raiz continua legivel por todo container de agente.
+    """
+    try:
+        legacy = sorted(
+            name for name in LEGACY_ROOT_CREDENTIAL_FILES
+            if (mountpoint / name).is_file())
+    except OSError:
+        return
+    if not legacy:
+        return
+    print(
+        "aviso: o volume de credenciais ainda tem arquivos no layout ANTIGO, "
+        "na raiz: " + ", ".join(legacy) + ".\n"
+        "  Eles NAO sao usados pelo layout novo (um diretorio por fornecedor), "
+        "entao o fornecedor correspondente vai pedir login de novo.\n"
+        "  Enquanto existirem, seguem legiveis em /run/asb-credentials/<nome> "
+        "por qualquer container de agente: se carregam material de credencial "
+        "valido, isso e exposicao.\n"
+        "  Nada foi apagado nem movido aqui de proposito — decida a migracao e "
+        "remova a copia obsoleta voce mesmo, depois de confirmar o login novo.",
+        file=sys.stderr)
 
 
 def credential_mount_args(home: Path) -> list[str]:
@@ -142,6 +243,40 @@ def credential_mount_args(home: Path) -> list[str]:
     ensure_credential_dirs(vol)
     args: list[str] = []
     for sub, rel in CREDENTIAL_DIRS.items():
+        args += ["--mount",
+                 f"type=volume,src={vol},dst={home / rel},"
+                 f"volume-subpath={sub},relabel=shared"]
+    return args
+
+
+def ensure_session_volume(ws: str, tx: "WorkspaceTransaction | None" = None) -> str:
+    """Volume de estado de sessao DESTE workspace. Um por workspace, sempre.
+
+    Separado do volume de credenciais de proposito: a credencial e uma so,
+    compartilhada; a transcricao e de quem a gerou.
+    """
+    vol = names(ws)["session"]
+    if not podman.exists("volume", vol):
+        podman.run("volume", "create", vol)
+        if tx is not None:
+            tx.record_volume(vol)
+    mountpoint = _volume_mountpoint(vol)
+    # A ORIGEM do subpath precisa existir: `volume-subpath` nao a cria (A1).
+    _mkdir_private(mountpoint, SESSION_STATE_DIRS, vol)
+    return vol
+
+
+def session_mount_args(vol: str, home: Path) -> list[str]:
+    """Mounts que sobrepoem o estado de sessao do workspace ao diretorio de
+    credencial compartilhado.
+
+    Cada um entra POR CIMA de um subdiretorio de `~/.claude` / `~/.codex`, que
+    sao eles mesmos mounts do volume compartilhado. O resultado medido: os dois
+    workspaces leem a MESMA credencial e nenhum dos dois enxerga a transcricao
+    do outro.
+    """
+    args: list[str] = []
+    for sub, rel in SESSION_STATE_DIRS.items():
         args += ["--mount",
                  f"type=volume,src={vol},dst={home / rel},"
                  f"volume-subpath={sub},relabel=shared"]
@@ -559,6 +694,10 @@ def prepare_workspace(
         "-v", f"{ensure_credentials_volume()}:/run/asb-credentials:z",
         "--mount", "type=tmpfs,destination=/run/asb-credentials/keyrings,ro,notmpcopyup,tmpfs-mode=000",
         *credential_mount_args(home),
+        # Por cima dos mounts acima: a credencial e compartilhada, a
+        # transcricao nao. Sem isto o agente do workspace A LE os projetos,
+        # todos e sessoes do workspace B.
+        *session_mount_args(ensure_session_volume(ws, tx), home),
         "-v", f"{ensure_toolcache_volume()}:/run/asb-toolcache:Z",
         *(["-e", f"DOCKER_HOST=tcp://{n['net']}-docker:2375"]
           if profile.host_api == "read" else []),
@@ -1009,6 +1148,13 @@ def purge(ws: str, confirmed: bool) -> int:
             f"voltaram para o host. Rode 'asb-agent pull --workspace {ws}' "
             "antes, e repita com --yes se for isso mesmo.")
     down(ws)
+    # O estado de sessao deste workspace some junto com os arquivos dele — e
+    # so aqui. `down` preserva o trabalho, entao um `down`/`up` mantem as
+    # transcricoes. Este volume nunca guarda credencial: a credencial vive no
+    # volume compartilhado, que purge algum jamais toca.
+    session = names(ws)["session"]
+    if podman.exists("volume", session):
+        podman.run("volume", "rm", "-f", session, check=False)
     remove_workspace(layout)
     print(f"removido: {layout.mount}", file=sys.stderr)
     return 0

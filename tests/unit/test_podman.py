@@ -1,6 +1,8 @@
 """Testes de cli/asb/podman.py — invólucro fino sobre o binário podman."""
 from __future__ import annotations
 
+import asb_test_isolation  # noqa: F401  (guarda de isolamento da suite: nenhum volume real)
+
 import subprocess
 import sys
 import unittest
@@ -95,7 +97,18 @@ class TestPodmanKindAndStatus(unittest.TestCase):
         self.assertFalse(exists("image", "nonexistent-image-xyz:9999"))
         self.assertFalse(exists("container", "nonexistent-container-xyz"))
         self.assertFalse(exists("network", "nonexistent-network-xyz"))
-        self.assertFalse(exists("volume", "nonexistent-volume-xyz"))
+
+    def test_exists_dispatches_the_volume_kind(self):
+        """O ramo `volume` roda com o subprocesso MOCKADO de proposito: o
+        guarda de isolamento da suite (`asb_test_isolation`) proibe qualquer
+        invocacao real de podman que NOMEIE um volume, e o que se quer aqui e
+        o despacho de `_KINDS`, nao uma ida ao host."""
+        with mock.patch("subprocess.run") as mock_run:
+            mock_run.return_value = mock.Mock(returncode=1)
+            self.assertFalse(exists("volume", "nonexistent-volume-xyz"))
+        argv = mock_run.call_args.args[0]
+        self.assertEqual(argv[1:], ["volume", "exists",
+                                    "nonexistent-volume-xyz"])
 
     def test_running_returns_false_for_absent(self):
         self.assertFalse(running("nonexistent-container-xyz"))

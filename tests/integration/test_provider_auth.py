@@ -204,14 +204,14 @@ class TestLiveProviderVerification(unittest.TestCase):
                 spent = auth.call_budget().get(provider, 0)
                 print(f"[piloto A4] {provider}: chamadas gastas = {spent}",
                      file=sys.stderr)
-                self.assertLessEqual(
+                self.assertEqual(
                     spent, 1,
-                    f"{provider}: mais de uma chamada real foi feita "
-                    "(orcamento violado)")
-                self.assertNotEqual(
-                    result.state, "",
-                    "verify_client tem de devolver um estado, mesmo em SKIP "
-                    "implicito por infraestrutura")
+                    f"{provider}: piloto live exige exatamente uma chamada "
+                    "real; infraestrutura quebrada nao e evidencia")
+                self.assertEqual(
+                    result.state, "authenticated",
+                    f"{provider}: somente sucesso autenticado constitui "
+                    "evidencia live; estado recebido: {result.state}")
 
 
 if __name__ == "__main__":

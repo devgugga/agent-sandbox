@@ -787,20 +787,25 @@ _AUTH_EVIDENCE_MARKERS: dict[str, tuple[str, ...]] = {
 # Evidencia offline disponivel para `agy models`: o piloto A1 registrou uma
 # lista positiva de 16 linhas com nomes de modelos; o binario fixado 1.1.27
 # contem familias Gemini/Claude/GPT/Flash/Sonnet/Opus. A saida bruta nao foi
-# preservada, portanto nao inventamos um schema mais especifico. Este guarda
-# falha fechado: exige uma LISTA (duas ou mais linhas) e ao menos um nome de
-# familia comprovadamente presente. Formato futuro diferente vira `unknown`,
-# nunca um falso `authenticated`.
+# preservada, portanto nao inventamos colunas ou headers. Este guarda falha
+# fechado: cada linha precisa ter a forma conservadora de um IDENTIFICADOR
+# (um token com separador de versao/variante) e conter uma familia conhecida.
+# Prosa que apenas menciona modelos vira `unknown`, assim como qualquer formato
+# futuro diferente — falso negativo seguro em vez de falso `authenticated`.
 _AGY_MODEL_FAMILY = re.compile(
     r"(?<![a-z0-9])(?:gemini|claude|gpt|flash|sonnet|opus)(?![a-z0-9])",
     re.IGNORECASE)
+_AGY_MODEL_IDENTIFIER = re.compile(
+    r"[a-z0-9]+(?:[._:/-][a-z0-9]+)+", re.IGNORECASE)
 
 
 def _agy_models_output_valid(output: str) -> bool:
     lines = [line.strip() for line in (output or "").splitlines()
              if line.strip()]
-    return len(lines) >= 2 and all(_AGY_MODEL_FAMILY.search(line)
-                                   for line in lines)
+    return len(lines) >= 2 and all(
+        _AGY_MODEL_IDENTIFIER.fullmatch(line)
+        and _AGY_MODEL_FAMILY.search(line)
+        for line in lines)
 
 
 def classify_verification(provider: str, returncode: int, output: str,
@@ -826,6 +831,13 @@ def classify_verification(provider: str, returncode: int, output: str,
             evidence="rede indisponivel antes da chamada; nenhuma chamada "
                      "foi contada no orcamento",
             remediation="asb-agent doctor")
+
+    if returncode == 124:
+        return AuthResult(
+            provider=provider, state="unreachable", checked_at=checked_at,
+            evidence="chamada ao fornecedor atingiu o limite interno de "
+                     "tempo (codigo 124); nunca interpretado como logout",
+            remediation="tente novamente mais tarde")
 
     if any(marker in text for marker in _NETWORK_MARKERS):
         return AuthResult(
@@ -969,30 +981,64 @@ def verify_client(provider: str, container: str, *,
         ssh_port = mapping.splitlines()[0].rsplit(":", 1)[-1] if mapping else ""
         if not ssh_port:
             raise ValueError("porta SSH ausente")
-        int(ssh_port)
-        ssh_key = lifecycle.ensure_ssh_key()
+        ssh_port_number = int(ssh_port)
+        if not 1 <= ssh_port_number <= 65535:
+            raise ValueError("porta SSH fora do intervalo valido")
+        ssh_key = lifecycle.SSH_KEY
+        if not ssh_key.is_file():
+            raise ValueError("identidade SSH existente nao encontrada")
         ssh_user = getpass.getuser()
     except (podman.PodmanError, subprocess.TimeoutExpired, OSError,
-            ValueError, IndexError) as exc:
+            ValueError, IndexError):
         return AuthResult(
             provider=provider, state="provider_error", checked_at=checked_at,
             evidence="falha de infraestrutura ao preparar SSH para a "
-                     f"verificacao real: {exc}",
+                     "verificacao real",
             remediation="asb-agent doctor")
 
-    command = _verify_command(provider)
-    ssh_command = [
-        "ssh", "-p", str(ssh_port), "-i", str(ssh_key),
+    ssh_base = [
+        "ssh", "-p", str(ssh_port_number), "-i", str(ssh_key),
         "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes",
         "-o", "StrictHostKeyChecking=no",
         "-o", "UserKnownHostsFile=/dev/null",
         "-o", "ConnectTimeout=10", "-o", "LogLevel=ERROR",
-        f"{ssh_user}@127.0.0.1", command,
+        f"{ssh_user}@127.0.0.1",
     ]
+
+    # Gate observacional: prova o MESMO transporte (usuario, porta, chave e
+    # opcoes) antes de gastar uma chamada. `true` roda no shell remoto sem
+    # alcancar fornecedor algum.
+    try:
+        transport = subprocess.run(
+            [*ssh_base, "true"], stdin=subprocess.DEVNULL,
+            capture_output=True, text=True,
+            timeout=_RUNNING_CHECK_HOST_TIMEOUT, check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return AuthResult(
+            provider=provider, state="unreachable", checked_at=checked_at,
+            evidence="gate de transporte SSH excedeu o limite de tempo; "
+                     "nenhuma chamada ao fornecedor foi tentada",
+            remediation="asb-agent doctor")
+    except OSError:
+        return AuthResult(
+            provider=provider, state="provider_error", checked_at=checked_at,
+            evidence="falha local ao executar o gate de transporte SSH; "
+                     "nenhuma chamada ao fornecedor foi tentada",
+            remediation="asb-agent doctor")
+
+    if transport.returncode != 0:
+        return AuthResult(
+            provider=provider, state="unreachable", checked_at=checked_at,
+            evidence="gate de transporte SSH falhou; nenhuma chamada ao "
+                     "fornecedor foi tentada",
+            remediation="asb-agent doctor")
+
+    command = _verify_command(provider)
     _spend_call(provider)
     try:
         result = subprocess.run(
-            ssh_command, stdin=subprocess.DEVNULL, capture_output=True,
+            [*ssh_base, command], stdin=subprocess.DEVNULL, capture_output=True,
             text=True, timeout=_VERIFY_EXEC_HOST_TIMEOUT, check=False,
         )
     except subprocess.TimeoutExpired:
@@ -1002,17 +1048,27 @@ def verify_client(provider: str, container: str, *,
                      f"tempo ({_VERIFY_PROVIDER_TIMEOUT}s); nunca "
                      "interpretado como logout",
             remediation="tente novamente mais tarde")
-    except OSError as exc:
+    except OSError:
         return AuthResult(
             provider=provider, state="provider_error", checked_at=checked_at,
-            evidence=f"falha de infraestrutura ao executar a verificacao "
-                     f"real: {exc}",
+            evidence="falha local de infraestrutura ao executar a "
+                     "verificacao real",
             remediation="asb-agent doctor")
 
     stdout = result.stdout or ""
     stderr = getattr(result, "stderr", "") or ""
     returncode = result.returncode
     combined = f"{stdout}\n{stderr}"
+
+    # 255 e reservado pelo cliente OpenSSH para falhas do proprio transporte.
+    # O comando remoto ja foi contado porque o gate havia passado, mas sua
+    # saida nunca e tratada como resposta do fornecedor.
+    if returncode == 255:
+        return AuthResult(
+            provider=provider, state="unreachable", checked_at=checked_at,
+            evidence="transporte SSH caiu durante a chamada ao fornecedor; "
+                     "nunca interpretado como logout",
+            remediation="asb-agent doctor")
 
     return replace(
         classify_verification(provider, returncode, combined, network_ok=True),

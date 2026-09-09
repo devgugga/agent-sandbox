@@ -4,8 +4,8 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$ROOT/tests/assert.sh"
 
-WS="agents-test-$$"
-REPO=$(mktemp -d)
+WS="test-agents-proxy-$$"
+REPO=$(mktemp -d -t asb-test-agents-proxy-XXXXXX)
 cleanup() {
   "$ROOT/cli/asb-agent" down --workspace "$WS" >/dev/null 2>&1 || true
   rm -rf "$REPO"
@@ -57,10 +57,10 @@ assert_eq "ok" "$(sa 'test -f /tmp/relay-probe/node_modules/node-pty/build/Relea
   "node-gyp compila modulo nativo atras do proxy (relay do Orca)"
 
 # Chamadas vivas de modelo: uma por fornecedor, via `asb-agent auth verify`
-# (Tarefa A4) -- roda no HOST, exec dentro do container do proprio workspace,
-# atras do MESMO proxy/allowlist testado acima. Substitui o grep cru de "ok"
-# ou de mensagem de login (nao prova execucao real) por um relatorio
-# estruturado com orcamento de UMA chamada por fornecedor, sem retry.
+# (Tarefa A4) -- roda no HOST e entra por SSH nos wrappers asb-claude/codex/agy
+# do proprio workspace, atras do MESMO proxy/allowlist testado acima. Substitui
+# o grep cru de "ok" ou de mensagem de login (nao prova execucao real) por um
+# relatorio estruturado com orcamento de UMA chamada por fornecedor, sem retry.
 #
 # Fornecedor deslogado nunca vira aprovacao silenciosa: o brief exige SKIP
 # EXPLICITO no relatorio final, nunca a pratica antiga de pular calado e
@@ -91,5 +91,5 @@ else
   done
 fi
 
-report
 echo "pulou: $_skip (fornecedor deslogado ou infraestrutura -- SKIP explicito, nao aprovacao)"
+report

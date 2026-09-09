@@ -37,6 +37,7 @@ real foi aceita pelo servidor remoto — essa prova e o que `verify` entrega.
 from __future__ import annotations
 
 import fcntl
+import getpass
 import json
 import os
 import re
@@ -673,9 +674,12 @@ _VERIFY_EXEC_HOST_TIMEOUT = 70  # segundos, do lado do host
 
 
 def _verify_command(provider: str) -> str:
-    """Comando de UMA chamada real, executado via `bash -lc` dentro do
-    container. Stdin sempre fechado (`< /dev/null`): nenhum destes comandos
-    pode ficar esperando entrada interativa.
+    """Script remoto de UMA chamada real, executado via SSH no workspace.
+
+    O script cria e remove um diretorio sintetico explicito em `/tmp`, muda
+    para ele antes de chamar o wrapper configurado e fecha stdin. Assim uma
+    futura mudanca de WORKDIR na imagem nao consegue mover a verificacao para
+    dentro do projeto montado ou para perto de secrets do workspace.
 
     Cada flag usada aqui foi confirmada na versao fixada, offline, sem
     tocar rede (`agy --help`, `codex exec --help`): `agy models`,
@@ -683,18 +687,26 @@ def _verify_command(provider: str) -> str:
     `claude -p`. Nenhuma e uma flag imaginada.
     """
     prompt = shlex.quote(_VERIFY_PROMPT)
+    setup = (
+        "WORKDIR=$(mktemp -d /tmp/asb-auth-verify.XXXXXX) || exit 70; "
+        "trap 'rm -rf \"$WORKDIR\"' EXIT HUP INT TERM; "
+        "cd \"$WORKDIR\" || exit 70; "
+    )
     if provider == "claude":
-        return f"timeout {_VERIFY_PROVIDER_TIMEOUT} claude -p {prompt} < /dev/null"
+        return (f"{setup}timeout {_VERIFY_PROVIDER_TIMEOUT} "
+                f"asb-claude -p {prompt} < /dev/null")
     if provider == "codex":
-        # `-o "$OUT"` grava SOMENTE a resposta final do agente (sem o ruido
-        # de eventos de execucao que `codex exec` imprime por padrao); o
-        # `cat` roda no MESMO `podman exec` — nao e uma segunda chamada ao
-        # fornecedor, so leitura local do arquivo que a primeira produziu.
+        # O stdout do `codex exec` nao participa da prova: algumas versoes
+        # tambem transmitem eventos/resposta ali. Somente o arquivo de `-o`
+        # e lido; stderr e revelado apenas na falha para classificacao.
         return (
-            f'OUT=$(mktemp); '
-            f'timeout {_VERIFY_PROVIDER_TIMEOUT} codex exec '
+            f'{setup}OUT="$WORKDIR/codex-output"; '
+            f'ERR="$WORKDIR/codex-error"; '
+            f'timeout {_VERIFY_PROVIDER_TIMEOUT} asb-codex exec '
             f'--skip-git-repo-check --sandbox read-only -o "$OUT" {prompt} '
-            f'< /dev/null; RC=$?; cat "$OUT" 2>/dev/null; rm -f "$OUT"; exit $RC'
+            f'< /dev/null > /dev/null 2>"$ERR"; RC=$?; '
+            f'if [ "$RC" -eq 0 ]; then cat "$OUT" 2>/dev/null; '
+            f'else cat "$ERR" >&2; fi; exit "$RC"'
         )
     if provider == "agy":
         # Sem prompt e sem `-p`/`--print`: `agy models` e um subcomando REAL
@@ -702,7 +714,8 @@ def _verify_command(provider: str) -> str:
         # `--print-timeout` existe na versao fixada mas sua aplicabilidade a
         # `models` (em vez de `-p`) nao foi confirmada sem uma chamada real
         # — o orcamento de tempo usa APENAS o `timeout` externo do bash.
-        return f"timeout {_VERIFY_PROVIDER_TIMEOUT} agy models < /dev/null"
+        return (f"{setup}timeout {_VERIFY_PROVIDER_TIMEOUT} "
+                "asb-agy models < /dev/null")
     raise ValueError(
         f"provedor invalido para verificacao real: {provider!r} "
         "(use 'claude', 'codex' ou 'agy')")
@@ -771,6 +784,24 @@ _AUTH_EVIDENCE_MARKERS: dict[str, tuple[str, ...]] = {
     "agy": ("authentication required", "authentication failed"),
 }
 
+# Evidencia offline disponivel para `agy models`: o piloto A1 registrou uma
+# lista positiva de 16 linhas com nomes de modelos; o binario fixado 1.1.27
+# contem familias Gemini/Claude/GPT/Flash/Sonnet/Opus. A saida bruta nao foi
+# preservada, portanto nao inventamos um schema mais especifico. Este guarda
+# falha fechado: exige uma LISTA (duas ou mais linhas) e ao menos um nome de
+# familia comprovadamente presente. Formato futuro diferente vira `unknown`,
+# nunca um falso `authenticated`.
+_AGY_MODEL_FAMILY = re.compile(
+    r"(?<![a-z0-9])(?:gemini|claude|gpt|flash|sonnet|opus)(?![a-z0-9])",
+    re.IGNORECASE)
+
+
+def _agy_models_output_valid(output: str) -> bool:
+    lines = [line.strip() for line in (output or "").splitlines()
+             if line.strip()]
+    return len(lines) >= 2 and all(_AGY_MODEL_FAMILY.search(line)
+                                   for line in lines)
+
 
 def classify_verification(provider: str, returncode: int, output: str,
                           network_ok: bool) -> AuthResult:
@@ -821,18 +852,36 @@ def classify_verification(provider: str, returncode: int, output: str,
             remediation="tente novamente mais tarde")
 
     markers = _AUTH_EVIDENCE_MARKERS.get(provider, ())
-    if returncode != 0 and any(marker in text for marker in markers):
+    if any(marker in text for marker in markers):
         return AuthResult(
             provider=provider, state="unauthenticated", checked_at=checked_at,
             evidence=f"o proprio fornecedor {provider} reportou credencial "
                      "invalida (nao um 401/403 generico de proxy)",
             remediation="asb-agent login")
 
-    if returncode == 0:
+    normalized = " ".join((output or "").split())
+    success_format = (
+        _agy_models_output_valid(output)
+        if provider == "agy"
+        else normalized == _VERIFY_EXPECTED_RESPONSE
+    )
+    if returncode == 0 and success_format:
         return AuthResult(
             provider=provider, state="authenticated", checked_at=checked_at,
-            evidence="chamada real ao fornecedor retornou codigo 0",
+            evidence=("'agy models' retornou uma lista de nomes de modelos "
+                      "com codigo 0; prova acesso a lista, nao geracao"
+                      if provider == "agy" else
+                      "chamada real ao fornecedor respondeu no formato "
+                      "solicitado, com codigo 0"),
             remediation="")
+
+    if returncode == 0:
+        return AuthResult(
+            provider=provider, state="unknown", checked_at=checked_at,
+            evidence="chamada real retornou codigo 0, mas a resposta nao "
+                     "bateu com o formato esperado (erro de formato, "
+                     "registrado separado de erro de credencial)",
+            remediation=f"asb-agent auth verify --agent {provider}")
 
     return AuthResult(
         provider=provider, state="unknown", checked_at=checked_at,
@@ -862,10 +911,15 @@ def _spend_call(provider: str) -> None:
     _CALL_BUDGET[provider] = _CALL_BUDGET.get(provider, 0) + 1
 
 
-def verify_client(provider: str, container: str) -> AuthResult:
-    """Faz UMA chamada real ao fornecedor, dentro do container do WORKSPACE
-    ja em execucao (mesmo caminho de proxy/allowlist do agente real), e
-    classifica o resultado.
+def verify_client(provider: str, container: str, *,
+                  proxy_container: str | None = None) -> AuthResult:
+    """Faz UMA chamada real via SSH e wrapper do fornecedor no WORKSPACE.
+
+    `proxy_container` e contexto explicito para o chamador canonico
+    (`verify`, que usa `lifecycle.names(ws)`). O parametro e opcional apenas
+    para preservar a interface publica de dois argumentos do brief e seus
+    consumidores antigos; nesse fallback, a derivacao legada fica isolada
+    aqui e nao e usada pelo caminho top-level.
 
     Orcamento: no maximo uma chamada por fornecedor por invocacao, sem
     retry. Duas checagens de infraestrutura rodam ANTES e podem devolver um
@@ -899,7 +953,8 @@ def verify_client(provider: str, container: str) -> AuthResult:
                      "chamada foi tentada",
             remediation=f"asb-agent resume --workspace {ws_hint}")
 
-    proxy_container = f"asb-{ws_hint}-proxy"
+    if proxy_container is None:
+        proxy_container = f"asb-{ws_hint}-proxy"
     probe = readiness.probe_proxy(
         agent_container=container, proxy_container=proxy_container)
     network_ok = probe.state == "healthy"
@@ -908,12 +963,37 @@ def verify_client(provider: str, container: str) -> AuthResult:
             classify_verification(provider, 1, "", network_ok=False),
             checked_at=checked_at)
 
+    try:
+        mapping = podman.out("port", container, "22",
+                             timeout=_RUNNING_CHECK_HOST_TIMEOUT)
+        ssh_port = mapping.splitlines()[0].rsplit(":", 1)[-1] if mapping else ""
+        if not ssh_port:
+            raise ValueError("porta SSH ausente")
+        int(ssh_port)
+        ssh_key = lifecycle.ensure_ssh_key()
+        ssh_user = getpass.getuser()
+    except (podman.PodmanError, subprocess.TimeoutExpired, OSError,
+            ValueError, IndexError) as exc:
+        return AuthResult(
+            provider=provider, state="provider_error", checked_at=checked_at,
+            evidence="falha de infraestrutura ao preparar SSH para a "
+                     f"verificacao real: {exc}",
+            remediation="asb-agent doctor")
+
     command = _verify_command(provider)
+    ssh_command = [
+        "ssh", "-p", str(ssh_port), "-i", str(ssh_key),
+        "-o", "BatchMode=yes", "-o", "IdentitiesOnly=yes",
+        "-o", "StrictHostKeyChecking=no",
+        "-o", "UserKnownHostsFile=/dev/null",
+        "-o", "ConnectTimeout=10", "-o", "LogLevel=ERROR",
+        f"{ssh_user}@127.0.0.1", command,
+    ]
     _spend_call(provider)
     try:
-        result = podman.run(
-            "exec", "-u", "1000", container, "bash", "-lc", command,
-            check=False, capture=True, timeout=_VERIFY_EXEC_HOST_TIMEOUT,
+        result = subprocess.run(
+            ssh_command, stdin=subprocess.DEVNULL, capture_output=True,
+            text=True, timeout=_VERIFY_EXEC_HOST_TIMEOUT, check=False,
         )
     except subprocess.TimeoutExpired:
         return AuthResult(
@@ -922,7 +1002,7 @@ def verify_client(provider: str, container: str) -> AuthResult:
                      f"tempo ({_VERIFY_PROVIDER_TIMEOUT}s); nunca "
                      "interpretado como logout",
             remediation="tente novamente mais tarde")
-    except podman.PodmanError as exc:
+    except OSError as exc:
         return AuthResult(
             provider=provider, state="provider_error", checked_at=checked_at,
             evidence=f"falha de infraestrutura ao executar a verificacao "
@@ -934,31 +1014,6 @@ def verify_client(provider: str, container: str) -> AuthResult:
     returncode = result.returncode
     combined = f"{stdout}\n{stderr}"
 
-    if provider == "agy":
-        if returncode == 0:
-            return AuthResult(
-                provider=provider, state="authenticated", checked_at=checked_at,
-                evidence="'agy models' retornou codigo 0 (chamada real ao "
-                         "fornecedor; nenhum prompt foi enviado)",
-                remediation="")
-        return replace(
-            classify_verification(provider, returncode, combined, network_ok=True),
-            checked_at=checked_at)
-
-    normalized = " ".join(stdout.split())
-    if returncode == 0 and normalized == _VERIFY_EXPECTED_RESPONSE:
-        return AuthResult(
-            provider=provider, state="authenticated", checked_at=checked_at,
-            evidence="chamada real ao fornecedor respondeu no formato "
-                     "solicitado, com codigo 0",
-            remediation="")
-    if returncode == 0:
-        return AuthResult(
-            provider=provider, state="unknown", checked_at=checked_at,
-            evidence="chamada real retornou codigo 0, mas a resposta nao "
-                     "bateu com o formato esperado (erro de formato, "
-                     "registrado separado de erro de credencial)",
-            remediation=f"asb-agent auth verify --agent {provider}")
     return replace(
         classify_verification(provider, returncode, combined, network_ok=True),
         checked_at=checked_at)
@@ -978,8 +1033,16 @@ def verify(ws: str, provider: str, *, json_output: bool) -> int:
             f"provedor invalido: {provider!r} (use claude, codex, agy ou all)")
 
     providers = ("claude", "codex", "agy") if provider == "all" else (provider,)
-    container = lifecycle.names(ws)["agent"]
-    results = [verify_client(p, container) for p in providers]
+    n = lifecycle.names(ws)
+    container = n["agent"]
+    budget_before = call_budget()
+    results = [verify_client(p, container, proxy_container=n["proxy"])
+               for p in providers]
+    budget_after = call_budget()
+    invocation_budget = {
+        p: budget_after.get(p, 0) - budget_before.get(p, 0)
+        for p in providers
+    }
     checked_at = _now_iso()
 
     if json_output:
@@ -987,6 +1050,7 @@ def verify(ws: str, provider: str, *, json_output: bool) -> int:
             "schemaVersion": 1,
             "workspace": ws,
             "checkedAt": checked_at,
+            "callBudget": invocation_budget,
             "results": [
                 {
                     "provider": r.provider,
@@ -1007,5 +1071,6 @@ def verify(ws: str, provider: str, *, json_output: bool) -> int:
             if r.remediation:
                 line += f"  ->  {r.remediation}"
             print(line, file=sys.stderr)
+        print(f"  chamadas gastas: {invocation_budget}", file=sys.stderr)
 
     return _aggregate_exit_code(results)

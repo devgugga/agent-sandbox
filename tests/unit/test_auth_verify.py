@@ -4,9 +4,9 @@ Diferente de DIAGNOSTICO (status, Tarefa A2) e de LOGIN (Tarefa A3), esta
 metade faz UMA chamada real ao fornecedor por `verify()`, sem retry, para
 provar que o SERVIDOR aceitou a credencial — nao apenas que o cliente local
 acha que esta logado. Nenhum teste aqui alcanca um fornecedor de verdade:
-`podman.run`, `podman.running` e `readiness.probe_proxy` sao todos
-simulados. O container e o proxy do workspace existem apenas como
-argumentos capturados.
+`subprocess.run`, `podman.running`, `podman.out` e
+`readiness.probe_proxy` sao todos simulados. O container, a porta SSH e o
+proxy do workspace existem apenas como argumentos capturados.
 
 Contexto empirico (Tarefa A1, docs/validation/2026-09-07-auth-pilot-live.md):
 
@@ -25,8 +25,11 @@ import asb_test_isolation  # noqa: F401  (guarda de isolamento da suite: nenhum 
 
 import io
 import json
+import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import unittest
 from contextlib import redirect_stderr
 from pathlib import Path
@@ -130,7 +133,8 @@ class TestClassifyVerification(unittest.TestCase):
         real de falha de rede."""
         result = auth.classify_verification(
             "agy", 0, "print-timeout: 5m0s", network_ok=True)
-        self.assertEqual(result.state, "authenticated")
+        self.assertEqual(result.state, "unknown")
+        self.assertNotEqual(result.state, "provider_error")
         self.assertNotEqual(result.state, "unreachable")
 
     def test_429_substring_in_a_port_number_does_not_false_positive(self):
@@ -140,14 +144,14 @@ class TestClassifyVerification(unittest.TestCase):
         virar `provider_error` por limite de taxa."""
         result = auth.classify_verification(
             "claude", 0, "listening on port 14290, connected", network_ok=True)
+        self.assertEqual(result.state, "unknown")
         self.assertNotEqual(result.state, "provider_error")
-        self.assertEqual(result.state, "authenticated")
 
     def test_503_substring_in_a_byte_count_does_not_false_positive(self):
         result = auth.classify_verification(
             "codex", 0, "processed 5003 bytes successfully", network_ok=True)
+        self.assertEqual(result.state, "unknown")
         self.assertNotEqual(result.state, "provider_error")
-        self.assertEqual(result.state, "authenticated")
 
     def test_delimited_429_still_matches_as_rate_limit(self):
         """Guarda do proprio guarda: a delimitacao nao pode se tornar tao
@@ -207,20 +211,39 @@ class TestClassifyVerification(unittest.TestCase):
                     self.assertNotEqual(code, 0)
 
 
-class TestVerifyClientCallBudget(unittest.TestCase):
+class _SSHInfraCase(unittest.TestCase):
+    """Contexto local minimo; a chamada ao fornecedor continua sintetica."""
+
+    def setUp(self):
+        self._port_patch = mock.patch.object(
+            auth.podman, "out", return_value="127.0.0.1:41234")
+        self._key_patch = mock.patch.object(
+            auth.lifecycle, "ensure_ssh_key",
+            return_value=Path("/tmp/asb-test-auth-key"))
+        self._port_patch.start()
+        self._key_patch.start()
+
+    def tearDown(self):
+        self._key_patch.stop()
+        self._port_patch.stop()
+
+
+class TestVerifyClientCallBudget(_SSHInfraCase):
     """Uma chamada por fornecedor por `verify_client`, sem retry, e sempre
     observavel via `call_budget()`."""
 
     def setUp(self):
+        super().setUp()
         auth.reset_call_budget()
 
     def tearDown(self):
         auth.reset_call_budget()
+        super().tearDown()
 
     def test_no_call_is_spent_when_the_container_is_not_running(self):
         with mock.patch.object(auth.podman, "running", return_value=False), \
                 mock.patch.object(auth.readiness, "probe_proxy") as probe, \
-                mock.patch.object(auth.podman, "run") as run:
+                mock.patch.object(auth.subprocess, "run") as run:
             result = auth.verify_client("claude", "asb-demo-agent")
 
         probe.assert_not_called()
@@ -232,7 +255,7 @@ class TestVerifyClientCallBudget(unittest.TestCase):
         with mock.patch.object(auth.podman, "running", return_value=True), \
                 mock.patch.object(auth.readiness, "probe_proxy",
                                   return_value=_unreachable_probe()), \
-                mock.patch.object(auth.podman, "run") as run:
+                mock.patch.object(auth.subprocess, "run") as run:
             result = auth.verify_client("claude", "asb-demo-agent")
 
         run.assert_not_called()
@@ -244,20 +267,19 @@ class TestVerifyClientCallBudget(unittest.TestCase):
         with mock.patch.object(auth.podman, "running", return_value=True), \
                 mock.patch.object(auth.readiness, "probe_proxy",
                                   return_value=_healthy_probe()), \
-                mock.patch.object(auth.podman, "run",
+                mock.patch.object(auth.subprocess, "run",
                                   return_value=_ok(0, "ASB_AUTH_VERIFY_OK")) as run:
             result = auth.verify_client("claude", "asb-demo-agent")
 
         self.assertEqual(result.state, "authenticated")
         self.assertEqual(auth.call_budget()["claude"], 1)
-        exec_calls = [c for c in run.call_args_list if c.args and c.args[0] == "exec"]
-        self.assertEqual(len(exec_calls), 1, "mais de uma chamada real foi feita")
+        self.assertEqual(run.call_count, 1, "mais de uma chamada real foi feita")
 
     def test_call_budget_is_per_provider(self):
         with mock.patch.object(auth.podman, "running", return_value=True), \
                 mock.patch.object(auth.readiness, "probe_proxy",
                                   return_value=_healthy_probe()), \
-                mock.patch.object(auth.podman, "run",
+                mock.patch.object(auth.subprocess, "run",
                                   return_value=_ok(0, "ASB_AUTH_VERIFY_OK")):
             auth.verify_client("claude", "asb-demo-agent")
             auth.verify_client("codex", "asb-demo-agent")
@@ -270,7 +292,7 @@ class TestVerifyClientCallBudget(unittest.TestCase):
         with mock.patch.object(auth.podman, "running", return_value=True), \
                 mock.patch.object(auth.readiness, "probe_proxy",
                                   return_value=_healthy_probe()), \
-                mock.patch.object(auth.podman, "run",
+                mock.patch.object(auth.subprocess, "run",
                                   return_value=_ok(0, "ASB_AUTH_VERIFY_OK")):
             auth.verify_client("claude", "asb-demo-agent")
         self.assertEqual(auth.call_budget()["claude"], 1)
@@ -278,7 +300,7 @@ class TestVerifyClientCallBudget(unittest.TestCase):
         self.assertEqual(auth.call_budget(), {})
 
 
-class TestVerifyClientTimeoutNeverBecomesLogout(unittest.TestCase):
+class TestVerifyClientTimeoutNeverBecomesLogout(_SSHInfraCase):
     """A protecao mais critica desta tarefa: se a chamada em si expirar (o
     caso mais parecido com o bloqueio de 60s do agy deslogado, A1), o
     resultado nunca pode ser confundido com uma prova de que a conta esta
@@ -289,7 +311,7 @@ class TestVerifyClientTimeoutNeverBecomesLogout(unittest.TestCase):
                 mock.patch.object(auth.readiness, "probe_proxy",
                                   return_value=_healthy_probe()), \
                 mock.patch.object(
-                    auth.podman, "run",
+                    auth.subprocess, "run",
                     side_effect=subprocess.TimeoutExpired(cmd="podman", timeout=70)):
             result = auth.verify_client("agy", "asb-demo-agent")
 
@@ -305,14 +327,14 @@ class TestVerifyClientTimeoutNeverBecomesLogout(unittest.TestCase):
                 mock.patch.object(auth.readiness, "probe_proxy",
                                   return_value=_healthy_probe()), \
                 mock.patch.object(
-                    auth.podman, "run",
+                    auth.subprocess, "run",
                     side_effect=subprocess.TimeoutExpired(cmd="podman", timeout=70)):
             auth.verify_client("agy", "asb-demo-agent")
         self.assertEqual(auth.call_budget()["agy"], 1)
         auth.reset_call_budget()
 
 
-class TestVerifyClientAgy(unittest.TestCase):
+class TestVerifyClientAgy(_SSHInfraCase):
     """Sem prompt, sem `-p`: `agy models` e a chamada real (A1 confirmou o
     subcomando; A4 nao usa `agy -p`, que bloqueia 60s quando deslogado)."""
 
@@ -320,14 +342,14 @@ class TestVerifyClientAgy(unittest.TestCase):
         with mock.patch.object(auth.podman, "running", return_value=True), \
                 mock.patch.object(auth.readiness, "probe_proxy",
                                   return_value=_healthy_probe()), \
-                mock.patch.object(auth.podman, "run",
-                                  return_value=_ok(0, "modelo-a\nmodelo-b")) as run:
+                mock.patch.object(auth.subprocess, "run",
+                                  return_value=_ok(
+                                      0, "GEMINI_3_PRO\nCLAUDE_4_SONNET")) as run:
             result = auth.verify_client("agy", "asb-demo-agent")
 
         self.assertEqual(result.state, "authenticated")
-        exec_call = next(c for c in run.call_args_list if c.args[0] == "exec")
-        command = exec_call.args[-1]
-        self.assertIn("agy models", command)
+        command = run.call_args.args[0][-1]
+        self.assertIn("asb-agy models", command)
         self.assertNotIn(" -p ", f" {command} ")
         self.assertNotIn("--print", command)
 
@@ -335,26 +357,48 @@ class TestVerifyClientAgy(unittest.TestCase):
         with mock.patch.object(auth.podman, "running", return_value=True), \
                 mock.patch.object(auth.readiness, "probe_proxy",
                                   return_value=_healthy_probe()), \
-                mock.patch.object(auth.podman, "run",
-                                  return_value=_ok(0, "modelo-a")) as run:
+                mock.patch.object(auth.subprocess, "run",
+                                  return_value=_ok(
+                                      0, "GEMINI_3_PRO\nCLAUDE_4_SONNET")) as run:
             auth.verify_client("agy", "asb-demo-agent")
 
-        exec_call = next(c for c in run.call_args_list if c.args[0] == "exec")
-        self.assertIn("/dev/null", exec_call.args[-1])
+        self.assertIn("/dev/null", run.call_args.args[0][-1])
 
     def test_agy_verification_failure_uses_provider_evidence(self):
         with mock.patch.object(auth.podman, "running", return_value=True), \
                 mock.patch.object(auth.readiness, "probe_proxy",
                                   return_value=_healthy_probe()), \
                 mock.patch.object(
-                    auth.podman, "run",
+                    auth.subprocess, "run",
                     return_value=_ok(1, "", "authentication required")):
             result = auth.verify_client("agy", "asb-demo-agent")
 
         self.assertEqual(result.state, "unauthenticated")
 
+    def test_agy_exit_zero_requires_a_model_list_not_arbitrary_output(self):
+        for output in ("", "command completed"):
+            with self.subTest(output=output), \
+                    mock.patch.object(auth.podman, "running", return_value=True), \
+                    mock.patch.object(auth.readiness, "probe_proxy",
+                                      return_value=_healthy_probe()), \
+                    mock.patch.object(auth.subprocess, "run",
+                                      return_value=_ok(0, output)):
+                result = auth.verify_client("agy", "asb-demo-agent")
 
-class TestVerifyClientFormatEvidence(unittest.TestCase):
+            self.assertEqual(result.state, "unknown")
+
+    def test_classify_agy_exit_zero_requires_a_model_list(self):
+        result = auth.classify_verification(
+            "agy", 0, "command completed", network_ok=True)
+        self.assertEqual(result.state, "unknown")
+
+    def test_agy_auth_marker_outranks_exit_zero(self):
+        result = auth.classify_verification(
+            "agy", 0, "authentication required", network_ok=True)
+        self.assertEqual(result.state, "unauthenticated")
+
+
+class TestVerifyClientFormatEvidence(_SSHInfraCase):
     """Evidencia de sucesso exige resposta no formato solicitado, nao um
     grep de 'ok'. Um exit 0 com resposta errada e um erro de FORMATO,
     registrado separado de erro de credencial."""
@@ -364,7 +408,7 @@ class TestVerifyClientFormatEvidence(unittest.TestCase):
                 mock.patch.object(auth.readiness, "probe_proxy",
                                   return_value=_healthy_probe()), \
                 mock.patch.object(
-                    auth.podman, "run",
+                    auth.subprocess, "run",
                     return_value=_ok(0, "claro! aqui esta: ok")):
             result = auth.verify_client("claude", "asb-demo-agent")
 
@@ -376,7 +420,7 @@ class TestVerifyClientFormatEvidence(unittest.TestCase):
                 mock.patch.object(auth.readiness, "probe_proxy",
                                   return_value=_healthy_probe()), \
                 mock.patch.object(
-                    auth.podman, "run",
+                    auth.subprocess, "run",
                     return_value=_ok(0, "  ASB_AUTH_VERIFY_OK  \n")):
             result = auth.verify_client("codex", "asb-demo-agent")
 
@@ -387,29 +431,28 @@ class TestVerifyClientFormatEvidence(unittest.TestCase):
                 mock.patch.object(auth.readiness, "probe_proxy",
                                   return_value=_healthy_probe()), \
                 mock.patch.object(
-                    auth.podman, "run",
+                    auth.subprocess, "run",
                     return_value=_ok(0, "Usage: claude [options] [command] [prompt]")):
             result = auth.verify_client("claude", "asb-demo-agent")
         self.assertNotEqual(result.state, "authenticated")
 
 
-class TestVerifyClientCommands(unittest.TestCase):
+class TestVerifyClientCommands(_SSHInfraCase):
     """As chamadas usam flags CONFIRMADAS na versao fixada (A1/A4), stdin
     fechado, e nao usam flag alguma inventada."""
 
     def _exec_command(self, provider, run_mock):
-        exec_call = next(c for c in run_mock.call_args_list if c.args[0] == "exec")
-        return exec_call.args[-1]
+        return run_mock.call_args.args[0][-1]
 
     def test_claude_uses_dash_p_and_closes_stdin(self):
         with mock.patch.object(auth.podman, "running", return_value=True), \
                 mock.patch.object(auth.readiness, "probe_proxy",
                                   return_value=_healthy_probe()), \
-                mock.patch.object(auth.podman, "run",
+                mock.patch.object(auth.subprocess, "run",
                                   return_value=_ok(0, "ASB_AUTH_VERIFY_OK")) as run:
             auth.verify_client("claude", "asb-demo-agent")
         command = self._exec_command("claude", run)
-        self.assertIn("claude -p", command)
+        self.assertIn("asb-claude -p", command)
         self.assertIn("/dev/null", command)
         self.assertIn("timeout", command)
 
@@ -417,11 +460,11 @@ class TestVerifyClientCommands(unittest.TestCase):
         with mock.patch.object(auth.podman, "running", return_value=True), \
                 mock.patch.object(auth.readiness, "probe_proxy",
                                   return_value=_healthy_probe()), \
-                mock.patch.object(auth.podman, "run",
+                mock.patch.object(auth.subprocess, "run",
                                   return_value=_ok(0, "ASB_AUTH_VERIFY_OK")) as run:
             auth.verify_client("codex", "asb-demo-agent")
         command = self._exec_command("codex", run)
-        self.assertIn("codex exec", command)
+        self.assertIn("asb-codex exec", command)
         self.assertIn("/dev/null", command)
 
     def test_no_verify_command_uses_the_dead_slash_login(self):
@@ -434,15 +477,52 @@ class TestVerifyClientCommands(unittest.TestCase):
             with self.subTest(provider=provider):
                 self.assertNotIn("--version", auth._verify_command(provider))
 
-    def test_exec_runs_as_uid_1000(self):
+    def test_ssh_targets_the_host_user(self):
         with mock.patch.object(auth.podman, "running", return_value=True), \
                 mock.patch.object(auth.readiness, "probe_proxy",
                                   return_value=_healthy_probe()), \
-                mock.patch.object(auth.podman, "run",
+                mock.patch.object(auth.getpass, "getuser", return_value="tester"), \
+                mock.patch.object(auth.subprocess, "run",
                                   return_value=_ok(0, "ASB_AUTH_VERIFY_OK")) as run:
             auth.verify_client("claude", "asb-demo-agent")
-        exec_call = next(c for c in run.call_args_list if c.args[0] == "exec")
-        self.assertIn("1000", exec_call.args)
+        self.assertIn("tester@127.0.0.1", run.call_args.args[0])
+
+    def test_verify_uses_ssh_wrapper_and_explicit_synthetic_workdir(self):
+        ssh_result = _ok(0, "ASB_AUTH_VERIFY_OK")
+        with mock.patch.object(auth.podman, "running", return_value=True), \
+                mock.patch.object(auth.readiness, "probe_proxy",
+                                  return_value=_healthy_probe()), \
+                mock.patch.object(auth.podman, "out",
+                                  return_value="127.0.0.1:41234"), \
+                mock.patch.object(auth.lifecycle, "ensure_ssh_key",
+                                  return_value=Path("/tmp/asb-test-auth-key")), \
+                mock.patch.object(auth.podman, "run",
+                                  return_value=ssh_result) as podman_run, \
+                mock.patch.object(auth.subprocess, "run",
+                                  return_value=ssh_result) as ssh_run:
+            result = auth.verify_client(
+                "claude", "asb-demo-agent",
+                proxy_container="asb-demo-proxy")
+
+        self.assertEqual(result.state, "authenticated")
+        podman_run.assert_not_called()
+        ssh_run.assert_called_once()
+        args = ssh_run.call_args.args[0]
+        self.assertEqual(args[0], "ssh")
+        self.assertIn("41234", args)
+        remote_command = args[-1]
+        self.assertIn("asb-claude", remote_command)
+        self.assertIn("mktemp -d", remote_command)
+        self.assertIn("cd ", remote_command)
+        self.assertIn("/dev/null", remote_command)
+        self.assertIs(ssh_run.call_args.kwargs["stdin"], subprocess.DEVNULL)
+        self.assertEqual(ssh_run.call_args.kwargs["timeout"], 70)
+
+    def test_codex_discards_stream_output_and_reads_only_output_file(self):
+        command = auth._verify_command("codex")
+        self.assertIn('-o "$OUT"', command)
+        self.assertIn("> /dev/null", command)
+        self.assertIn('cat "$OUT"', command)
 
 
 class TestVerifyCommand(unittest.TestCase):
@@ -452,28 +532,70 @@ class TestVerifyCommand(unittest.TestCase):
     def test_verify_all_calls_verify_client_once_per_provider(self):
         seen = []
 
-        def fake_verify_client(provider, container):
+        def fake_verify_client(provider, container, *, proxy_container=None):
             seen.append(provider)
             return AuthResult(provider, "authenticated", "t", "canned", "")
 
         with mock.patch("asb.auth.verify_client", side_effect=fake_verify_client), \
                 mock.patch.object(auth.lifecycle, "names",
-                                  return_value={"agent": "asb-demo-agent"}), \
+                                  return_value={"agent": "asb-demo-agent",
+                                                "proxy": "asb-demo-proxy"}), \
                 mock.patch("sys.stdout", io.StringIO()):
             rc = auth.verify("demo", "all", json_output=True)
 
         self.assertEqual(seen, ["claude", "codex", "agy"])
         self.assertEqual(rc, 0)
 
+    def test_verify_passes_canonical_proxy_name_to_verify_client(self):
+        seen = []
+
+        def fake_verify_client(provider, container, *, proxy_container=None):
+            seen.append((provider, container, proxy_container))
+            return AuthResult(provider, "authenticated", "t", "canned", "")
+
+        canonical = {
+            "agent": "agent-name-not-derived-from-workspace",
+            "proxy": "proxy-name-not-derived-from-agent",
+        }
+        with mock.patch("asb.auth.verify_client", side_effect=fake_verify_client), \
+                mock.patch.object(auth.lifecycle, "names", return_value=canonical), \
+                mock.patch("sys.stdout", io.StringIO()):
+            auth.verify("demo", "claude", json_output=True)
+
+        self.assertEqual(
+            seen,
+            [("claude", canonical["agent"], canonical["proxy"])])
+
+    def test_verify_json_reports_per_invocation_call_budget(self):
+        auth.reset_call_budget()
+
+        def fake_verify_client(provider, container, *, proxy_container=None):
+            auth._spend_call(provider)
+            return AuthResult(provider, "authenticated", "t", "canned", "")
+
+        out = io.StringIO()
+        with mock.patch("asb.auth.verify_client", side_effect=fake_verify_client), \
+                mock.patch.object(
+                    auth.lifecycle, "names",
+                    return_value={"agent": "a", "proxy": "p"}), \
+                mock.patch("sys.stdout", out):
+            auth.verify("demo", "all", json_output=True)
+
+        self.assertEqual(
+            json.loads(out.getvalue())["callBudget"],
+            {"claude": 1, "codex": 1, "agy": 1})
+        auth.reset_call_budget()
+
     def test_verify_json_report_matches_status_schema(self):
-        def fake_verify_client(provider, container):
+        def fake_verify_client(provider, container, *, proxy_container=None):
             return AuthResult(provider, "unreachable", "2026-09-08T00:00:00Z",
                               "canned", "asb-agent doctor")
 
         out = io.StringIO()
         with mock.patch("asb.auth.verify_client", side_effect=fake_verify_client), \
                 mock.patch.object(auth.lifecycle, "names",
-                                  return_value={"agent": "asb-demo-agent"}), \
+                                  return_value={"agent": "asb-demo-agent",
+                                                "proxy": "asb-demo-proxy"}), \
                 mock.patch("sys.stdout", out):
             auth.verify("demo", "claude", json_output=True)
 
@@ -496,7 +618,8 @@ class TestVerifyCommand(unittest.TestCase):
                           return_value=AuthResult("claude", "authenticated",
                                                   "t", "x", "")), \
                 mock.patch.object(auth.lifecycle, "names",
-                                  return_value={"agent": "asb-demo-agent"}), \
+                                  return_value={"agent": "asb-demo-agent",
+                                                "proxy": "asb-demo-proxy"}), \
                 mock.patch("sys.stdout", io.StringIO()):
             auth.verify("demo", "claude", json_output=True)
         login.assert_not_called()
@@ -519,7 +642,7 @@ class TestVerifyCommand(unittest.TestCase):
             return AuthResult(provider, "unknown", "t",
                               f"saida nao reconhecida (codigo {returncode})", "")
 
-        def fake_verify_client(provider, container):
+        def fake_verify_client(provider, container, *, proxy_container=None):
             # Chama a implementacao REAL de classify_verification para provar
             # que ela, de fato, nunca ecoa o fixture na evidencia.
             return auth.classify_verification(
@@ -528,7 +651,8 @@ class TestVerifyCommand(unittest.TestCase):
         out = io.StringIO()
         with mock.patch("asb.auth.verify_client", side_effect=fake_verify_client), \
                 mock.patch.object(auth.lifecycle, "names",
-                                  return_value={"agent": "asb-demo-agent"}), \
+                                  return_value={"agent": "asb-demo-agent",
+                                                "proxy": "asb-demo-proxy"}), \
                 mock.patch("sys.stdout", out):
             auth.verify("demo", "all", json_output=True)
 
@@ -539,6 +663,96 @@ class TestVerifyCommand(unittest.TestCase):
         # tres resultados, nao um relatorio vazio que passaria por acidente.
         data = json.loads(rendered)
         self.assertEqual(len(data["results"]), 3)
+
+
+class TestLiveAuthDoubleOptIn(unittest.TestCase):
+    def test_env_alone_does_not_enable_live_tests_during_broad_discovery(self):
+        from tests.integration import test_provider_auth
+
+        self.assertFalse(test_provider_auth._live_auth_file_selected(
+            ["python3", "-m", "unittest", "discover", "-s", "tests/integration"]))
+
+    def test_exact_discovery_pattern_selects_the_live_file(self):
+        from tests.integration import test_provider_auth
+
+        self.assertTrue(test_provider_auth._live_auth_file_selected(
+            ["python3", "-m", "unittest", "discover", "-s", "tests/integration",
+             "-p", "test_provider_auth.py"]))
+
+    def test_explicit_file_path_selects_the_live_file(self):
+        from tests.integration import test_provider_auth
+
+        self.assertTrue(test_provider_auth._live_auth_file_selected(
+            ["tests/integration/test_provider_auth.py"]))
+
+    def test_live_auth_enabled_requires_environment_and_file_selection(self):
+        from tests.integration import test_provider_auth
+
+        selected = ["unittest", "discover", "-p", "test_provider_auth.py"]
+        broad = ["unittest", "discover", "-s", "tests/integration"]
+        with mock.patch.dict(os.environ, {"ASB_LIVE_AUTH": "1"}), \
+                mock.patch.object(sys, "argv", broad):
+            self.assertFalse(test_provider_auth._live_auth_enabled())
+        with mock.patch.dict(os.environ, {"ASB_LIVE_AUTH": "1"}), \
+                mock.patch.object(sys, "argv", selected):
+            self.assertTrue(test_provider_auth._live_auth_enabled())
+        with mock.patch.dict(os.environ, {}, clear=True), \
+                mock.patch.object(sys, "argv", selected):
+            self.assertFalse(test_provider_auth._live_auth_enabled())
+
+
+class TestAgentsBehindProxyExitStatus(unittest.TestCase):
+    def test_assertion_failure_remains_the_shell_suite_exit_status(self):
+        root = Path(__file__).resolve().parents[2]
+        with tempfile.TemporaryDirectory(
+                prefix="asb-test-auth-shell-") as tmp_name:
+            synthetic_root = Path(tmp_name)
+            (synthetic_root / "tests").mkdir()
+            (synthetic_root / "cli").mkdir()
+            bin_dir = synthetic_root / "bin"
+            bin_dir.mkdir()
+            shutil.copy2(root / "tests/assert.sh",
+                         synthetic_root / "tests/assert.sh")
+            shutil.copy2(root / "tests/test-agents-behind-proxy.sh",
+                         synthetic_root / "tests/test-agents-behind-proxy.sh")
+
+            asb_agent = synthetic_root / "cli/asb-agent"
+            asb_agent.write_text(
+                """#!/usr/bin/env bash
+case "$1" in
+  up) printf '%s\\n' '{"port":2222}' ;;
+  down) exit 0 ;;
+  auth) printf '%s\\n' '{"results":[{"provider":"claude","state":"authenticated","evidence":"synthetic"},{"provider":"codex","state":"authenticated","evidence":"synthetic"},{"provider":"agy","state":"authenticated","evidence":"synthetic"}]}' ;;
+esac
+""", encoding="utf-8")
+            asb_agent.chmod(0o755)
+
+            ssh = bin_dir / "ssh"
+            ssh.write_text(
+                """#!/usr/bin/env bash
+cmd="${!#}"
+case "$cmd" in
+  true) ;;
+  *'echo $HTTPS_PROXY'*) echo 'synthetic-wrong-proxy' ;;
+  *CLAUDE_CODE_SUBPROCESS_ENV_SCRUB*) echo '' ;;
+  *asb-claude*) echo 0 ;;
+  *'agy --version'*) echo '1.1.27' ;;
+  *keyrings*) echo 'secrets' ;;
+  *'npm ping'*) echo 'PONG' ;;
+  *'npm install'*) ;;
+  *'test -f'*) echo 'ok' ;;
+esac
+""", encoding="utf-8")
+            ssh.chmod(0o755)
+
+            env = os.environ.copy()
+            env["PATH"] = f"{bin_dir}:{env['PATH']}"
+            result = subprocess.run(
+                ["bash", str(synthetic_root / "tests/test-agents-behind-proxy.sh")],
+                capture_output=True, text=True, env=env, timeout=30)
+
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("FALHOU", result.stdout + result.stderr)
 
 
 if __name__ == "__main__":

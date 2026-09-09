@@ -53,8 +53,32 @@ def get_test_image() -> str:
     return IMAGE_NAME if res.returncode == 0 else ""
 
 
+def _live_auth_file_selected(argv: list[str] | None = None) -> bool:
+    """Exige selecao deliberada deste arquivo, nao apenas env herdado.
+
+    Aceita o padrao exato de `unittest discover -p` usado no runbook e a
+    selecao explicita pelo nome de modulo/arquivo. Descoberta ampla nunca
+    satisfaz este portao, mesmo com `ASB_LIVE_AUTH=1` esquecido no ambiente.
+    """
+    args = list(sys.argv if argv is None else argv)
+    for index, arg in enumerate(args):
+        if arg in ("-p", "--pattern") and index + 1 < len(args):
+            if args[index + 1] == "test_provider_auth.py":
+                return True
+        if arg in ("--pattern=test_provider_auth.py",
+                   "test_provider_auth.py",
+                   "tests.integration.test_provider_auth"):
+            return True
+        if Path(arg).name == "test_provider_auth.py":
+            return True
+        if arg.startswith("tests.integration.test_provider_auth."):
+            return True
+    return False
+
+
 def _live_auth_enabled() -> bool:
-    return os.environ.get("ASB_LIVE_AUTH") == "1"
+    return (os.environ.get("ASB_LIVE_AUTH") == "1"
+            and _live_auth_file_selected())
 
 
 class TestProviderClientPlumbing(unittest.TestCase):
@@ -94,10 +118,11 @@ class TestProviderClientPlumbing(unittest.TestCase):
             self.assertNotEqual(login_client, fresh_client)
 
     def test_rejects_unknown_provider(self):
-        with SandboxFixture("provclibad", image=IMAGE_NAME,
-                            auto_setup=False) as sandbox:
-            with self.assertRaises(ValueError):
-                sandbox.provider_client("gemini", fresh=True)
+        # A validacao acontece antes de qualquer acesso a estado da fixture;
+        # chamar o metodo real sem construir ambiente prova esse ramo sem
+        # criar volumes/containers e sem depender da imagem local.
+        with self.assertRaises(ValueError):
+            SandboxFixture.provider_client(None, "gemini", fresh=True)
 
     def test_provider_client_container_never_mounts_production_credentials(self):
         """Guarda de isolamento: os volumes NOMEADOS nos mounts sao SOMENTE
@@ -145,8 +170,9 @@ class TestProviderClientPlumbing(unittest.TestCase):
 
 @unittest.skipUnless(
     _live_auth_enabled(),
-    "chamada real ao fornecedor exige ASB_LIVE_AUTH=1 explicito; SKIP nao "
-    "e evidencia de aprovacao (ver task-A4-brief.md)")
+    "chamada real ao fornecedor exige selecao explicita de "
+    "test_provider_auth.py E ASB_LIVE_AUTH=1; SKIP nao e evidencia de "
+    "aprovacao (ver task-A4-brief.md)")
 class TestLiveProviderVerification(unittest.TestCase):
     """Chamadas REAIS via `auth.verify_client()`. So rodam com
     `ASB_LIVE_AUTH=1` E `ASB_LIVE_AUTH_WORKSPACE=<workspace ja autenticado>`
@@ -167,10 +193,12 @@ class TestLiveProviderVerification(unittest.TestCase):
         auth.reset_call_budget()
 
     def test_verify_client_makes_exactly_one_call_per_provider(self):
-        container = auth.lifecycle.names(self.ws)["agent"]
+        names = auth.lifecycle.names(self.ws)
+        container = names["agent"]
         for provider in ("claude", "codex", "agy"):
             with self.subTest(provider=provider):
-                result = auth.verify_client(provider, container)
+                result = auth.verify_client(
+                    provider, container, proxy_container=names["proxy"])
                 print(f"[piloto A4] {provider}: {result.state} "
                      f"({result.evidence})", file=sys.stderr)
                 spent = auth.call_budget().get(provider, 0)

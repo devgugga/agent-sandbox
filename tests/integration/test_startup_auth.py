@@ -179,6 +179,7 @@ class TestPilotIsolation(unittest.TestCase):
              "-v", "asb-credentials:/run/asb-credentials:ro", "agent-sandbox:latest"],
             ["podman", "run", "--name", f"{prefix}-keyring", "--network", "none",
              "-v", "/etc:/mnt:ro", "agent-sandbox:latest"],
+            ["podman", "pause", f"{prefix}-agent"],
             ["podman", "run", "--name", f"{prefix}-keyring", "--network", "none",
              "--mount", "type=volume,src=foreign-volume,dst=/run/asb-keyring", "agent-sandbox:latest"],
         ):
@@ -238,7 +239,7 @@ def pilot_cli(state: Path, args: list[str]) -> int:
 
     with contextlib.ExitStack() as stack:
         stack.enter_context(mock.patch.object(os.path, "expanduser", side_effect=lambda p: cfg["home"] if p == "~" else real_expanduser(p)))
-        stack.enter_context(mock.patch.object(readiness, "probe_host", side_effect=lambda **kw: real_host(cfg["host_target"], **kw)))
+        mock_host = stack.enter_context(mock.patch.object(readiness, "probe_host", side_effect=lambda **kw: real_host(cfg["host_target"], **kw)))
         mock_netns = stack.enter_context(mock.patch.object(lifecycle.podman, "ensure_rootless_netns"))
         stack.enter_context(mock.patch.object(lifecycle, "ensure_keyring_service", side_effect=ensure_then_fault))
         stack.enter_context(mock.patch.object(auth, "_verify_command", side_effect=synthetic_verify))
@@ -250,6 +251,7 @@ def pilot_cli(state: Path, args: list[str]) -> int:
         rc = runpy.run_path(str(ROOT / "cli/asb-agent"))["main"]()
         if "resume" in args:
             mock_netns.assert_called()
+            mock_host.assert_called()
         return rc
 
 
@@ -301,6 +303,12 @@ class Pilot(SandboxFixture):
             *mounts, self._image, check=True)
         self.control = socketserver.ThreadingTCPServer(("127.0.0.1", 0), socketserver.BaseRequestHandler)
         threading.Thread(target=self.control.serve_forever, daemon=True).start()
+        self.xdg_config = self.state_root / "xdg_config"
+        asb_cfg = self.xdg_config / "agent-sandbox"
+        asb_cfg.mkdir(parents=True)
+        (asb_cfg / "id_ed25519").write_bytes(self.ssh_key.read_bytes())
+        (asb_cfg / "id_ed25519").chmod(0o600)
+        (asb_cfg / "id_ed25519.pub").write_bytes(self.ssh_key.with_suffix(".pub").read_bytes())
         self.cli_env = {
             "ASB_CREDENTIALS_VOLUME": self.credentials_volume,
             "ASB_TOOLCACHE_VOLUME": self.toolcache_volume,
@@ -309,6 +317,7 @@ class Pilot(SandboxFixture):
             "ASB_KEYRING_DATA_VOLUME": self.keyring_data_volume,
             "ASB_KEYRING_PASS_FILE": str(self.passphrase_file),
             "ASB_CONFIG_ROOT": str(self.config_dir),
+            "XDG_CONFIG_HOME": str(self.xdg_config),
         }
         self.register_container(self.keyring_container)
         self.register_unit(self.unit)
@@ -373,9 +382,9 @@ class TestStartupAuth(unittest.TestCase):
         finally:
             # Deliberately AFTER __exit__, including failed-test paths.
             for command in (
-                ["podman", "ps", "-a", "--filter", f"name=^{sandbox._prefix}", "--format", "{{.Names}}"],
-                ["podman", "volume", "ls", "--filter", f"name=^{sandbox._prefix}", "--format", "{{.Name}}"],
-                ["podman", "network", "ls", "--filter", f"name=^{sandbox._prefix}", "--format", "{{.Name}}"],
+                ["podman", "ps", "-a", "--filter", f"name=^{sandbox._prefix}[.-]", "--format", "{{.Names}}"],
+                ["podman", "volume", "ls", "--filter", f"name=^{sandbox._prefix}[.-]", "--format", "{{.Name}}"],
+                ["podman", "network", "ls", "--filter", f"name=^{sandbox._prefix}[.-]", "--format", "{{.Name}}"],
             ):
                 self.assertEqual(run(*command, check=True).stdout.strip(), "", command)
             self.assertFalse(sandbox.state_root.exists())
@@ -444,8 +453,29 @@ class TestStartupAuth(unittest.TestCase):
             self.assertEqual(report["results"][0]["state"], "authenticated")
             self.assertEqual(sandbox.ssh("cat /tmp/t1-verify-attempts").stdout, "attempt\n")
 
-    def test_existing_transaction_rollback_preserves_real_resources(self):
-        with self.pilot("existing") as sandbox:
+    def test_up_refuses_existing_workspace_and_preserves_resources(self):
+        with self.pilot("upexist") as sandbox:
+            identity = sandbox.inspect_identity()
+            sandbox.trace.write_text("")
+            result = sandbox.cli("up", "--workspace", sandbox.workspace, "--repo", str(sandbox.worktree_dir))
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("workspace ja existe", result.stderr)
+            self.assert_preserved(sandbox, identity)
+            self.assertTrue(lifecycle.podman.exists("network", sandbox.net_internal))
+            self.assertTrue(lifecycle.podman.exists("volume", sandbox.credentials_volume))
+            commands = [json.loads(line) for line in sandbox.trace.read_text().splitlines()]
+            for cmd in commands:
+                self.assertNotIn("rm", cmd)
+                self.assertNotIn("kill", cmd)
+
+    def test_workspace_transaction_rollback_is_existing_defensive_contract(self):
+        """Defensive unit contract for WorkspaceTransaction(is_existing=True).
+
+        Production lifecycle.up() rejects existing workspaces before creating
+        a transaction; this test verifies the transaction helper's internal safety
+        contract directly when is_existing is True.
+        """
+        with self.pilot("txdef") as sandbox:
             identity = sandbox.inspect_identity()
             tx = lifecycle.WorkspaceTransaction(sandbox.workspace, is_existing=lifecycle.podman.exists("container", sandbox.container))
             self.assertTrue(tx.is_existing)
@@ -494,6 +524,30 @@ class TestStartupAuth(unittest.TestCase):
             self.assertTrue(report["connection"]["target"]["identitiesOnly"])
             self.assertEqual(report["connection"]["target"]["username"], getpass.getuser())
             self.assertNotIn("pairingCode", report)
+
+            # Assert identityFile belongs to isolated pilot root and not production config
+            target = report["connection"]["target"]
+            expected_key = sandbox.xdg_config / "agent-sandbox/id_ed25519"
+            self.assertEqual(target["identityFile"], str(expected_key))
+            self.assertTrue(Path(target["identityFile"]).is_relative_to(sandbox.state_root))
+            self.assertFalse(Path(target["identityFile"]).is_relative_to(Path.home() / ".config"))
+
+            # Execute real OpenSSH command using ONLY the connection fields from the emitted JSON
+            ssh_result = run(
+                "ssh",
+                "-p", str(target["port"]),
+                "-i", target["identityFile"],
+                "-o", f"IdentitiesOnly={'yes' if target['identitiesOnly'] else 'no'}",
+                "-o", "BatchMode=yes",
+                "-o", "StrictHostKeyChecking=no",
+                "-o", "UserKnownHostsFile=/dev/null",
+                "-o", "LogLevel=ERROR",
+                f"{target['username']}@{target['host']}",
+                "printf 'SSH_FROM_RECIPE_JSON\\n'",
+            )
+            self.assertEqual(ssh_result.returncode, 0, ssh_result.stderr)
+            self.assertEqual(ssh_result.stdout, "SSH_FROM_RECIPE_JSON\n")
+
             sandbox.break_proxy(403)
             failed = run("bash", str(recipe_root / "recipes/resume.sh"), input=payload,
                          env={**os.environ, **sandbox.cli_env})

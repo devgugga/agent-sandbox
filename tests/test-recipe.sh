@@ -135,12 +135,12 @@ elif cmd == "resume":
     if not ws.startswith("test-"):
         sys.stderr.write(f"asb-agent stub: workspace {ws} must start with test-\n")
         sys.exit(2)
-    if os.environ.get("STUB_FAIL_RESUME") == "1":
-        sys.stderr.write("asb-agent: falha simulada no resume\n")
-        sys.exit(1)
     if ws not in state["workspaces"]:
         sys.stderr.write(f"asb-agent: workspace {ws} not found\n")
         sys.exit(2)
+    if os.environ.get("STUB_FAIL_RESUME") == "1":
+        sys.stderr.write("asb-agent: falha simulada no resume\n")
+        sys.exit(1)
     entry = state["workspaces"][ws]
     entry["status"] = "running"
     state_file.write_text(json.dumps(state))
@@ -169,6 +169,8 @@ chmod 0755 "$STAGE/cli/asb-agent"
 
 # 1. create emite exatamente uma linha JSON schema 1 e carrega port/projectRoot do CLI
 out=$(ORCA_WORKSPACE_ID="test-recipe-ws" "$STAGE/recipes/create.sh" "$STAGE/repo" 2>/dev/null)
+rc_create=$?
+assert_eq "0" "$rc_create" "create com sucesso retorna codigo 0"
 assert_eq "1" "$(echo "$out" | wc -l)" "create emite exatamente UMA linha"
 echo "$out" | jq -e . >/dev/null && { echo "  ok: create emite JSON valido"; _pass=$((_pass+1)); } || { echo "  FALHOU: JSON invalido"; _fail=$((_fail+1)); }
 assert_eq "1" "$(echo "$out" | jq -r .schemaVersion)" "create schemaVersion 1"
@@ -186,8 +188,20 @@ printf '%s' "$payload" | "$STAGE/recipes/suspend.sh" "$STAGE/repo" >/dev/null 2>
 assert_eq "stopped" "$(jq -r '.workspaces["test-recipe-ws"].status' "$STAGE/state.json")" \
   "suspend muda o estado isolado para parado"
 
-# 3. resume restaura o estado para running, preserva a mesma porta e emite uma linha
-rout=$(printf '%s' "$payload" | "$STAGE/recipes/resume.sh" "$STAGE/repo" 2>/dev/null)
+# 3. falha simulada do CLI em resume com workspace existente
+fout_resume_fail=$(printf '%s' "$payload" | env STUB_FAIL_RESUME=1 "$STAGE/recipes/resume.sh" "$STAGE/repo" 2>"$STAGE/stderr_resume_fail")
+rc_resume_fail=$?
+assert_eq "1" "$rc_resume_fail" "resume com falha no CLI retorna codigo 1"
+assert_eq "" "$fout_resume_fail" "resume com falha no CLI nao emite JSON de conexao"
+assert_contains "asb-agent: falha simulada no resume" "$(cat "$STAGE/stderr_resume_fail")" \
+  "resume com falha no CLI reporta erro especifico no stderr"
+assert_eq "stopped" "$(jq -r '.workspaces["test-recipe-ws"].status' "$STAGE/state.json")" \
+  "falha de resume nao altera estado do workspace (permanece stopped)"
+
+# 4. resume saudavel restaura o estado para running, preserva a mesma porta e emite uma linha
+rout=$(printf '%s' "$payload" | "$STAGE/recipes/resume.sh" "$STAGE/repo" 2>"$STAGE/stderr_resume")
+rc_resume=$?
+assert_eq "0" "$rc_resume" "resume saudavel retorna codigo 0"
 assert_eq "1" "$(echo "$rout" | wc -l)" "resume emite exatamente UMA linha"
 assert_eq "running" "$(jq -r '.workspaces["test-recipe-ws"].status' "$STAGE/state.json")" \
   "resume restaura o estado para running"
@@ -196,19 +210,22 @@ assert_eq "$(echo "$out" | jq -r .connection.target.port)" "$(echo "$rout" | jq 
 assert_eq "$STAGE/repo" "$(echo "$rout" | jq -r .connection.projectRoot)" \
   "resume preserva projectRoot vindo do CLI"
 
-# 4. destroy lê recipeResult.userData.workspace, remove o estado e não deixa órfãos
+# 5. destroy le recipeResult.userData.workspace, remove o estado e nao deixa orfaos
 printf '%s' "$payload" | "$STAGE/recipes/destroy.sh" "$STAGE/repo" >/dev/null 2>&1
 assert_eq "null" "$(jq -r '.workspaces["test-recipe-ws"]' "$STAGE/state.json")" \
   "destroy remove o workspace do estado"
 assert_eq "0" "$(jq '.workspaces | length' "$STAGE/state.json")" \
   "destroy nao deixa orfaos no estado"
 
-# 5. falha do CLI em create/resume não emite JSON de conexão
-fout_up=$(STUB_FAIL_UP=1 ORCA_WORKSPACE_ID="test-fail-ws" "$STAGE/recipes/create.sh" "$STAGE/repo" 2>/dev/null || true)
+# 6. falha simulada do CLI em create nao emite JSON e nao cria workspace no estado
+fout_up=$(STUB_FAIL_UP=1 ORCA_WORKSPACE_ID="test-fail-ws" "$STAGE/recipes/create.sh" "$STAGE/repo" 2>"$STAGE/stderr_up")
+rc_up=$?
+assert_eq "1" "$rc_up" "create com falha no CLI retorna codigo 1"
 assert_eq "" "$fout_up" "create com falha no CLI nao emite JSON de conexao"
-
-fout_resume=$(STUB_FAIL_RESUME=1 printf '%s' "$payload" | "$STAGE/recipes/resume.sh" "$STAGE/repo" 2>/dev/null || true)
-assert_eq "" "$fout_resume" "resume com falha no CLI nao emite JSON de conexao"
+assert_contains "asb-agent: falha simulada no up" "$(cat "$STAGE/stderr_up")" \
+  "create com falha no CLI reporta erro especifico no stderr"
+assert_eq "null" "$(jq -r '.workspaces["test-fail-ws"]' "$STAGE/state.json")" \
+  "create com falha nao grava workspace no estado"
 
 # O piloto integrado executa o resume de producao com CLI, SSH e systemd
 # reais, incluindo falha sem JSON e teardown. Todos os recursos pertencem a

@@ -33,6 +33,8 @@ asb_workspace_id() {
 
 # Resultado que o Orca consome. create e resume emitem a MESMA forma: o resume
 # tambem devolve a conexao, porque a porta pode ter mudado.
+# Os chamadores extraem port/project_root do stdout JSON do CLI somente
+# apos retorno zero; este helper adapta o schema, nao verifica prontidao.
 asb_recipe_json() {
   local ws="$1" port="$2" project_root="$3"
   local key="${XDG_CONFIG_HOME:-$HOME/.config}/agent-sandbox/id_ed25519"

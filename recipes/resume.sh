@@ -4,8 +4,10 @@
 #
 # ATENCAO: isto NAO cobre o reboot da maquina. O Orca guarda o runtime como
 # "running" no registro dele e, depois de religar, so disca na porta que ja
-# tinha — sem chamar resume. Quem cobre o reboot e a unidade de usuario do
-# systemd: `podman-restart.service` (habilitado via `asb-agent doctor`).
+# tinha — sem chamar resume. A recuperacao apos reboot depende do backend
+# gravado no manifesto: target do workspace em systemd ou podman-restart no
+# legado. O CLI so publica port/project_root depois do gate de prontidao;
+# seu retorno nao zero interrompe este hook antes de emitir conexao Orca.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$ROOT/recipes/common.sh"

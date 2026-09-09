@@ -435,6 +435,31 @@ class TestVerifyClientAgy(_SSHInfraCase):
             network_ok=True)
         self.assertEqual(result.state, "unknown")
 
+    def test_agy_tokenized_error_names_are_not_model_identifiers(self):
+        outputs = (
+            "gemini-unavailable\nclaude-unavailable",
+            "error:gemini\nerror:claude",
+        )
+        for output in outputs:
+            with self.subTest(output=output):
+                result = auth.classify_verification(
+                    "agy", 0, output, network_ok=True)
+                self.assertEqual(result.state, "unknown")
+
+    def test_versioned_identifiers_without_known_family_are_unknown(self):
+        result = auth.classify_verification(
+            "agy", 0,
+            "modelo-2.5-valido\noutro-modelo-1.0",
+            network_ok=True)
+        self.assertEqual(result.state, "unknown")
+
+    def test_versioned_known_model_identifiers_remain_authenticated(self):
+        result = auth.classify_verification(
+            "agy", 0,
+            "gemini-2.5-pro\nclaude-4-sonnet",
+            network_ok=True)
+        self.assertEqual(result.state, "authenticated")
+
 
 class TestVerifyClientFormatEvidence(_SSHInfraCase):
     """Evidencia de sucesso exige resposta no formato solicitado, nao um
@@ -979,6 +1004,28 @@ class TestLiveAuthDoubleOptIn(unittest.TestCase):
             with mock.patch.dict(os.environ, {"ASB_LIVE_AUTH": "0"}), \
                     mock.patch.object(sys, "argv", broad):
                 importlib.reload(test_provider_auth)
+
+    def test_real_class_decorator_allows_explicit_double_opt_in(self):
+        from tests.integration import test_provider_auth
+
+        selected = [
+            "unittest", "discover", "-s", "tests/integration",
+            "-p", "test_provider_auth.py",
+        ]
+        blocked = ["unittest", "discover", "-s", "tests/integration"]
+        try:
+            with mock.patch.dict(os.environ, {"ASB_LIVE_AUTH": "1"}), \
+                    mock.patch.object(sys, "argv", selected):
+                module = importlib.reload(test_provider_auth)
+                self.assertFalse(
+                    getattr(module.TestLiveProviderVerification,
+                            "__unittest_skip__", False))
+        finally:
+            with mock.patch.dict(os.environ, {"ASB_LIVE_AUTH": "0"}), \
+                    mock.patch.object(sys, "argv", blocked):
+                module = importlib.reload(test_provider_auth)
+                self.assertTrue(
+                    module.TestLiveProviderVerification.__unittest_skip__)
 
 
 class TestAgentsBehindProxyExitStatus(unittest.TestCase):

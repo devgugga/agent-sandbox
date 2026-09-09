@@ -789,7 +789,8 @@ _AUTH_EVIDENCE_MARKERS: dict[str, tuple[str, ...]] = {
 # contem familias Gemini/Claude/GPT/Flash/Sonnet/Opus. A saida bruta nao foi
 # preservada, portanto nao inventamos colunas ou headers. Este guarda falha
 # fechado: cada linha precisa ter a forma conservadora de um IDENTIFICADOR
-# (um token com separador de versao/variante) e conter uma familia conhecida.
+# (um token com separador), conter uma familia conhecida e ao menos um
+# componente numerico de versao/modelo.
 # Prosa que apenas menciona modelos vira `unknown`, assim como qualquer formato
 # futuro diferente — falso negativo seguro em vez de falso `authenticated`.
 _AGY_MODEL_FAMILY = re.compile(
@@ -797,6 +798,8 @@ _AGY_MODEL_FAMILY = re.compile(
     re.IGNORECASE)
 _AGY_MODEL_IDENTIFIER = re.compile(
     r"[a-z0-9]+(?:[._:/-][a-z0-9]+)+", re.IGNORECASE)
+_AGY_MODEL_NUMBER = re.compile(r"(?<![a-z0-9])\d+(?![a-z0-9])",
+                               re.IGNORECASE)
 
 
 def _agy_models_output_valid(output: str) -> bool:
@@ -805,6 +808,7 @@ def _agy_models_output_valid(output: str) -> bool:
     return len(lines) >= 2 and all(
         _AGY_MODEL_IDENTIFIER.fullmatch(line)
         and _AGY_MODEL_FAMILY.search(line)
+        and _AGY_MODEL_NUMBER.search(line)
         for line in lines)
 
 
@@ -933,12 +937,11 @@ def verify_client(provider: str, container: str, *,
     consumidores antigos; nesse fallback, a derivacao legada fica isolada
     aqui e nao e usada pelo caminho top-level.
 
-    Orcamento: no maximo uma chamada por fornecedor por invocacao, sem
-    retry. Duas checagens de infraestrutura rodam ANTES e podem devolver um
-    resultado sem gastar orcamento algum: o container tem de estar rodando,
-    e o proxy do workspace tem de estar alcancavel. Falhar qualquer uma
-    delas e sempre `unreachable`, nunca `unauthenticated` — rede ruim nao
-    pode virar logout.
+    Orcamento: no maximo uma chamada por fornecedor por invocacao, sem retry.
+    Quatro etapas de infraestrutura rodam ANTES e podem devolver um resultado
+    sem gastar orcamento: container em execucao, proxy alcancavel, porta/chave
+    SSH existentes e gate do transporte. Falhar qualquer uma delas e sempre
+    infraestrutura, nunca `unauthenticated` — rede ruim nao pode virar logout.
     """
     if provider not in _INDIVIDUAL_PROVIDERS:
         raise ValueError(

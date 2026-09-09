@@ -135,12 +135,12 @@ elif cmd == "resume":
     if not ws.startswith("test-"):
         sys.stderr.write(f"asb-agent stub: workspace {ws} must start with test-\n")
         sys.exit(2)
-    if ws not in state["workspaces"]:
-        sys.stderr.write(f"asb-agent: workspace {ws} not found\n")
-        sys.exit(2)
     if os.environ.get("STUB_FAIL_RESUME") == "1":
         sys.stderr.write("asb-agent: falha simulada no resume\n")
         sys.exit(1)
+    if ws not in state["workspaces"]:
+        sys.stderr.write(f"asb-agent: workspace {ws} not found\n")
+        sys.exit(2)
     entry = state["workspaces"][ws]
     entry["status"] = "running"
     state_file.write_text(json.dumps(state))

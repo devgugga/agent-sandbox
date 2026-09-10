@@ -68,6 +68,60 @@ def podman_restart() -> int:
     return 0
 
 
+def get_dropin_path(target_dir: Path | None = None) -> Path:
+    """Retorna o caminho do drop-in do podman-restart.service."""
+    base = target_dir if target_dir is not None else (Path.home() / ".config" / "systemd" / "user")
+    return base / "podman-restart.service.d" / "agent-sandbox.conf"
+
+
+def check_project_dropin(target_dir: Path | None = None) -> tuple[bool, bool]:
+    """Retorna (existe, pertence_ao_projeto)."""
+    dropin = get_dropin_path(target_dir)
+    if not dropin.is_file():
+        return False, False
+    try:
+        content = dropin.read_text(encoding="utf-8")
+        is_ours = "unshare --rootless-netns" in content
+        return True, is_ours
+    except Exception:
+        return True, False
+
+
+def remove_project_dropin(target_dir: Path | None = None) -> bool:
+    """Remove o drop-in legado apenas se pertencer ao projeto.
+
+    Preserva arquivos e configuracoes alheias. Nao desabilita o
+    podman-restart.service globalmente.
+    """
+    exists, is_ours = check_project_dropin(target_dir)
+    if not exists or not is_ours:
+        return False
+    dropin = get_dropin_path(target_dir)
+    dropin.unlink()
+    parent = dropin.parent
+    try:
+        if parent.is_dir() and not any(parent.iterdir()):
+            parent.rmdir()
+    except Exception:
+        pass
+    subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
+    return True
+
+
+def restore_project_dropin(target_dir: Path | None = None) -> bool:
+    """Restaura o drop-in do projeto caso tenha sido removido."""
+    podman_bin = shutil.which("podman") or "/usr/bin/podman"
+    true_bin = shutil.which("true") or "/usr/bin/true"
+    dropin = get_dropin_path(target_dir)
+    dropin.parent.mkdir(parents=True, exist_ok=True)
+    dropin.write_text(
+        f"[Service]\nExecStartPre={podman_bin} unshare --rootless-netns {true_bin}\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
+    return True
+
+
 def _link(link: Path, dest: Path) -> None:
     """Symlink para o checkout, nunca copia: uma copia envelhece em silencio e
     o agente passa a se comportar diferente do que este repositorio diz."""

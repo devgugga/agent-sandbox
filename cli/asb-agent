@@ -7,13 +7,14 @@ Este arquivo faz APENAS parsing e despacho; toda a logica vive em cli/asb/.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from asb import install, lifecycle  # noqa: E402
+from asb import install, lifecycle, supervisor  # noqa: E402
 from asb.auth import login as auth_login  # noqa: E402
 from asb.auth import status as auth_status  # noqa: E402
 from asb.auth import verify as auth_verify  # noqa: E402
@@ -88,6 +89,28 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("list", help="lista os workspaces conhecidos")
     sub.add_parser("install-guards", help="instala asb-claude/codex/agy")
     sub.add_parser("install-broker", help="instala o broker do Docker (sudo)")
+
+    adopt_parser = sub.add_parser(
+        "adopt-runtime", help="adota supervisao systemd sem recriar containers")
+    adopt_target = adopt_parser.add_mutually_exclusive_group(required=True)
+    adopt_target.add_argument("--workspace", help="ID do workspace a adotar")
+    adopt_target.add_argument("--keyring", action="store_true", help="adotar servico singleton de keyring")
+    adopt_parser.add_argument(
+        "--apply", action="store_true",
+        help="aplica alteracoes (default: inventario/dry-run)")
+    adopt_parser.add_argument(
+        "--json", action="store_true", dest="as_json",
+        help="emite resultado em formato JSON")
+
+    rollback_parser = sub.add_parser(
+        "rollback-runtime", help="reverte supervisao systemd para legado sem recriar containers")
+    rollback_target = rollback_parser.add_mutually_exclusive_group(required=True)
+    rollback_target.add_argument("--workspace", help="ID do workspace a reverter")
+    rollback_target.add_argument("--keyring", action="store_true", help="reverter servico singleton de keyring")
+    rollback_parser.add_argument(
+        "--json", action="store_true", dest="as_json",
+        help="emite resultado em formato JSON")
+
     return parser
 
 
@@ -132,6 +155,29 @@ def main() -> int:
             return install.guards(ROOT)
         if args.command == "install-broker":
             return install.broker(ROOT)
+        if args.command == "adopt-runtime":
+            if getattr(args, "workspace", None):
+                res = supervisor.adopt_workspace(args.workspace, apply=args.apply)
+            elif getattr(args, "keyring", False):
+                res = supervisor.adopt_keyring(apply=args.apply)
+            else:
+                print("asb-agent: especifique --workspace ID ou --keyring", file=sys.stderr)
+                return 2
+            print(json.dumps(res, indent=2))
+            return 0
+        if args.command == "rollback-runtime":
+            if getattr(args, "workspace", None):
+                res = supervisor.rollback_workspace(args.workspace)
+            elif getattr(args, "keyring", False):
+                res = supervisor.rollback_keyring()
+            else:
+                print("asb-agent: especifique --workspace ID ou --keyring", file=sys.stderr)
+                return 2
+            print(json.dumps(res, indent=2))
+            return 0
+    except (ValueError, FileNotFoundError, RuntimeError) as error:
+        print(f"asb-agent: {error}", file=sys.stderr)
+        return 2
     except PodmanError as error:
         # 2, e nao 1: em todo este CLI 1 significa "conta ausente" e 2
         # significa "infraestrutura", com 2 tendo precedencia (asb-agent auth

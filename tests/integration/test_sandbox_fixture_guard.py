@@ -45,12 +45,15 @@ def _podman_names(kind: str) -> set[str]:
 class TestSandboxFixtureEnterGuard(unittest.TestCase):
     def test_enter_failure_leaves_no_asb_test_resource_behind(self):
         fixture = SandboxFixture("enterguard", image=MISSING_IMAGE)
-        volumes = {
+        created = {
             fixture.credentials_volume,
             fixture.toolcache_volume,
             fixture.keyring_runtime_volume,
             fixture.keyring_data_volume,
         }
+        # O volume de sessao e registrado sem ser criado: quem o cria e
+        # `lifecycle.ensure_session_volume`, na primeira subida real.
+        volumes = created | {fixture.session_volume}
         container = fixture.container
         state_root = fixture.state_root
         self.assertTrue(state_root.is_dir())
@@ -64,7 +67,7 @@ class TestSandboxFixtureEnterGuard(unittest.TestCase):
         # setup_environment de fato os criou antes da falha).
         self.assertEqual(fixture._registered_volumes, volumes)
 
-        surviving_volumes = volumes & _podman_names("volume")
+        surviving_volumes = created & _podman_names("volume")
         self.assertEqual(
             surviving_volumes, set(),
             f"volumes asb-test- vazados apos falha de setup: "
@@ -74,6 +77,34 @@ class TestSandboxFixtureEnterGuard(unittest.TestCase):
         self.assertFalse(
             state_root.exists(),
             f"diretorio de estado temporario vazado: {state_root}")
+
+
+
+@unittest.skipUnless(PODMAN, "podman nao encontrado no PATH")
+class TestSessionVolumeTeardown(unittest.TestCase):
+    """O volume de sessao e criado por `lifecycle`, nao pela fixture.
+
+    Por nao estar registrado, o teardown nao sabia da existencia dele, e cada
+    execucao de `test_workspace_supervision.py` deixava um
+    `asb-test-<label>-<uid>-session` na maquina do operador. Era o unico desvio
+    do criterio "zero recursos residuais `asb-test-*`" que o gate r13 apontou:
+    tres volumes acumulados numa sessao.
+    """
+
+    def test_volume_created_by_lifecycle_is_removed_by_teardown(self):
+        fixture = SandboxFixture("sessionvol", auto_setup=False)
+        session = fixture.session_volume
+        self.assertIn(session, fixture._registered_volumes)
+        with fixture:
+            # Exatamente o que `lifecycle.ensure_session_volume` faz na
+            # primeira subida: cria o volume pelo nome canonico, fora do
+            # controle da fixture.
+            subprocess.run([PODMAN, "volume", "create", session],
+                           check=True, capture_output=True, text=True)
+            self.assertIn(session, _podman_names("volume"))
+        self.assertNotIn(session, _podman_names("volume"),
+                         f"volume de sessao vazado apos teardown: {session}")
+
 
 
 if __name__ == "__main__":

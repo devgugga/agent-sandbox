@@ -35,10 +35,10 @@ KEYRING_PASS = CONFIG / "keyring.pass"
 KEYRING_SCHEMA = "2"
 
 
-def _inspect_keyring_container(container: str) -> tuple[str, dict[str, dict[str, object]]]:
+def _inspect_keyring_container(container: str, timeout: float | None = None) -> tuple[str, dict[str, dict[str, object]]]:
     """Retorna o schema e os mounts reais do singleton, indexados por destino."""
     try:
-        raw = podman.out("container", "inspect", container, "--format", "{{json .}}")
+        raw = podman.out("container", "inspect", container, "--format", "{{json .}}", timeout=timeout)
         data = json.loads(raw)
         if not isinstance(data, dict):
             raise ValueError("inspect nao retornou um objeto JSON")
@@ -96,6 +96,7 @@ def _keyring_mount_contract_issue(mounts: dict[str, dict[str, object]]) -> str:
         return "mount /run/asb-keyring-pass aponta para origem inesperada"
     if pass_mount.get("rw") is not False:
         return "mount /run/asb-keyring-pass deve ser somente leitura"
+
     return ""
 
 
@@ -131,7 +132,7 @@ def ensure_keyring_data_volume() -> str:
     return vol
 
 
-def check_keyring_service(container: str | None = None) -> tuple[bool, str, str]:
+def check_keyring_service(container: str | None = None, timeout: float | None = None) -> tuple[bool, str, str]:
     """Verifica a saude do servico de keyring singleton sem mutacao.
 
     Distingue:
@@ -159,15 +160,15 @@ def check_keyring_service(container: str | None = None) -> tuple[bool, str, str]
                 "automaticamente ao preparar um workspace")
 
     try:
-        if not podman.exists("container", name):
+        if not podman.exists("container", name, timeout=timeout):
             return (False, f"container {name}",
                     "prepare um workspace para criar o container "
                     "automaticamente, ou verifique 'asb-agent doctor'")
-        if not podman.running(name):
+        if not podman.running(name, timeout=timeout):
             return (False, f"{name} parado",
                     f"reinicie o container: podman start {name}")
 
-        schema, mounts = _inspect_keyring_container(name)
+        schema, mounts = _inspect_keyring_container(name, timeout=timeout)
         if schema != KEYRING_SCHEMA:
             return (False, f"schema do Secret Service ({name}) desatualizado ({schema or 'legado'})",
                     f"recrie o container: podman rm -f {name} "
@@ -183,6 +184,7 @@ def check_keyring_service(container: str | None = None) -> tuple[bool, str, str]
             "exec", "-u", "1000", name,
             "test", "-S", KEYRING_BUS,
             check=False,
+            timeout=timeout,
         )
         sock_rc = getattr(sock_check, "returncode", 1) if sock_check is not None else 1
         if sock_rc != 0:
@@ -199,6 +201,7 @@ def check_keyring_service(container: str | None = None) -> tuple[bool, str, str]
             "org.freedesktop.DBus.GetNameOwner",
             "string:org.freedesktop.secrets",
             check=False,
+            timeout=timeout,
         )
         secrets_rc = getattr(secrets_check, "returncode", 1) if secrets_check is not None else 1
         if secrets_rc != 0:
@@ -215,7 +218,8 @@ def check_keyring_service(container: str | None = None) -> tuple[bool, str, str]
 def _wait_for_keyring_readiness(container: str, timeout: float = 5.0) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() <= deadline:
-        ok, _, _ = check_keyring_service(container)
+        remaining = max(0.1, deadline - time.monotonic())
+        ok, _, _ = check_keyring_service(container, timeout=min(1.0, remaining))
         if ok:
             return True
         time.sleep(0.05)

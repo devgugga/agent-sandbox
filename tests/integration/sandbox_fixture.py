@@ -63,6 +63,10 @@ class SandboxFixture:
         self.toolcache_volume = f"{self._prefix}-toolcache"
         self.keyring_runtime_volume = f"{self._prefix}-keyring-runtime"
         self.keyring_data_volume = f"{self._prefix}-keyring-data"
+        # `lifecycle.ensure_session_volume` cria este volume sob demanda, na
+        # primeira subida real do workspace. A fixture nao o cria; registra-o
+        # para que o teardown o remova e o `assert_no_orphans` o cubra.
+        self.session_volume = f"{self._prefix}-session"
         self.keyring_container = f"{self._prefix}-keyring"
         self.net_internal = f"{self._prefix}-net"
         self.net_out = f"{self._prefix}-out"
@@ -76,6 +80,14 @@ class SandboxFixture:
         self.use_launcher = use_launcher
         self._auto_setup = auto_setup
         self._extra_create_args = list(extra_create_args) if extra_create_args else []
+        # Comando do container sintetico. Um cenario que precisa do entrypoint
+        # real da imagem (sshd, para a sonda de prontidao) troca isto por [].
+        self._entrypoint_cmd: list[str] = [
+            "sh", "-c", "trap 'exit 0' TERM INT; while :; do sleep 0.5 & wait $!; done",
+        ]
+        # Caminho da sentinela na camada gravavel. Sob o entrypoint real a
+        # imagem roda como uid 1000, que nao escreve na raiz.
+        self._sentinel_path = "/sentinel.txt"
 
         # Resolved podman binary
         self._podman_bin = shutil.which("podman")
@@ -113,6 +125,23 @@ class SandboxFixture:
         self._registered_units: set[str] = set()
         self._registered_paths: set[Path] = set([self.state_root])
 
+        # Pre-register all isolated units for this workspace and keyring
+        self._registered_units.add(self.unit)
+        self._registered_units.add(self.forwarder_unit)
+        self._registered_units.add(f"asb-{self.workspace}.target")
+        self._registered_units.add(f"asb-{self.workspace}-agent.service")
+        self._registered_units.add(f"asb-{self.workspace}-proxy.service")
+        self._registered_units.add(f"asb-{self.workspace}-forwarder.service")
+        self._registered_units.add(f"asb-{self.workspace}-docker.service")
+        self._registered_units.add(f"{self._prefix}-keyring.service")
+
+        # Volume criado por `lifecycle`, nao pela fixture: sem este registro o
+        # teardown nao sabia da existencia dele e cada execucao de
+        # `test_workspace_supervision.py` deixava um `*-session` para tras —
+        # o desvio do criterio "zero recursos residuais asb-test-*" que o gate
+        # r13 apontou. Registrar nao cria: `_remove_podman` no-opa se ausente.
+        self._registered_volumes.add(self.session_volume)
+
         self._proxy_broken = False
         self._cleaned_up = False
         # Cliente NAO-fresco por fornecedor (Tarefa A4): `provider_client`
@@ -145,7 +174,7 @@ class SandboxFixture:
             raise IsolationError(
                 f"Recurso {name!r} recusado: deve iniciar com 'asb-test-'"
             )
-        if not name.startswith(self._prefix):
+        if not (name == self._prefix or name.startswith(f"{self._prefix}-") or name.startswith(f"{self._prefix}.")):
             raise IsolationError(
                 f"Recurso {name!r} recusado: fora do escopo desta fixture '{self._prefix}'"
             )
@@ -243,9 +272,7 @@ class SandboxFixture:
             f"127.0.0.1::{self._port}",
             *self._extra_create_args,
             self._image,
-            "sh",
-            "-c",
-            "trap 'exit 0' TERM INT; while :; do sleep 0.5 & wait $!; done",
+            *self._entrypoint_cmd,
         ]
         subprocess.run(cmd, check=True, capture_output=True, text=True)
 
@@ -423,7 +450,7 @@ class SandboxFixture:
                 self.container,
                 "sh",
                 "-c",
-                f"echo '{content.strip()}' > /sentinel.txt",
+                f"echo '{content.strip()}' > {self._sentinel_path}",
             ],
             check=True,
             capture_output=True,
@@ -433,11 +460,17 @@ class SandboxFixture:
     def sentinel_exists(self) -> bool:
         """Checks if the sentinel file exists inside the container."""
         res = subprocess.run(
-            [self._podman_bin, "exec", self.container, "test", "-f", "/sentinel.txt"],
+            [self._podman_bin, "exec", self.container, "test", "-f", self._sentinel_path],
             capture_output=True,
             text=True,
         )
-        return res.returncode == 0
+        if res.returncode == 0:
+            return True
+        if res.returncode == 1:
+            return False
+        raise RuntimeError(
+            f"podman exec test -f {self._sentinel_path} falhou com codigo {res.returncode}: {res.stderr.strip()}"
+        )
 
     def exec(
         self,
@@ -721,84 +754,182 @@ class SandboxFixture:
             text=True,
         )
 
-    def assert_no_orphans(self) -> None:
-        """Verifies that no running container or orphan processes remain."""
-        if self.is_container_running():
-            raise AssertionError(f"Container {self.container} ainda está em execução")
-        res_pgrep = subprocess.run(
-            ["pgrep", "-f", f"podman.*{self.container}"],
-            capture_output=True,
-            text=True,
-        )
-        if res_pgrep.stdout.strip():
-            raise AssertionError(
-                f"Processos órfãos encontrados para {self.container}: {res_pgrep.stdout.strip()}"
-            )
+    # Mesma tabela estrita do supervisor (a fixture nao importa `asb`): pares
+    # (exit code, stdout) aceitos; qualquer outro par ou stderr falha fechado.
+    _UNIT_ENABLED_STATES = frozenset({
+        (0, "enabled"), (0, "enabled-runtime"), (0, "static"), (1, "disabled"), (4, "not-found"),
+    })
+    # (4, "failed"): o arquivo da unit sumiu (ex.: `down`), mas o manager ainda
+    # guarda o service como failed ate um reset-failed.
+    _UNIT_ACTIVE_STATES = frozenset({
+        (0, "active"), (3, "inactive"), (3, "failed"), (4, "inactive"), (4, "failed"),
+        (3, "activating"), (3, "deactivating"), (0, "reloading"),
+    })
+
+    def _unit_state(self, unit: str) -> tuple[str, str]:
+        """(is-enabled, is-active) da unit no manager, independente de arquivo local."""
+        states = []
+        for verb, table in (("is-enabled", self._UNIT_ENABLED_STATES), ("is-active", self._UNIT_ACTIVE_STATES)):
+            res = subprocess.run(["systemctl", "--user", verb, unit], capture_output=True, text=True)
+            out, err = res.stdout.strip(), res.stderr.strip()
+            if err or (res.returncode, out) not in table:
+                raise IsolationError(
+                    f"{verb} {unit}: estado nao suportado (rc={res.returncode}, stdout={out!r}, stderr={err!r})")
+            states.append(out)
+        return states[0], states[1]
+
+    def _systemctl_ok(self, *args: str) -> None:
+        res = subprocess.run(["systemctl", "--user", *args], capture_output=True, text=True)
+        if res.returncode != 0:
+            raise IsolationError(
+                f"systemctl --user {' '.join(args)} falhou (rc={res.returncode}): "
+                f"{res.stderr.strip() or res.stdout.strip()}")
+
+    def _quiesce_unit(self, unit: str) -> None:
+        """Para e desabilita (persistente e runtime) consultando o estado antes de cada comando.
+
+        So se emite o comando que o estado exige; entao qualquer rc != 0 e
+        falha — nenhum codigo ou mensagem de "ausente" e tolerado.
+        """
+        for _ in range(5):
+            enabled, active = self._unit_state(unit)
+            if active in ("active", "activating", "deactivating", "reloading"):
+                self._systemctl_ok("stop", unit)
+            elif active == "failed":
+                self._systemctl_ok("reset-failed", unit)
+            elif enabled == "enabled":
+                self._systemctl_ok("disable", unit)
+            elif enabled == "enabled-runtime":
+                self._systemctl_ok("disable", "--runtime", unit)
+            else:
+                return
+        raise IsolationError(f"unit {unit} nao ficou parada e desabilitada")
+
+    def _podman_exists(self, kind: str, name: str) -> bool:
+        res = subprocess.run([self._podman_bin, kind, "exists", name], capture_output=True, text=True)
+        if res.returncode == 0:
+            return True
+        if res.returncode == 1:
+            return False
+        raise IsolationError(
+            f"podman {kind} exists {name} falhou (rc={res.returncode}): {res.stderr.strip()}")
+
+    def _remove_podman(self, kind: str, name: str) -> None:
+        self._validate_resource_name(name)
+        if not self._podman_exists(kind, name):
+            return
+        argv = ([self._podman_bin, "rm", "-f", name] if kind == "container"
+                else [self._podman_bin, kind, "rm", "-f", name])
+        res = subprocess.run(argv, capture_output=True, text=True)
+        if res.returncode != 0:
+            raise IsolationError(
+                f"podman {' '.join(argv[1:])} falhou (rc={res.returncode}): "
+                f"{res.stderr.strip() or res.stdout.strip()}")
+        if self._podman_exists(kind, name):
+            raise IsolationError(f"{kind} {name} ainda existe apos remocao")
+
+    def _unit_roots(self) -> tuple[Path, ...]:
+        """Onde units registradas podem morar: runtime do manager e config do usuario."""
+        return (self._unit_dir, Path.home() / ".config" / "systemd" / "user")
+
+    def assert_no_orphans(self, *, all_registered: bool = False) -> None:
+        """Nenhum processo supervisionado ficou para tras.
+
+        Padrao: o container supervisionado da fixture — e a checagem que as
+        suites fazem no meio do teste, com clientes auxiliares ainda de pe.
+        Com `all_registered=True` (teardown e cenarios de adocao): todo
+        container registrado. Nos dois casos nenhuma unit registrada pode
+        estar ativa, e erro de consulta nunca vale como ausencia.
+        """
+        containers = sorted(self._registered_containers) if all_registered else [self.container]
+        problems: list[str] = []
+        for name in containers:
+            res = subprocess.run(
+                [self._podman_bin, "ps", "--filter", f"name=^{name}$", "--filter", "status=running", "--quiet"],
+                capture_output=True, text=True)
+            if res.returncode != 0:
+                problems.append(f"podman ps {name} falhou (rc={res.returncode}): {res.stderr.strip()}")
+            elif res.stdout.strip():
+                problems.append(f"container {name} ainda em execucao")
+        for unit in sorted(self._registered_units):
+            try:
+                _, active = self._unit_state(unit)
+            except IsolationError as exc:
+                problems.append(str(exc))
+                continue
+            if active == "active":
+                problems.append(f"unit {unit} ainda ativa")
+        pattern = f"podman.*{self._prefix if all_registered else self.container}"
+        res = subprocess.run(["pgrep", "-f", pattern], capture_output=True, text=True)
+        if res.returncode == 0:
+            problems.append(f"processos orfaos para {pattern}: {res.stdout.strip()}")
+        elif res.returncode != 1:
+            problems.append(f"pgrep falhou (rc={res.returncode}): {res.stderr.strip()}")
+        if problems:
+            raise AssertionError("; ".join(problems))
 
     def teardown(self) -> None:
-        """Cleans up all registered resources strictly."""
+        """Remove todo recurso registrado e PROVA a ausencia; qualquer falha levanta IsolationError."""
         if self._cleaned_up:
             return
         self._cleaned_up = True
+        errors: list[str] = []
 
-        # 1. Stop and reset all registered units
-        for unit in list(self._registered_units):
-            subprocess.run(
-                ["systemctl", "--user", "stop", unit],
-                capture_output=True,
-                text=True,
-            )
-            subprocess.run(
-                ["systemctl", "--user", "reset-failed", unit],
-                capture_output=True,
-                text=True,
-            )
+        def attempt(action, *args, **kwargs) -> None:
+            try:
+                action(*args, **kwargs)
+            except (IsolationError, OSError, AssertionError) as exc:
+                errors.append(str(exc))
 
-        # 2. Remove unit file
-        if self._unit_file.exists():
-            self._validate_path(self._unit_file)
-            self._unit_file.unlink(missing_ok=True)
-        if self._forwarder_unit_file.exists():
-            self._validate_path(self._forwarder_unit_file)
-            self._forwarder_unit_file.unlink(missing_ok=True)
+        # 1. Units: parar e desabilitar no manager, em qualquer escopo.
+        for unit in sorted(self._registered_units):
+            attempt(self._quiesce_unit, unit)
 
-        subprocess.run(
-            ["systemctl", "--user", "daemon-reload"],
-            capture_output=True,
-            text=True,
-        )
+        # 2. Arquivos de unit e links wants dos nomes registrados, nas duas raizes.
+        for root in self._unit_roots():
+            for unit in sorted(self._registered_units):
+                wants = root / "default.target.wants" / unit
+                if wants.is_symlink() or wants.exists():
+                    errors.append(f"wants link residual {wants}: a unit nao foi desabilitada pelo manager")
+                    attempt(wants.unlink)
+                unit_file = root / unit
+                if unit_file.is_symlink() or unit_file.exists():
+                    attempt(unit_file.unlink)
+        attempt(self._systemctl_ok, "daemon-reload")
 
-        # 3. Stop and remove all registered containers
-        for container in list(self._registered_containers):
-            self._validate_resource_name(container)
-            subprocess.run(
-                [self._podman_bin, "rm", "-f", container],
-                capture_output=True,
-                text=True,
-            )
+        # 3. Pos-condicao no manager, independente dos arquivos locais.
+        for unit in sorted(self._registered_units):
+            try:
+                state = self._unit_state(unit)
+            except IsolationError as exc:
+                errors.append(str(exc))
+                continue
+            if state != ("not-found", "inactive"):
+                errors.append(f"unit {unit} ainda conhecida do manager apos teardown "
+                              f"(is-enabled={state[0]}, is-active={state[1]})")
 
-        # 4. Remove all registered volumes
-        for volume in list(self._registered_volumes):
-            self._validate_resource_name(volume)
-            subprocess.run(
-                [self._podman_bin, "volume", "rm", "-f", volume],
-                capture_output=True,
-                text=True,
-            )
+        # 4. Podman: containers antes de volumes e redes (que eles usam).
+        for kind, names in (("container", self._registered_containers),
+                            ("volume", self._registered_volumes),
+                            ("network", self._registered_networks)):
+            for name in sorted(names):
+                attempt(self._remove_podman, kind, name)
 
-        # 5. Remove all registered networks
-        for network in list(self._registered_networks):
-            self._validate_resource_name(network)
-            subprocess.run(
-                [self._podman_bin, "network", "rm", "-f", network],
-                capture_output=True,
-                text=True,
-            )
-
-        # 6. Remove temporary root
+        # 5. Raiz temporaria.
         if self.state_root.exists():
             self._validate_path(self.state_root)
-            shutil.rmtree(self.state_root, ignore_errors=True)
+            try:
+                shutil.rmtree(self.state_root)
+            except OSError as exc:
+                errors.append(f"Falha ao remover state_root {self.state_root}: {exc}")
+        if self.state_root.exists():
+            errors.append(f"State root {self.state_root} ainda existe após teardown")
+
+        # 6. Nenhum processo ou unit registrada sobreviveu.
+        attempt(self.assert_no_orphans, all_registered=True)
+
+        if errors:
+            raise IsolationError(f"Falha de teardown da SandboxFixture: {'; '.join(errors)}")
 
     def __enter__(self) -> SandboxFixture:
         """Setup guarded: o protocolo de context manager do Python NAO chama

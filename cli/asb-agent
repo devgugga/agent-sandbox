@@ -157,23 +157,51 @@ def main() -> int:
             return install.broker(ROOT)
         if args.command == "adopt-runtime":
             if getattr(args, "workspace", None):
-                res = supervisor.adopt_workspace(args.workspace, apply=args.apply)
+                res = supervisor.adopt_workspace(
+                    args.workspace,
+                    apply=args.apply,
+                )
+                if getattr(args, "as_json", False):
+                    print(json.dumps(res, indent=2))
+                else:
+                    if res.get("status") == "dry_run":
+                        c_count = len((res.get("inventory") or {}).get("containers", {}))
+                        print(f"dry-run concluido para workspace '{args.workspace}': {c_count} container(s) inventariado(s)")
+                    else:
+                        print(f"workspace '{args.workspace}' adotado sob supervisao systemd (fase: {res.get('phase')})")
             elif getattr(args, "keyring", False):
-                res = supervisor.adopt_keyring(apply=args.apply)
+                res = supervisor.adopt_keyring(
+                    apply=args.apply,
+                )
+                if getattr(args, "as_json", False):
+                    print(json.dumps(res, indent=2))
+                else:
+                    if res.get("status") == "dry_run":
+                        print("dry-run concluido para keyring: 1 container inventariado")
+                    else:
+                        print(f"keyring adotado sob supervisao systemd (fase: {res.get('phase')})")
             else:
                 print("asb-agent: especifique --workspace ID ou --keyring", file=sys.stderr)
                 return 2
-            print(json.dumps(res, indent=2))
             return 0
         if args.command == "rollback-runtime":
             if getattr(args, "workspace", None):
-                res = supervisor.rollback_workspace(args.workspace)
+                res = supervisor.rollback_workspace(
+                    args.workspace,
+                )
+                if getattr(args, "as_json", False):
+                    print(json.dumps(res, indent=2))
+                else:
+                    print(f"workspace '{args.workspace}' revertido com sucesso para runtime legado")
             elif getattr(args, "keyring", False):
                 res = supervisor.rollback_keyring()
+                if getattr(args, "as_json", False):
+                    print(json.dumps(res, indent=2))
+                else:
+                    print("keyring revertido com sucesso para runtime legado")
             else:
                 print("asb-agent: especifique --workspace ID ou --keyring", file=sys.stderr)
                 return 2
-            print(json.dumps(res, indent=2))
             return 0
     except (ValueError, FileNotFoundError, RuntimeError) as error:
         print(f"asb-agent: {error}", file=sys.stderr)

@@ -243,7 +243,7 @@ def probe_keyring(container: str | None = None, timeout: float = 5.0) -> ProbeRe
     started = monotonic()
     try:
         from .lifecycle import check_keyring_service
-        ok, label, fix = check_keyring_service(container)
+        ok, label, fix = check_keyring_service(container, timeout=timeout)
         elapsed = int((monotonic() - started) * 1000)
         if ok:
             return ProbeResult("keyring", "healthy", "ok", elapsed, "")

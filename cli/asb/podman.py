@@ -48,20 +48,21 @@ def out(*args: str, timeout: float | None = None) -> str:
     return result.stdout.strip()
 
 
-def json_out(*args: str) -> Any:
-    return json.loads(out(*args, "--format", "json"))
+def json_out(*args: str, timeout: float | None = None) -> Any:
+    return json.loads(out(*args, "--format", "json", timeout=timeout))
 
 
 _KINDS = {"container": "container", "network": "network",
           "image": "image", "volume": "volume"}
 
 
-def exists(kind: str, name: str) -> bool:
+def exists(kind: str, name: str, timeout: float | None = None) -> bool:
     if kind not in _KINDS:
         raise PodmanError(f"tipo desconhecido: {kind}")
     return subprocess.run(
         [require_binary(), kind, "exists", name],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        timeout=timeout).returncode == 0
 
 
 def running(name: str, timeout: float | None = None) -> bool:

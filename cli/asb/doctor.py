@@ -576,4 +576,3 @@ def doctor(root: Path, as_json: bool = False) -> int:
                 _line(False, f"{ws}: servico {svc['name']} ({svc['state']})", svc["remediation"])
 
     return 0 if healthy else 1
-

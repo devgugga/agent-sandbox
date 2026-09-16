@@ -669,4 +669,3 @@ def install_runtime(
             shutil.rmtree(staging, ignore_errors=True)
 
     return dest
-

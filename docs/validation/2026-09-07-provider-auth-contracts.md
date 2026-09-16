@@ -1,9 +1,9 @@
 # Contratos de Autenticação por Fornecedor e Protocolo de Validação
 
-> **Data:** 2026-09-07  
-> **Status:** Concluído (Parte Sintética & Documental) — Gate de Autenticação Aberto  
-> **Contexto:** Etapa 0 (Tarefa A1) do redesenho de inicialização e autenticação (`docs/superpowers/plans/2026-09-07-startup-auth-redesign.md` e `2026-09-07-agent-authentication.md`).  
-> **Escopo:** Caracterização técnica, empírica e documental dos contratos de autenticação dos três agentes suportados (Claude Code, OpenAI Codex e Google Antigravity), divergências históricas, delimitação de hipóteses de falha e runbook do piloto com operador.
+- **Data:** 2026-09-07
+- **Status:** Concluído (Parte Sintética & Documental) — Gate de Autenticação Aberto
+- **Contexto:** Etapa 0 (Tarefa A1) do redesenho de inicialização e autenticação (`docs/superpowers/plans/2026-09-07-startup-auth-redesign.md` e `2026-09-07-agent-authentication.md`).
+- **Escopo:** Caracterização técnica, empírica e documental dos contratos de autenticação dos três agentes suportados (Claude Code, OpenAI Codex e Google Antigravity), divergências históricas, delimitação de hipóteses de falha e runbook do piloto com operador.
 
 ---
 

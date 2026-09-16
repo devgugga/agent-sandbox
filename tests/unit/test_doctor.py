@@ -757,4 +757,3 @@ class TestDoctorSecretService(unittest.TestCase):
             self.assertEqual(svc["state"], "process_running")
             self.assertNotEqual(svc["state"], "application_ready")
             mock_podman_run.assert_not_called()
-

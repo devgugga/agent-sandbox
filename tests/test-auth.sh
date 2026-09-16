@@ -45,10 +45,15 @@ git init -q -b main . && git config user.email t@e.com && git config user.name T
 echo ok > README.md && git add -A && git commit -qm inicial
 cd "$ROOT"
 
-# Prepara arquivo sentinela legado no volume de credenciais para comprovar isolamento do cliente
+# Prepara arquivo sentinela legado no volume de credenciais para comprovar isolamento do cliente.
+# Os flags espelham keyring.py: `--user 1000 --userns keep-id:uid=1000,gid=1000` faz o uid do
+# namespace coincidir com o do host, e `--entrypoint sh` evita o `chown` do entrypoint. Sem isso o
+# preparo grava com uid de namespace que no host vira 100999/100000, e entao `ensure_credential_dirs`
+# — que cria os diretorios PELO HOST — falha com EACCES, ou o singleton nao consegue ler o sentinela.
 podman volume create "$TEST_CRED_VOL" >/dev/null
-podman run --rm -v "$TEST_CRED_VOL:/run/asb-credentials:z" "$IMAGE" \
-  sh -c "mkdir -p /run/asb-credentials/keyrings && echo 'sentinel-secret-token' > /run/asb-credentials/keyrings/sentinel.keyring && chmod 0600 /run/asb-credentials/keyrings/sentinel.keyring"
+podman run --rm --user 1000 --userns keep-id:uid=1000,gid=1000 --entrypoint sh \
+  -v "$TEST_CRED_VOL:/run/asb-credentials:z" "$IMAGE" \
+  -c "mkdir -p /run/asb-credentials/keyrings && echo 'sentinel-secret-token' > /run/asb-credentials/keyrings/sentinel.keyring && chmod 0600 /run/asb-credentials/keyrings/sentinel.keyring"
 
 cleanup() {
   "$ROOT/cli/asb-agent" down --workspace "$WS_A" >/dev/null 2>&1 || true

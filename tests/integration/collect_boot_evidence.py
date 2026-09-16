@@ -49,6 +49,21 @@ def _run(args: list[str], timeout: int = _TIMEOUT) -> str:
     return result.stdout.strip() if result.returncode == 0 else ""
 
 
+def _run_capture(args: list[str], timeout: int = _TIMEOUT) -> str:
+    """Como `_run`, mas devolve stdout MESMO com codigo de saida != 0.
+
+    `auth status` sai com codigo 2 quando algum fornecedor nao esta
+    autenticado — e esse e exatamente o estado que o piloto precisa
+    registrar. Descartar o stdout pelo codigo de saida apagaria a evidencia.
+    """
+    try:
+        result = subprocess.run(args, capture_output=True, text=True,
+                                timeout=timeout)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return result.stdout.strip()
+
+
 def _boot_id() -> str:
     try:
         return BOOT_ID_PATH.read_text(encoding="utf-8").strip()
@@ -157,8 +172,8 @@ def _auth(workspace: str) -> dict:
     fornecedor em A4. So o estado por fornecedor entra; `evidence` e
     `remediation` ficam de fora porque descrevem o conteudo da credencial.
     """
-    raw = _run([str(ROOT / "cli" / "asb-agent"), "auth", "status",
-                "--workspace", workspace, "--json"], timeout=60)
+    raw = _run_capture([str(ROOT / "cli" / "asb-agent"), "auth", "status",
+                        "--workspace", workspace, "--json"], timeout=60)
     if not raw:
         return {"aggregate": "unknown", "providers": {}}
     try:
@@ -170,11 +185,16 @@ def _auth(workspace: str) -> dict:
         for r in report.get("results", [])
         if isinstance(r, dict)
     }
+    states = set(providers.values())
     if not providers:
         aggregate = "unknown"
-    elif all(state == "authenticated" for state in providers.values()):
+    elif states == {"authenticated"}:
         aggregate = "authenticated"
-    elif any(state == "unknown" for state in providers.values()):
+    elif "unauthenticated" in states:
+        # Um deslogado DEFINIDO domina um "unknown": o agregado nao pode
+        # esconder a falha real atras da incerteza de outro fornecedor.
+        aggregate = "incomplete"
+    elif "unknown" in states:
         aggregate = "unknown"
     else:
         aggregate = "incomplete"

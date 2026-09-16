@@ -101,5 +101,58 @@ class BootEvidenceAllowlistTest(unittest.TestCase):
             self.assertIn(field, report)
 
 
+# Saida REAL de `auth status --json` no piloto: o comando sai com codigo 2
+# quando algum fornecedor nao esta autenticado. O JSON e valido e e justamente
+# o estado que o piloto precisa registrar.
+AUTH_STATUS_PAYLOAD = json.dumps({
+    "schemaVersion": 1,
+    "workspace": "test-pilot",
+    "results": [
+        {"provider": "claude", "state": "unauthenticated",
+         "evidence": "claude auth status --json reportou loggedIn=false"},
+        {"provider": "codex", "state": "authenticated",
+         "evidence": "codex login status reportou sessao ativa (codigo 0)"},
+        {"provider": "agy", "state": "unknown",
+         "evidence": "agy nao possui comando de status local comprovado"},
+    ],
+})
+
+
+class BootEvidenceAuthExitCodeTest(unittest.TestCase):
+    """`auth status` sai != 0 com fornecedor deslogado; o JSON segue valido."""
+
+    def _collect_with_auth_exit(self, code: int) -> dict:
+        import subprocess
+        real_run = subprocess.run
+
+        def fake_run(args, **kwargs):
+            if "auth" in args and "status" in args:
+                return subprocess.CompletedProcess(
+                    args, code, AUTH_STATUS_PAYLOAD, "")
+            return real_run(args, **kwargs)
+
+        with mock.patch.object(collect_boot_evidence.subprocess, "run",
+                               side_effect=fake_run):
+            return collect_boot_evidence.collect(workspace="test-pilot")
+
+    def test_estado_por_fornecedor_sobrevive_a_codigo_de_saida_nao_zero(self):
+        auth = self._collect_with_auth_exit(2)["auth"]
+        self.assertEqual(
+            {"claude": "unauthenticated", "codex": "authenticated",
+             "agy": "unknown"},
+            auth["providers"],
+        )
+
+    def test_fornecedor_deslogado_domina_o_agregado_sobre_desconhecido(self):
+        # Um "unauthenticated" definido e mais informativo que um "unknown":
+        # o agregado nao pode esconder a falha real atras da incerteza.
+        auth = self._collect_with_auth_exit(2)["auth"]
+        self.assertEqual("incomplete", auth["aggregate"])
+
+    def test_evidencia_do_fornecedor_nao_entra_no_relatorio(self):
+        blob = json.dumps(self._collect_with_auth_exit(2))
+        self.assertNotIn("loggedIn=false", blob)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -4,8 +4,9 @@
   [`2026-09-07-startup-auth-redesign.md`](../superpowers/plans/2026-09-07-startup-auth-redesign.md)
 - **Spec:** §7 (migração e retorno) e §8 (aceitação) do
   [desenho](../superpowers/specs/2026-09-07-startup-auth-redesign-design.md)
-- **Status:** EM EXECUÇÃO — preparação concluída, cenários disruptivos não
-  executados
+- **Status:** EM EXECUÇÃO — fases (a) e (b) concluídas; **boot 1 REPROVADO**:
+  o drop-in do projeto cria o namespace rootless sem egresso em todo boot
+  (§6.2). Gate de boot reprovado; aguarda decisão do operador
 - **Última atualização:** 2026-09-16
 
 > Este relatório registra somente o que foi medido. Todo item não executado
@@ -54,6 +55,15 @@ Levantado antes de qualquer cenário de boot, como a spec exige.
 | `asb-recovery-ssh-44b95c8d` | Exited (143), 9 dias | `no` |
 | `podman-restart.service` | enabled / active | — |
 | Workspaces ASB legados | **nenhum** (`asb-agent list`) | — |
+
+> **ATENÇÃO — este inventário estava incompleto de duas formas.**
+> 1. Ficou desatualizado: foi levantado antes de o próprio piloto criar o
+>    workspace `t2-pilot-scratch` (§5.3.2), `legacy`/`unless-stopped`, que não
+>    foi suspenso antes do boot 1.
+> 2. **Não cobria a classe drop-in.** Listou containers e o
+>    `podman-restart.service`, mas não o drop-in
+>    `podman-restart.service.d/agent-sandbox.conf`, cujo `ExecStartPre` cria o
+>    namespace rootless em todo boot. Esse é o produtor estrutural. Ver §6.2.
 
 **Consequência:** a condição de coexistência da §7 — registrar e suspender
 workspaces ASB legados numa janela acordada — **não tem alvo nesta máquina**.
@@ -538,15 +548,192 @@ plano ("não considerar espera sem resposta uma autorização").
 
 ---
 
+## 6.2. Boot 1 — REPROVADO, e o teste estava contaminado
+
+**Boot ID:** `5acb7550-4fd6-49e8-a3f0-eedc7ee0e30a` (antes: `20f6dd18…`).
+Boot real confirmado pela troca de `boot_id` e uptime de 1 minuto.
+Autologin do SDDM (`User=v`, `Session=omarchy.desktop`); nenhum comando
+corretivo executado pelo operador nem por mim.
+
+### Resultado
+
+O workspace adotado **não ficou pronto**. O proxy terminou em `failed` após
+3 reinícios, e os dois containers de `t2-pilot-blackice` ficaram `exited`.
+
+### Linha do tempo medida
+
+| Hora | Evento |
+| :--- | :--- |
+| 16:23:46 | boot do kernel |
+| 16:24:14 | `network-online.target` (sistema) |
+| **16:24:15** | **`pasta` cria o namespace rootless compartilhado** |
+| 16:24:16 | `podman-restart.service` restaura o workspace **legacy** `t2-pilot-scratch` |
+| 16:24:55 | systemd inicia o agente adotado (mesmo ID `44a536c94a6e`) |
+| 16:25:00 | systemd inicia o proxy adotado (mesmo ID `30d00837899d`) |
+| 16:25:32 | `runtime_check [proxy]: timeout na sonda de egresso do proxy` |
+| 16:25:40 | `Scheduled restart job, restart counter is at 2` |
+| ~16:26:35 | proxy `failed`, `NRestarts=3`; systemd desiste |
+
+### Diagnóstico
+
+| Camada | Estado | Evidência |
+| :--- | :--- | :--- |
+| Host | **rede OK** | `curl https://github.com` → HTTP 200 em 0,3 s |
+| Rede do Podman (dentro do container) | **OK** | `default via 10.89.3.1 dev eth1`; `aardvark-dns` rodando |
+| Egresso do namespace rootless | **QUEBRADO** | proxy legacy: `CONNECT tunnel failed, response 503`; proxy adotado: timeout na sonda |
+
+A quebra está **entre** a rede do container e o host — no upstream do `pasta`.
+E ela atinge os dois workspaces, legacy e adotado, porque compartilham o
+namespace. Não é defeito do caminho systemd.
+
+### Causa-raiz: o drop-in do próprio projeto cria o namespace em todo boot
+
+> Uma primeira versão desta seção atribuía a contaminação apenas ao workspace
+> legacy `t2-pilot-scratch` não suspenso. **Isso era metade da causa**, e foi
+> corrigido antes do commit. Registrado porque a causa incompleta levaria a
+> repetir o boot e medir de novo o mesmo defeito.
+
+`podman-restart.service` carrega um drop-in **escrito pelo próprio
+agent-sandbox** (`cli/asb/install.py:90`):
+
+```
+~/.config/systemd/user/podman-restart.service.d/agent-sandbox.conf
+# Managed by agent-sandbox: podman-restart netns initialization
+[Service]
+ExecStartPre=/usr/bin/podman unshare --rootless-netns /usr/bin/true
+```
+
+Ele vem do plano `2026-09-06-rootless-uplink-recovery`, cujo objetivo era
+"preparar o namespace rootless antes de iniciar containers que precisam de
+egresso". A unidade está habilitada, então o `ExecStartPre` roda em **todo**
+boot, **independentemente** de haver algum container com
+`should-start-on-boot`. O `pasta` nasceu às **16:24:15**; o
+`podman-restart.service` registrou início às 16:24:16 — o `ExecStartPre` roda
+imediatamente antes do `ExecStart`.
+
+A prova de que o defeito é do **namespace**, e não da ordem entre workspaces:
+o proxy do `t2-pilot-scratch`, que rodava **dentro** desse mesmo namespace,
+também estava sem egresso (`CONNECT tunnel failed, response 503`) enquanto o
+host tinha HTTP 200. Um namespace, os dois workspaces quebrados.
+
+**Achado de desenho:** o mecanismo de 2026-09-06 garante que o namespace
+**exista** cedo, mas **não** que seu uplink **funcione**. Criado quebrado,
+nada a jusante o repara — o workspace adotado, que só subiu às 16:24:55,
+herdou um namespace que não criou. É a spec §7 literalmente:
+
+> "aguardar rede em uma unidade não repara um namespace já inicializado cedo
+> por outra."
+
+E é a mesma falha que `failure-modes.md:145` já registrava:
+`podman unshare --rootless-netns true` não recupera um namespace quebrado. O
+que este boot acrescenta é que o próprio `unshare` no boot **é** o produtor.
+
+Não se determinou **por que** o uplink capturado às 16:24:15 não funcionava —
+se o `network-online.target` (16:24:14) foi atingido antes de haver
+conectividade real, ou outra causa. Isso fica em aberto e não é presumido.
+
+### A ferramenta tinha avisado
+
+O inventário do `adopt-runtime`, disponível desde a fase (b), já listava:
+
+```
+inventory.diagnostics.rootless_netns_producers = [
+  "dropin:agent-sandbox.conf(projeto)",
+  "unit:podman-restart.service(habilitada em default.target.wants)",
+  "workspaces_rotulados:2",
+  "containers_sem_label:3"
+]
+```
+
+Esse aviso não foi lido na fase (b): só as primeiras linhas do JSON foram
+examinadas. A verificação feita depois, "nenhum produtor precoce restante",
+filtrava containers `bridge` em execução e **não enxerga a classe drop-in**.
+O `_netns_producers()` do código cobre exatamente essa classe; a checagem
+manual não cobria.
+
+### O papel do workspace legacy
+
+Deixar `t2-pilot-scratch` em `legacy` como "controle" foi erro de desenho do
+piloto: a §7 exige suspender workspaces legados antes da janela de boot. Ele
+foi **um** produtor adicional, restaurado às 16:24:16. Mas suspendê-lo **não
+basta** para um boot limpo, porque o drop-in cria o namespace mesmo sem ele.
+
+**Portanto o boot 1 NÃO mede se o runtime adotado sobe limpo.** E repetir o
+boot só suspendendo o scratch reproduziria o mesmo defeito.
+
+### O que o boot 1 comprova
+
+1. **O mecanismo de inicialização do namespace no boot não garante egresso,
+   e um namespace criado quebrado não se recupera.** Reproduzido em hardware
+   real, afetando legacy e adotado. Pela regra de parada da §8, gate
+   reprovado **interrompe expansão e migração**, e só a decisão que falhou
+   deve ser revista — aqui, a de inicializar o namespace via `ExecStartPre`
+   no boot.
+2. **Falha de admissão não publicou sucesso (§8.5).** `runtime_check.py`
+   recusou a sonda de egresso e a unidade não foi dada como pronta.
+3. **Credenciais não foram apagadas (§8.4).** `claude/.credentials.json` 504 B
+   e `codex/auth.json` 3876 B, mesmos tamanhos de antes do boot.
+4. **Indisponibilidade não virou logout (§8.4).** Com o agente adotado caído e
+   sem egresso, `auth status` devolveu `claude=unreachable codex=unreachable`
+   — e não `unauthenticated`.
+5. **Trabalho não commitado sobreviveu ao reboot.** HEAD `3bd3a1d`,
+   `M README.md` e `?? T2-PILOT-UNTRACKED.txt`, os dois sha256 idênticos.
+6. **Nenhum container foi recriado.** Os quatro IDs batem com o baseline.
+
+### O que o boot 1 NÃO comprova, e um limite novo
+
+- A porta 45379 não é mensurável com o container `exited` — isto **não** é
+  troca de porta, é ausência de medição.
+- **Não houve recuperação automática.** Depois que o proxy atingiu o limite de
+  reinícios, o systemd desistiu e o workspace ficou fora do ar. A §8.4 exige
+  "recuperação automática validada no piloto"; isto está **não demonstrado**.
+
+### O que deliberadamente não foi feito
+
+**Nenhum reset global do namespace rootless** (`podman unshare
+--rootless-netns`, `podman system migrate` ou equivalente). Dois motivos:
+`failure-modes.md` já registra que `podman unshare --rootless-netns true` não
+recuperou um namespace quebrado num piloto anterior; e a §8.4 proíbe promover
+recuperação que dependa de reset global. Tentar, e dar certo, provaria
+justamente o que a spec veda promover.
+
+### Duas medições descartadas por serem inválidas
+
+- `wget` no proxy devolveu `rc=127`: comando inexistente na imagem, **não**
+  falha de egresso.
+- `getent hosts github.com` falhando **dentro do agente**: o agente é isolado
+  por desenho e só sai pelo proxy; não resolver DNS direto é o esperado.
+
+### Estado preparado depois do boot 1
+
+`t2-pilot-scratch` foi suspenso com autorização do operador. Os dois
+containers ficaram `exited`, com IDs preservados e `StoppedByUser=true`. A
+política continua `unless-stopped`; o que deve mantê-los parados no próximo
+boot é o filtro `should-start-on-boot=true` do `podman-restart.service`
+combinado com `StoppedByUser`. Um reboot com este estado testaria esse
+mecanismo específico (critério 2).
+
+### Próximo passo — decisão do operador
+
+Repetir o boot **só suspendendo o scratch não é um teste válido**: o drop-in
+continua listado em `rootless_netns_producers` e recriaria o namespace cedo,
+reproduzindo o mesmo defeito. Nenhum reboot deve ser pedido sem que a lista de
+produtores tenha sido reconferida pela ferramenta, não por filtro manual.
+
+A evidência deste boot fica preservada como entrada própria, sem ser
+sobrescrita.
+
+---
+
 ## 7. Critérios de aceite (spec §8)
 
 | # | Critério | Estado |
 | :--- | :--- | :--- |
-| 1 | Três boots reais, incl. rede com atraso de 60 s | **NÃO EXECUTADO** |
+| 1 | Três boots reais, incl. rede com atraso de 60 s | **REPROVADO** — boot 1 (`5acb7550`): o `ExecStartPre` do drop-in `agent-sandbox.conf` cria o namespace rootless em todo boot, sem egresso funcional, e nada a jusante o repara (§6.2). Repetir só suspendendo o legacy não é teste válido. Boots 2 e 3 não executados |
 | 2 | Suspenso continua suspenso; retomado preserva porta, ID, trabalho não commitado e dados de serviço | **NÃO EXECUTADO** |
 | 3 | Login real nos três fornecedores; cliente novo e dois workspaces; renovação observada ou pendente | **PARCIAL** — Claude (§5.2) e Antigravity (§5.3.1) reproduzidos e resolvidos individualmente; cliente novo e dois workspaces simultâneos utilizáveis nos três fornecedores (§5.3.2). **Em aberto:** Codex está `authenticated` por credencial de 2026-09-05 via symlink legado, não por login desta janela (§5.5); **renovação real não observada**; e dois workspaces do MESMO projeto com `publish_ports` não sobem juntos (§5.3.2) |
-| 4 | Queda de rede não apaga credencial; sem reset global | **NÃO EXECUTADO** |
-| 5 | Proxy ausente, porta 80 sem listener e keyring indisponível detectados | Coberto por suíte automatizada; **não revalidado no piloto real** |
+| 4 | Queda de rede não apaga credencial; sem reset global | **PARCIAL** (§6.2) — credenciais não apagadas; indisponibilidade classificada como `unreachable`, não logout; nenhum reset global usado. **Recuperação automática NÃO demonstrada**: o systemd desistiu após 3 reinícios. Cenário de queda de rede (fase d) não executado |
+| 5 | Proxy ausente, porta 80 sem listener e keyring indisponível detectados | **PARCIAL** — no boot 1 real, falha de egresso do proxy foi detectada e a unidade **não** foi dada como pronta (§6.2). Porta 80 e keyring indisponível não revalidados no piloto real |
 | 6 | Bloqueios de rede válidos, com controles positivos de SSH e proxy | Controles positivos observados na preparação (§3); **cenário negativo não reexecutado aqui** |
 | 7 | Rollback de supervisão ensaiado sem perda de dados nem troca de porta | **SATISFEITO** (§6) — porta, IDs e trabalho não commitado preservados; ressalva: workspace criado pelo piloto |
 | 8 | Dois dias de uso real sem reparo manual | **NÃO EXECUTADO** |

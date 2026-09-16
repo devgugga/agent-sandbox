@@ -798,18 +798,62 @@ _AGY_MODEL_FAMILY = re.compile(
     re.IGNORECASE)
 _AGY_MODEL_IDENTIFIER = re.compile(
     r"[a-z0-9]+(?:[._:/-][a-z0-9]+)+", re.IGNORECASE)
-_AGY_MODEL_NUMBER = re.compile(r"(?<![a-z0-9])\d+(?![a-z0-9])",
+# O sufixo de unidade e obrigatorio de tolerar: `gpt-oss-120b-medium` aparece
+# na saida real, e exigir digito sem letra depois reprovava uma linha de
+# modelo legitima. Continua exigindo DIGITO: nomes de erro tokenizados
+# (`gemini-unavailable`, `error:gemini`) seguem reprovados, que e a razao de
+# ser desta regra.
+_AGY_MODEL_NUMBER = re.compile(r"(?<![a-z0-9])\d+[a-z]*(?![a-z0-9])",
                                re.IGNORECASE)
 
 
+def _agy_model_row(line: str) -> bool:
+    """A linha e uma LINHA DE MODELO da lista do agy?
+
+    O formato real (capturado no piloto T2, binario 1.1.27) e
+    `identificador<TAB>rotulo humano`. So a COLUNA DO IDENTIFICADOR decide:
+    o rotulo humano ("Gemini 3.8 Flash (High)") nunca pode sustentar familia
+    nem numero, senao qualquer prosa com nome de modelo viraria credencial
+    valida.
+    """
+    identifier = line.split("\t", 1)[0].strip()
+    return bool(
+        _AGY_MODEL_IDENTIFIER.fullmatch(identifier)
+        and _AGY_MODEL_FAMILY.search(identifier)
+        and _AGY_MODEL_NUMBER.search(identifier))
+
+
 def _agy_models_output_valid(output: str) -> bool:
+    """Continua falhando FECHADO; so reconhece o formato real.
+
+    A guarda anterior exigia que TODA linha fosse um identificador nu. A
+    saida real tem duas colunas separadas por TAB e e precedida da linha de
+    prosa `Fetching available models...`, entao `fullmatch` reprovava as 15
+    linhas e a classificacao SO podia devolver `unknown`, qualquer que fosse
+    o estado da credencial. A saida bruta de A1 nao foi preservada (ver o
+    comentario acima), e a guarda tinha sido escrita contra a lembranca dela.
+
+    `verify_client` monta `combined = f"{stdout}\\n{stderr}"`, entao a prosa
+    de stderr chega DEPOIS das linhas de modelo. Por `podman exec` ela aparece
+    antes. As duas ordens sao toleradas; o que nao e tolerado e prosa NO MEIO.
+
+    O que continua valendo, para nao fabricar um `authenticated` falso:
+    - pelo menos DUAS linhas de modelo;
+    - as linhas de modelo sao CONTIGUAS — prosa entre elas reprova a lista
+      inteira, que e o caso de um erro interrompendo a listagem;
+    - qualquer linha tolerada (antes ou depois do bloco) nunca pode citar uma
+      familia de modelo conhecida.
+    """
     lines = [line.strip() for line in (output or "").splitlines()
              if line.strip()]
-    return len(lines) >= 2 and all(
-        _AGY_MODEL_IDENTIFIER.fullmatch(line)
-        and _AGY_MODEL_FAMILY.search(line)
-        and _AGY_MODEL_NUMBER.search(line)
-        for line in lines)
+    indexes = [i for i, line in enumerate(lines) if _agy_model_row(line)]
+    if len(indexes) < 2:
+        return False
+    first, last = indexes[0], indexes[-1]
+    if indexes != list(range(first, last + 1)):
+        return False
+    return not any(_AGY_MODEL_FAMILY.search(line)
+                   for line in lines[:first] + lines[last + 1:])
 
 
 def classify_verification(provider: str, returncode: int, output: str,

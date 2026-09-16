@@ -461,6 +461,131 @@ class TestVerifyClientAgy(_SSHInfraCase):
         self.assertEqual(result.state, "authenticated")
 
 
+# Saida REAL de `asb-agy models` capturada no piloto T2 em 2026-09-16, com o
+# binario fixado 1.1.27, dentro do container do workspace. A1 nao preservou a
+# saida bruta e a guarda foi escrita contra uma lembranca dela; e por isso que
+# a classificacao so podia devolver `unknown`. O formato e
+# `identificador<TAB>rotulo humano`, precedido de uma linha de prosa.
+# Nomes de modelo nao sao credencial: preservados aqui de proposito, para que
+# ninguem precise gastar outra chamada real so para reaprender o formato.
+# `verify_client` monta `combined = f"{stdout}\n{stderr}"`, entao a prosa de
+# stderr chega DEPOIS das linhas de modelo, nao antes. Medido: stdout traz so
+# as linhas `identificador<TAB>rotulo`; stderr traz so
+# `Fetching available models...`.
+AGY_MODELS_REAL_STDOUT = (
+    "gemini-3.8-flash-high\tGemini 3.8 Flash (High)\n"
+    "gemini-3.8-flash-medium\tGemini 3.8 Flash (Medium)\n"
+    "gemini-3.8-flash-low\tGemini 3.8 Flash (Low)\n"
+    "gemini-3.1-pro-high\tGemini 3.1 Pro (High)\n"
+    "claude-sonnet-4-6\tClaude Sonnet 4.6 (Thinking)\n"
+    "claude-opus-4-6-thinking\tClaude Opus 4.6 (Thinking)\n"
+    "gpt-oss-120b-medium\tGPT-OSS 120B (Medium)\n"
+)
+AGY_MODELS_REAL_STDERR = "Fetching available models...\n"
+AGY_MODELS_REAL_OUTPUT = (
+    f"{AGY_MODELS_REAL_STDOUT}\n{AGY_MODELS_REAL_STDERR}")
+
+
+class TestAgyRealModelListFormat(unittest.TestCase):
+    """A saida real tem cabecalho de prosa e duas colunas separadas por TAB.
+
+    A guarda continua fechando: o que a torna valida e a COLUNA DO
+    IDENTIFICADOR, nunca o rotulo humano, e qualquer linha nao conforme
+    DEPOIS da primeira linha de modelo reprova a lista inteira.
+    """
+
+    def test_saida_real_do_agy_e_classificada_como_autenticada(self):
+        result = auth.classify_verification(
+            "agy", 0, AGY_MODELS_REAL_OUTPUT, network_ok=True)
+        self.assertEqual(result.state, "authenticated")
+
+    def test_cabecalho_de_prosa_sozinho_nao_autentica(self):
+        result = auth.classify_verification(
+            "agy", 0, "Fetching available models...", network_ok=True)
+        self.assertEqual(result.state, "unknown")
+
+    def test_linha_nao_conforme_depois_das_linhas_de_modelo_reprova(self):
+        result = auth.classify_verification(
+            "agy", 0,
+            "gemini-3.8-flash-high\tGemini 3.8 Flash (High)\n"
+            "claude-sonnet-4-6\tClaude Sonnet 4.6\n"
+            "Gemini is temporarily unavailable",
+            network_ok=True)
+        self.assertEqual(result.state, "unknown")
+
+    def test_rotulo_humano_nao_pode_sustentar_familia_nem_versao(self):
+        # O identificador nao tem familia conhecida nem numero; so o rotulo
+        # tem. Se a guarda olhasse a linha inteira, isto passaria.
+        result = auth.classify_verification(
+            "agy", 0,
+            "modelo-desconhecido\tGemini 3.8 Flash (High)\n"
+            "outro-desconhecido\tClaude Sonnet 4.6\n",
+            network_ok=True)
+        self.assertEqual(result.state, "unknown")
+
+    def test_uma_unica_linha_de_modelo_nao_e_lista(self):
+        result = auth.classify_verification(
+            "agy", 0,
+            "gemini-3.8-flash-high\tGemini 3.8 Flash (High)\n"
+            "Fetching available models...",
+            network_ok=True)
+        self.assertEqual(result.state, "unknown")
+
+    def test_prosa_neutra_de_stderr_depois_das_linhas_e_tolerada(self):
+        # Ordem REAL: stdout (linhas de modelo) e so entao stderr (prosa).
+        result = auth.classify_verification(
+            "agy", 0,
+            "gemini-3.8-flash-high\tGemini 3.8 Flash (High)\n"
+            "claude-sonnet-4-6\tClaude Sonnet 4.6\n"
+            "\nFetching available models...\n",
+            network_ok=True)
+        self.assertEqual(result.state, "authenticated")
+
+    def test_linha_nao_conforme_ENTRE_linhas_de_modelo_reprova(self):
+        # Prosa no MEIO da lista continua reprovando: e o caso de um erro
+        # interrompendo a listagem.
+        result = auth.classify_verification(
+            "agy", 0,
+            "gemini-3.8-flash-high\tGemini 3.8 Flash (High)\n"
+            "algo deu errado no meio\n"
+            "claude-sonnet-4-6\tClaude Sonnet 4.6\n",
+            network_ok=True)
+        self.assertEqual(result.state, "unknown")
+
+    def test_identificador_com_sufixo_de_unidade_conta_como_versao(self):
+        # `gpt-oss-120b-medium` existe na saida real. O numero vem colado a
+        # uma unidade ("120b"), e a guarda original exigia digito sem letra
+        # depois — reprovando uma linha de modelo legitima e, por tabela, a
+        # lista inteira.
+        self.assertTrue(auth._agy_model_row("gpt-oss-120b-medium"))
+
+    def test_identificador_sem_digito_algum_continua_reprovado(self):
+        # A razao de ser da regra de numero: nomes de erro tokenizados.
+        for line in ("gemini-unavailable", "claude-unavailable",
+                     "error:gemini"):
+            with self.subTest(line=line):
+                self.assertFalse(auth._agy_model_row(line))
+
+    def test_cabecalho_que_cita_familia_de_modelo_reprova_a_lista(self):
+        # Um cabecalho tolerado e prosa neutra ("Fetching available
+        # models..."). Prosa que cita familia conhecida antes das linhas de
+        # modelo e justamente o caso que poderia mascarar um erro.
+        result = auth.classify_verification(
+            "agy", 0,
+            "Gemini is temporarily unavailable\n"
+            "gemini-3.8-flash-high\tGemini 3.8 Flash (High)\n"
+            "claude-sonnet-4-6\tClaude Sonnet 4.6\n",
+            network_ok=True)
+        self.assertEqual(result.state, "unknown")
+
+    def test_marcador_de_credencial_ainda_domina_a_lista_valida(self):
+        result = auth.classify_verification(
+            "agy", 0,
+            AGY_MODELS_REAL_OUTPUT + "authentication required\n",
+            network_ok=True)
+        self.assertEqual(result.state, "unauthenticated")
+
+
 class TestVerifyClientFormatEvidence(_SSHInfraCase):
     """Evidencia de sucesso exige resposta no formato solicitado, nao um
     grep de 'ok'. Um exit 0 com resposta errada e um erro de FORMATO,

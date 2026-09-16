@@ -4,9 +4,13 @@
   [`2026-09-07-startup-auth-redesign.md`](../superpowers/plans/2026-09-07-startup-auth-redesign.md)
 - **Spec:** §7 (migração e retorno) e §8 (aceitação) do
   [desenho](../superpowers/specs/2026-09-07-startup-auth-redesign-design.md)
-- **Status:** EM EXECUÇÃO — fases (a) e (b) concluídas; **boot 1 REPROVADO**:
-  o drop-in do projeto cria o namespace rootless sem egresso em todo boot
-  (§6.2). Gate de boot reprovado; aguarda decisão do operador
+- **Status:** EM EXECUÇÃO — fases (a) e (b) concluídas. Boot 1 REPROVADO: o
+  drop-in do projeto cria o namespace rootless sem egresso (§6.2). Boot 2
+  APROVADO com o drop-in desativado para a janela (§6.4). Boot 3 — o boot
+  normal, na configuração real com o drop-in reinstalado pelo Orca — REPROVADO,
+  e o workspace legacy do Orca falha em silêncio: SSH saudável, sem egresso
+  (§6.6). Falta o boot com rede atrasada, adiado. Validação pelo Orca
+  BLOQUEADA por defeito do Orca na reidratação do terminal (§6.7)
 - **Última atualização:** 2026-09-16
 
 > Este relatório registra somente o que foi medido. Todo item não executado
@@ -413,7 +417,7 @@ O operador executou `asb-agent login --agent codex`. Resultado medido:
 | :--- | :--- | :--- |
 | `codex/auth.json` | symlink → raiz | **arquivo comum**, 3876 B, 16:11 |
 | `codex-auth.json` (raiz) | alvo do symlink, 5 set | **órfão**, inalterado, 5 set |
-| symlinks no volume | 1 | **0** |
+| symlinks no volume | 1 | Três boots reais, incl. rede com atraso de 60 s | **REPROVADO na configuração real** — boot 1 (`5acb7550`) e boot 3 (`019a9a43`, configuração de uso real com Orca) reprovados pelo mesmo motivo: namespace criado cedo sem egresso, sem recuperação (§6.2, §6.6). Boot 2 (`155a3648`) aprovado só com o drop-in desativado (§6.4). Boot com rede atrasada adiado. Reconexão do Orca **BLOQUEADA** por defeito do Orca na reidratação do terminal após reboot (§6.7) |
 
 O escritor do Codex usou rename atômico e, ao fazê-lo, **substituiu o próprio
 symlink** — exatamente o comportamento que A1 documentou como o mecanismo que
@@ -725,16 +729,367 @@ sobrescrita.
 
 ---
 
+## 6.3. Boot 2 preparado — teste discriminante com o drop-in desativado
+
+Autorizado pelo operador (opção recomendada). Objetivo: separar "o redesenho
+funciona quando o drop-in sai" de "o namespace rootless quebra no boot de
+qualquer jeito". Registrado também como o cenário **um workspace ativo e outro
+suspenso** (critério 2), conforme combinado — e **não** como "boot normal",
+para os três boots continuarem distintos.
+
+### Exceção de janela, não remoção definitiva
+
+A spec §7 só autoriza remover o drop-in "após inventário confirmar que foi
+criado pelo projeto **e que os recursos ASB foram adotados**". A primeira
+condição vale (cabeçalho `Managed by agent-sandbox`); a segunda **não**:
+`t2-pilot-scratch` é legacy e o `asb-keyring` não foi adotado. O código já
+tem o caminho projetado para isso (`supervisor.py`, `intent_to_remove` →
+`removed_by_adoption`), que corretamente não disparou. Por isso esta é uma
+**desativação temporária para a janela**, com restauração obrigatória.
+
+### RESTAURAÇÃO OBRIGATÓRIA ao fim da janela
+
+```
+cp -p ~/.local/state/agent-sandbox/t2-evidence/dropin-backup/agent-sandbox.conf \
+      ~/.config/systemd/user/podman-restart.service.d/agent-sandbox.conf
+systemctl --user daemon-reload
+```
+
+Backup verificado idêntico ao original (`cmp`), modo 600, 142 bytes, sha256
+`91476ff033a8a1ba7ea1709bbcdd464b6dbdd7a7d846c8f81fe652288476f206`.
+
+**Durante a janela não rodar `asb-agent up`** para workspace legacy:
+`install.podman_restart()` é chamado só pelo ramo legacy de `up`
+(`lifecycle.py:826`) e reinstalaria o drop-in. `auth status`, o coletor e o
+`adopt-runtime` em dry-run não passam por esse caminho.
+
+### Verificação de produtores — pela ferramenta
+
+Depois de remover o drop-in e rodar `daemon-reload`:
+
+```
+ExecStartPre efetivo no podman-restart.service: 0
+inventory.diagnostics.rootless_netns_producers = [
+  "unit:podman-restart.service(habilitada em default.target.wants)",
+  "workspaces_rotulados:2",
+  "containers_sem_label:3"
+]
+```
+
+A entrada `dropin:` sumiu. A ferramenta ainda lista `podman-restart.service`
+como **classe** de produtor, de forma conservadora e correta. O que ele de
+fato inicia no boot (`--filter should-start-on-boot=true`) é **somente**
+`asb-keyring`, com `NetworkMode=none`. `t2-pilot-scratch` está fora
+(`StoppedByUser=true`).
+
+**Incerteza residual, não presumida resolvida:** se iniciar um container
+`network=none` ainda inicializa o namespace rootless. O boot responde: se o
+`pasta` nascer **junto do `podman-restart`**, o keyring ainda é produtor; se
+nascer **junto da unidade adotada**, ela é a primeira produtora.
+
+### O que o desenho adotado promete — e o que isto testa
+
+| Propriedade | Valor | Consequência |
+| :--- | :--- | :--- |
+| Ordenação por rede | **nenhuma** (sem `After=network-online.target`) | unidade de usuário não depende de target de rede do sistema; a espera é pela sonda |
+| `Restart` | `always` | reinicia após sonda falha |
+| `StartLimitBurst` | **3 em 10 min** | no boot 1, o proxy estourou esse limite e o systemd **desistiu de vez** |
+| `TimeoutStartSec` | 2 min 30 s | — |
+
+**Risco registrado para o boot de rede atrasada:** com a sonda de egresso
+levando ~32 s por tentativa, três tentativas cobrem pouco mais de 1,5 min. Se
+a rede demorar mais que isso, a unidade atinge o limite e não se recupera
+sozinha. Não é conclusão — é o que o boot de rede atrasada precisa medir.
+
+### Estado salvo
+
+`~/.local/state/agent-sandbox/t2-evidence/pre-boot2-*.json` e
+`pre-boot2-estado.txt`. Boot ID antes do reboot: `5acb7550…`. Trabalho não
+commitado a preservar: HEAD `3bd3a1d`, `M README.md` (`2c1a0f4c…`),
+`?? T2-PILOT-UNTRACKED.txt` (`e0190ec7…`).
+
+---
+
+## 6.4. Boot 2 — APROVADO sem comando corretivo
+
+**Boot ID:** `155a3648-6141-441a-ad3a-58409d299fc0` (antes: `5acb7550…`).
+Cenário: drop-in desativado, `t2-pilot-blackice` adotado e ativo,
+`t2-pilot-scratch` suspenso. Autologin; **nenhum comando corretivo**.
+
+### Linha do tempo medida
+
+| Hora | Evento |
+| :--- | :--- |
+| 16:54:37 | boot do kernel |
+| 16:56:14 | `network-online.target` (sistema) |
+| 16:56:15 | `podman-restart.service` inicia — sobe só `asb-keyring` (`network=none`) |
+| 16:56:16 | proxy adotado inicia (mesmo ID `30d00837899d`) |
+| 16:56:52 | sonda falha: `proxy retornou status inesperado: HTTP/1.1 500 Internal Server Error` |
+| **16:56:54** | **`pasta` nasce** — o único namespace rootless em uso daqui em diante |
+| 16:57:00 | `restart counter is at 1`; **`Started ... proxy`** — sonda passa |
+| 16:57:01 | agente `active` (0 reinícios); target `active` |
+
+Pronto **47 s após o `network-online.target`**, com **1 reinício** do proxy —
+dentro do `StartLimitBurst=3`.
+
+### Verificação pelo caminho real, não só pelo estado do systemd
+
+| Verificação | Resultado |
+| :--- | :--- |
+| Egresso agente → proxy → `github.com` | **HTTP 200 em 0,33 s** |
+| Controle negativo: `example.com` (fora da allowlist) | **403**, bloqueado |
+| Porta SSH | **127.0.0.1:45379**, preservada |
+| SSH com a chave real (`~/.config/agent-sandbox/id_ed25519`) | **OK**, `hostname=44a536c94a6e` |
+| IDs dos containers | **idênticos** (`30d00837899d`, `44a536c94a6e`) |
+| Trabalho não commitado | HEAD `3bd3a1d`; sha256 `2c1a0f4c…` e `e0190ec7…` **idênticos** |
+| Credenciais | `claude=authenticated`, `codex=authenticated` |
+| Sondas do coletor | host, proxy, ssh e keyring **`healthy`** |
+| `t2-pilot-scratch` suspenso | **`Exited` há 22 min** — atravessou o reboot parado |
+
+Uma medição foi descartada por erro meu: a primeira tentativa de SSH usou um
+caminho de chave inexistente (`~/.local/state/agent-sandbox/ssh/id_ed25519`)
+e falhou com `Identity file ... not accessible`. Não é falha do produto; com
+a chave real (`lifecycle.SSH_KEY`) o SSH funcionou.
+
+### A incerteza residual da §6.3 foi resolvida
+
+O `podman-restart.service` iniciou às 16:56:15 e o `pasta` só nasceu às
+16:56:54. Portanto **iniciar o `asb-keyring` com `network=none` não cria o
+namespace rootless**. Neste boot, quem criou o namespace foi o workspace
+adotado.
+
+### Contraste com o boot 1 — hipótese principal, não comprovada
+
+O fato comum aos dois boots: a primeira tentativa do proxy **falhou** nos dois,
+logo após o `network-online.target`. A diferença: no boot 1 **nenhum**
+reinício recuperou; no boot 2 **o primeiro** recuperou.
+
+Inferência a partir dos carimbos: o proxy subiu às 16:56:16 em rede `bridge`,
+que exige namespace; o único `pasta` existente nasceu às 16:56:54, **depois**
+de a primeira tentativa já ter falhado. Logo, o namespace que serve o
+workspace pronto **não é** o que estava ativo na tentativa que falhou — ele foi
+**substituído**.
+
+Hipótese principal: **um namespace criado cedo só se recupera se nada o mantiver
+aberto.** No boot 1, o namespace foi criado pelo `unshare` do drop-in e
+mantido aberto pelos containers do `t2-pilot-scratch`, então cada reinício do
+proxy reutilizou o mesmo namespace quebrado. No boot 2, nada o segurava: quando
+o proxy caiu, o namespace foi recriado já com a rede de pé.
+
+Se confirmada, o dano do drop-in não é só criar o namespace cedo — é criá-lo de
+um jeito que impede os reinícios de renová-lo. **Isto não foi comprovado**: não
+se observou diretamente a destruição do primeiro namespace, só a ausência dele.
+
+### O que o boot 2 comprova
+
+1. **O runtime adotado sobe pronto sem comando corretivo** quando nenhum
+   outro produtor inicializa o namespace antes dele.
+2. **Critério 2, primeira metade:** workspace suspenso **permanece suspenso**
+   no reboot. O mecanismo que o segura é o filtro
+   `should-start-on-boot=true` do `podman-restart` com `StoppedByUser=true`.
+3. **Sonda falha + reinício recupera**, dentro do limite de reinícios.
+4. **Critério 6:** bloqueio de rede válido, com controle positivo
+   (github 200) e negativo (example.com 403).
+5. Porta, IDs, trabalho não commitado e credenciais preservados.
+
+### O que ainda falta neste boot
+
+- **Critério 2, segunda metade:** retomar o `t2-pilot-scratch` e comprovar
+  que preserva porta 34075, IDs e dados. Adiado de propósito: retomá-lo agora
+  o tornaria de novo produtor legacy antes dos boots restantes.
+
+---
+
+## 6.5. Orca: excluído e depois REINTEGRADO por decisão do operador
+
+**Histórico da decisão, em 2026-09-16:**
+
+1. O operador decidiu ignorar o Orca e, mais tarde, removê-lo como dependência.
+   Os itens de aceite ligados ao Orca foram marcados como excluídos.
+2. **Na mesma sessão o operador voltou atrás:** o Orca volta ao plano como
+   originalmente previsto, e ele mesmo criou um workspace pelo Orca para testar
+   o reboot. **A exclusão está retirada.** Os itens de aceite do Orca voltam a
+   ser pendentes:
+   - critério 1: verificar manualmente a reconexão do Orca, sem `resume`
+     corretivo;
+   - critério 5: falhas de admissão não emitem JSON de sucesso ao Orca.
+
+### Workspace criado pelo Orca
+
+| Item | Valor |
+| :--- | :--- |
+| Workspace | `orca-6ac72f62-53d9-481f-8bf0-297ab6626bd7` |
+| Repositório | `/home/v/Data/Projects/hexmed-stack` |
+| Criado | 2026-09-16 17:10:32 |
+| Runtime | **`legacy`** |
+| Porta SSH | 46851 |
+| Containers | `proxy`, **`fwd`**, `agent` — todos `unless-stopped`, rede `bridge` |
+| `ASB_HOST_PORTS` | `80,5432,6379,8080` |
+
+O `orca.yaml` e os shims de `hexmed-stack` foram conferidos antes: idênticos
+aos do BlackICE, `orca-ide vm recipe doctor` com 6 checagens `pass`, sem `warn`
+nem `fail`, receita versionada na branch primária. Não se usou `--provision`.
+
+### O caminho de criação do Orca reinstalou o drop-in
+
+Isto deixou de ser contexto e passou a afetar diretamente o plano de boots.
+`recipes/create.sh` chama `asb-agent up` **sem `--runtime`**, portanto
+`legacy`, e o ramo legacy de `up` chama `install.podman_restart()`
+(`lifecycle.py:826`). Medido:
+
+- o drop-in `agent-sandbox.conf` **voltou**, byte a byte idêntico ao backup, com
+  mtime **17:10:32 — o mesmo segundo** de criação do workspace do Orca;
+- `rootless_netns_producers` pela ferramenta:
+  `dropin:agent-sandbox.conf(projeto)`, `unit:podman-restart.service`,
+  `workspaces_rotulados:3`, `containers_sem_label:3`;
+- o `podman-restart` iniciará no próximo boot o `asb-keyring` (`network=none`)
+  **e os três containers do Orca em rede `bridge`**.
+
+Consequência: **a desativação temporária do drop-in da §6.3 foi desfeita pelo
+fluxo normal do Orca.** Todo workspace criado pelo Orca hoje nasce `legacy`,
+reinstala o drop-in e vira produtor precoce do namespace. O runtime systemd
+nunca é exercitado pelo caminho real de criação do Orca.
+
+### O forwarder
+
+O workspace do Orca tem um container `fwd`, que os workspaces do piloto não
+têm, porque `hexmed-stack` publica portas de host. A §7 registra que o
+forwarder pode precisar de recriação específica ao ser adotado. Nenhuma adoção
+foi feita neste workspace.
+
+## 6.6. Boot 3 — configuração real: REPROVADO, e com falha silenciosa
+
+**Boot ID:** `019a9a43-8213-4dff-a8b9-8d6b27975594` (antes: `155a3648…`).
+Primeiro boot na configuração de uso real: drop-in **ativo** (reinstalado pelo
+Orca, §6.5), `t2-pilot-blackice` adotado, workspace do Orca **legacy** com
+forwarder, `t2-pilot-scratch` suspenso. Autologin; nenhum comando corretivo.
+Esperado antes do reboot: reproduzir a falha do boot 1.
+
+### Linha do tempo medida
+
+| Hora | Evento |
+| :--- | :--- |
+| 17:16:15 | boot do kernel |
+| 17:16:45 | `network-online.target` |
+| **17:16:46** | **`pasta` nasce** — 1 s após a rede, como no boot 1 |
+| 17:16:46 | proxy adotado inicia |
+| 17:16:47 | `podman-restart` (ExecMainStart), após o `ExecStartPre` do drop-in; sobe os 3 containers do Orca |
+| 17:17:23 | proxy adotado: `timeout na sonda de egresso do proxy` |
+| 17:18:03 | idem, 2ª tentativa |
+| 17:18:43 | idem, 3ª tentativa |
+| 17:18:52 | `Start request repeated too quickly` → **`start-limit-hit`** |
+
+Mesmo motivo nas três tentativas, idêntico ao boot 1. A falha foi confirmada
+por espera ativa até estado terminal, cobrindo `failed`, `active` e timeout.
+
+### Workspace adotado: não se recuperou
+
+Proxy `failed` após 3 reinícios; os dois containers `exited`. Nenhum comando
+corretivo foi executado.
+
+### Workspace do Orca (legacy): FALHA SILENCIOSA
+
+| Verificação | Resultado |
+| :--- | :--- |
+| SSH na porta 46851 (o que o Orca usa para reconectar) | **OK**, `hostname=d4eef7acd56f` |
+| Egresso agente → proxy → `github.com` | **`CONNECT tunnel failed, response 503`** |
+| Host → `github.com` | HTTP 200 em 0,30 s |
+| Rota dentro do proxy | `default via 10.89.5.1`; `aardvark-dns` rodando |
+| Coletor | `ssh: healthy`, **`proxy: unreachable`** |
+| Credenciais | `claude=authenticated`, `codex=authenticated` |
+
+**Este é o achado mais grave do piloto.** O caminho legacy não tem sonda de
+prontidão. Os três containers ficam `Up`, o SSH responde e o Orca consegue
+reconectar — tudo parece funcionando —, mas **nenhum agente alcança API
+alguma**. Nada acusa o defeito. No workspace adotado a sonda recusou publicar
+prontidão; no legacy, ninguém pergunta.
+
+### Terceiro ponto a favor da hipótese do namespace preso
+
+| Boot | O que mantinha o namespace aberto | Adotado se recuperou? |
+| :--- | :--- | :--- |
+| 1 | drop-in + containers legacy do `t2-pilot-scratch` | **não** |
+| 2 | Suspenso continua suspenso; retomado preserva porta, ID, trabalho não commitado e dados de serviço | **PARCIAL** — suspenso **permaneceu suspenso em dois reboots** (boots 2 e 3). Retomada e preservação ainda não medidas |
+| 3 | drop-in + 3 containers legacy do Orca, estáveis | **não** |
+
+A hipótese da §6.4 previa, **antes** deste boot, que o adotado não se
+recuperaria enquanto os containers do Orca segurassem o namespace. A previsão
+se confirmou. Isso a fortalece, mas **não a prova**: a destruição e recriação
+do namespace segue inferida pelos carimbos, não observada.
+
+### O que o boot 3 comprova
+
+1. **A configuração de uso real falha no boot.** Com o drop-in e um workspace
+   legacy, nenhum workspace tem egresso depois do reboot.
+2. **O caminho legacy falha em silêncio**: SSH saudável, egresso morto.
+3. **Critério 2:** `t2-pilot-scratch` permaneceu suspenso por mais um reboot
+   (`exited`, `StoppedByUser=true`).
+4. **§8.4:** credenciais intactas; trabalho não commitado idêntico byte a byte
+   (HEAD `3bd3a1d`, sha256 `2c1a0f4c…` e `e0190ec7…`); IDs preservados.
+5. **Sem recuperação automática** no adotado: `start-limit-hit`.
+
+### Pendente neste boot
+
+- **Reconexão do Orca, verificação manual do operador.** Pelo que foi medido,
+  espera-se que o Orca **reconecte** (o SSH está saudável) e que isso **não**
+  signifique workspace utilizável.
+
+Evidência: `~/.local/state/agent-sandbox/t2-evidence/post-boot3-*`.
+
+---
+
+## 6.7. Validação pelo Orca BLOQUEADA por defeito do Orca
+
+**Relato do operador em 2026-09-16, após o boot 3:** o Orca tem um defeito,
+ainda não corrigido, ao **reidratar o terminal depois de um reboot**. Por isso
+não é possível continuar os testes de reboot pelo Orca.
+
+**Estado:** a verificação manual da reconexão do Orca (critério 1) está
+**BLOQUEADA** — nem reprovada, nem excluída. A causa é externa ao
+agent-sandbox, e o defeito não foi reproduzido nem investigado neste piloto;
+está registrado conforme relatado pelo operador.
+
+Isto não invalida o que foi medido no boot 3 pelo lado do sandbox: o SSH do
+workspace do Orca respondeu, e o egresso estava morto (§6.6). O defeito de
+reidratação do terminal é uma camada acima do SSH e não explica o 503.
+
+### Por que o Orca cria workspaces `legacy`
+
+Não é exigência do Orca. `recipes/create.sh` chama `asb-agent up` sem
+`--runtime`, e o padrão de `up` é `legacy` (`cli/asb-agent:44`,
+`default="legacy"`). Nenhuma variável de ambiente escolhe o runtime. O padrão é
+intencional nesta fase: o plano coordenador deixa a "decisão de promover o
+runtime" para o gate de aceite do T3, e proíbe migrar workspaces antes dele.
+
+O caminho systemd do código cobre o forwarder (`start_forwarder` em
+`lifecycle.py`, unidade `forwarder` no manifesto), que o `hexmed-stack` usa.
+**Isso não foi exercitado no piloto real.**
+
+### Consequência para o plano
+
+T2 se prolonga. O que ainda pode avançar **sem** o Orca:
+
+- a correção da inicialização do namespace (spec antes do código, pelo
+  AGENTS.md), seguida da repetição dos boots afetados;
+- a segunda metade do critério 2 (retomar o suspenso e medir preservação),
+  que não exige reboot;
+- a observação de renovação real de credencial, que depende só de tempo.
+
+O boot com rede atrasada fica adiado: com a configuração atual ele reproduziria
+uma falha já conhecida.
+
+---
+
 ## 7. Critérios de aceite (spec §8)
 
 | # | Critério | Estado |
 | :--- | :--- | :--- |
-| 1 | Três boots reais, incl. rede com atraso de 60 s | **REPROVADO** — boot 1 (`5acb7550`): o `ExecStartPre` do drop-in `agent-sandbox.conf` cria o namespace rootless em todo boot, sem egresso funcional, e nada a jusante o repara (§6.2). Repetir só suspendendo o legacy não é teste válido. Boots 2 e 3 não executados |
-| 2 | Suspenso continua suspenso; retomado preserva porta, ID, trabalho não commitado e dados de serviço | **NÃO EXECUTADO** |
+| 1 | Três boots reais, incl. rede com atraso de 60 s | **PARCIAL** — boot 1 (`5acb7550`) REPROVADO: o drop-in cria o namespace sem egresso e nada o repara (§6.2). Boot 2 (`155a3648`) APROVADO sem comando corretivo, com o drop-in desativado (§6.4), registrado como o cenário ativo+suspenso. Faltam: boot normal e boot com rede atrasada 60 s. Reconexão do Orca **pendente** — exclusão retirada pelo operador (§6.5) |
+| 2 | Suspenso continua suspenso; retomado preserva porta, ID, trabalho não commitado e dados de serviço | **PARCIAL** — suspenso **permaneceu suspenso** no boot 2 (§6.4). Retomada e preservação ainda não medidas |
 | 3 | Login real nos três fornecedores; cliente novo e dois workspaces; renovação observada ou pendente | **PARCIAL** — Claude (§5.2) e Antigravity (§5.3.1) reproduzidos e resolvidos individualmente; cliente novo e dois workspaces simultâneos utilizáveis nos três fornecedores (§5.3.2). **Em aberto:** Codex está `authenticated` por credencial de 2026-09-05 via symlink legado, não por login desta janela (§5.5); **renovação real não observada**; e dois workspaces do MESMO projeto com `publish_ports` não sobem juntos (§5.3.2) |
-| 4 | Queda de rede não apaga credencial; sem reset global | **PARCIAL** (§6.2) — credenciais não apagadas; indisponibilidade classificada como `unreachable`, não logout; nenhum reset global usado. **Recuperação automática NÃO demonstrada**: o systemd desistiu após 3 reinícios. Cenário de queda de rede (fase d) não executado |
-| 5 | Proxy ausente, porta 80 sem listener e keyring indisponível detectados | **PARCIAL** — no boot 1 real, falha de egresso do proxy foi detectada e a unidade **não** foi dada como pronta (§6.2). Porta 80 e keyring indisponível não revalidados no piloto real |
-| 6 | Bloqueios de rede válidos, com controles positivos de SSH e proxy | Controles positivos observados na preparação (§3); **cenário negativo não reexecutado aqui** |
+| 4 | Queda de rede não apaga credencial; sem reset global | **PARCIAL** — credenciais intactas nos três boots; indisponibilidade classificada como `unreachable`, não logout; nenhum reset global usado. **Recuperação automática reprovada** nos boots 1 e 3 (`start-limit-hit`). Cenário de queda de rede (fase d) não executado |
+| 5 | Proxy ausente, porta 80 sem listener e keyring indisponível detectados | **PARCIAL** — falha de egresso do proxy foi detectada e a unidade **não** foi dada como pronta (§6.2, §6.4). Porta 80 e keyring indisponível não revalidados no piloto real. A parte "JSON de sucesso ao Orca" está **pendente** — exclusão retirada pelo operador (§6.5) |
+| 6 | Bloqueios de rede válidos, com controles positivos de SSH e proxy | **SATISFEITO no boot 2** (§6.4) — egresso permitido github 200, negado example.com 403, SSH OK |
 | 7 | Rollback de supervisão ensaiado sem perda de dados nem troca de porta | **SATISFEITO** (§6) — porta, IDs e trabalho não commitado preservados; ressalva: workspace criado pelo piloto |
 | 8 | Dois dias de uso real sem reparo manual | **NÃO EXECUTADO** |
 

@@ -779,6 +779,73 @@ class TestDoctorSecretService(unittest.TestCase):
             mock_podman_run.assert_not_called()
 
 
+class TestDoctorServiceBlockNeverSwallows(unittest.TestCase):
+    # Reaproveita o cenario, nunca os testes: herdar a classe os rodaria de
+    # novo aqui.
+    setUp = TestDoctorSecretService.setUp
+    tearDown = TestDoctorSecretService.tearDown
+    """Achado da revisao final: um `except Exception: pass` cobria o bloco
+    inteiro de servicos. Perfil com erro de sintaxe, ou uma inspecao que
+    levanta no meio, davam `services: []` (identico a projeto sem servico) e
+    `healthy: true` — o diagnostico reportando sucesso por nao ter conseguido
+    ler a propria entrada."""
+
+    def _payload(self, toml_text, out_side_effect):
+        ws_dir = self.fake_home / ".local" / "state" / "agent-sandbox" / "test-svc-ws"
+        ws_dir.mkdir(parents=True)
+        repo_dir = Path(self.tmp.name) / "my-repo"
+        repo_dir.mkdir(parents=True)
+        (ws_dir / "origin").write_text(str(repo_dir))
+        (repo_dir / ".agent-sandbox.toml").write_text(toml_text)
+
+        with mock.patch("asb.doctor.Path.home", return_value=self.fake_home), \
+             mock.patch("asb.doctor.shutil.which", return_value="/usr/bin/mock"), \
+             mock.patch("asb.doctor.subprocess.run", return_value=mock.Mock(stdout="enabled\n")), \
+             mock.patch("asb.doctor.podman.exists", return_value=True), \
+             mock.patch("asb.doctor.podman.running", return_value=True), \
+             mock.patch("asb.doctor.podman.out", side_effect=out_side_effect), \
+             mock.patch("asb.doctor.check_keyring_service", return_value=(True, "Secret Service (asb-keyring)", "")), \
+             mock.patch("asb.doctor.check_legacy_agent_container", return_value=(False, "")), \
+             mock.patch("asb.doctor.check_workspace_egress", return_value=(True, "egresso ok", "")), \
+             mock.patch("asb.doctor.third_party_netns_producers", return_value=[]):
+            out = io.StringIO()
+            with mock.patch("sys.stdout", out):
+                code = doc_mod.doctor(self.fake_root, as_json=True)
+        data = json.loads(out.getvalue())
+        ws_item = next(w for w in data["infrastructure"]["workspaces"]
+                       if w["workspace"] == "test-svc-ws")
+        return code, ws_item
+
+    def test_unreadable_project_profile_fails_the_workspace(self):
+        def fake_out(*args):
+            return "podman version 5.0.0" if any("version" in str(a) for a in args) else ""
+
+        code, ws_item = self._payload("[services.redis\nimage = ", fake_out)
+        self.assertNotEqual(code, 0)
+        self.assertFalse(ws_item["healthy"])
+        self.assertIn("perfil", ws_item["remediation"] + ws_item["status"])
+
+    def test_one_failing_inspect_does_not_hide_the_remaining_services(self):
+        calls = {"n": 0}
+
+        def fake_out(*args):
+            if any("version" in str(a) for a in args):
+                return "podman version 5.0.0"
+            if any("{{.State.Health.Status}}" in str(a) for a in args):
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    raise doc_mod.podman.PodmanError("inspect falhou")
+                return "unhealthy"
+            return ""
+
+        code, ws_item = self._payload(
+            '[services.a]\nimage = "redis:alpine"\n[services.b]\nimage = "redis:alpine"\n',
+            fake_out)
+        self.assertEqual(len(ws_item["services"]), 2)
+        self.assertFalse(ws_item["healthy"])
+        self.assertNotEqual(code, 0)
+
+
 class TestEmendaAChecks(unittest.TestCase):
     """Emenda A: o doctor aponta o drop-in legado, a espera de rede e produtores alheios."""
 
@@ -808,6 +875,16 @@ class TestEmendaAChecks(unittest.TestCase):
         check = doc_mod.check_project_dropin_absent()
         self.assertFalse(check["healthy"])
         self.assertIn("daemon-reload", check["remediation"])
+
+    def test_failed_network_gate_is_an_infrastructure_failure(self):
+        """Toda unidade de workspace tem Requires=asb-network.service: com a
+        espera em `failed`, nenhum workspace sobe, e o doctor dizia 'saudavel'."""
+        with mock.patch("asb.doctor.subprocess.run",
+                        return_value=mock.Mock(stdout="failed\n")):
+            check = doc_mod.check_network_gate()
+        self.assertFalse(check["healthy"])
+        self.assertIn("failed", check["label"])
+        self.assertIn("journalctl", check["remediation"])
 
     def test_network_gate_state_is_reported_without_failing_health(self):
         with mock.patch("asb.doctor.subprocess.run",

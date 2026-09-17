@@ -247,6 +247,23 @@ def check_legacy_agent_container(agent: str) -> tuple[bool, str]:
     return False, ""
 
 
+def _service_state(ws: str, svc_container: str) -> tuple[bool, str, str]:
+    """Estado de um container de servico: (saudavel, estado, remediacao)."""
+    if not podman.exists("container", svc_container):
+        return False, "missing", f"asb-agent resume --workspace {ws}"
+    if not podman.running(svc_container):
+        return False, "stopped", f"asb-agent resume --workspace {ws}"
+    raw_health = podman.out(
+        "container", "inspect", svc_container, "--format", "{{.State.Health.Status}}"
+    ).strip()
+    if raw_health == "healthy":
+        return True, "healthy", ""
+    if raw_health in ("unhealthy", "starting"):
+        return False, raw_health, f"podman logs {svc_container}"
+    # Sem healthcheck: fica process_running, nao application_ready.
+    return True, "process_running", ""
+
+
 def check_project_dropin_absent() -> dict[str, Any]:
     """Emenda A: o drop-in do projeto criava o namespace rootless cedo em todo boot."""
     path = install.get_dropin_path()
@@ -272,11 +289,23 @@ def check_network_gate() -> dict[str, Any]:
     state = subprocess.run(
         ["systemctl", "--user", "is-active", unit],
         capture_output=True, text=True).stdout.strip() or "desconhecido"
+    # `inactive` e normal antes do primeiro workspace, e `activating` e a
+    # espera fazendo o trabalho dela. `failed` nao: toda unidade de workspace
+    # tem Requires= nesta, entao nenhum workspace sobe enquanto ela estiver
+    # assim — reportar isso como saudavel escondia a causa do `up` falhar.
+    healthy = state != "failed"
+    if state == "activating":
+        remediation = "aguardando conectividade real do host"
+    elif healthy:
+        remediation = ""
+    else:
+        remediation = (f"journalctl --user -u {unit} && "
+                       f"systemctl --user reset-failed {unit}")
     return {
         "name": "network_gate",
-        "healthy": True,
+        "healthy": healthy,
         "label": f"espera por rede {unit}: {state}",
-        "remediation": "aguardando conectividade real do host" if state == "activating" else "",
+        "remediation": remediation,
     }
 
 
@@ -524,33 +553,26 @@ def diagnose(root: Path) -> dict[str, Any]:
             if toml_file.is_file():
                 try:
                     prof = load_profile(Path(origin_path))
+                except Exception as exc:
+                    # Engolir isto dava `services: []` — identico a um projeto
+                    # sem servico algum — com `healthy: true`. Um diagnostico
+                    # nunca reporta sucesso por nao ter lido a propria entrada.
+                    ws_healthy = False
+                    ws_status = "perfil ilegivel"
+                    ws_remediation = f"corrija {toml_file}: {exc}"
+                else:
                     for svc in prof.services:
                         svc_container = f"asb-{ws}-svc-{svc.name}"
-                        if not podman.exists("container", svc_container):
+                        try:
+                            svc_healthy, svc_state, svc_remediation = _service_state(
+                                ws, svc_container)
+                        except Exception as exc:
+                            # Uma inspecao que levanta no meio abortava o laco:
+                            # os servicos seguintes sumiam do relatorio sem
+                            # nunca terem sido olhados.
                             svc_healthy = False
-                            svc_state = "missing"
-                            svc_remediation = f"asb-agent resume --workspace {ws}"
-                        elif not podman.running(svc_container):
-                            svc_healthy = False
-                            svc_state = "stopped"
-                            svc_remediation = f"asb-agent resume --workspace {ws}"
-                        else:
-                            raw_health = podman.out(
-                                "container", "inspect", svc_container, "--format", "{{.State.Health.Status}}"
-                            ).strip()
-                            if raw_health == "healthy":
-                                svc_healthy = True
-                                svc_state = "healthy"
-                                svc_remediation = ""
-                            elif raw_health in ("unhealthy", "starting"):
-                                svc_healthy = False
-                                svc_state = raw_health
-                                svc_remediation = f"podman logs {svc_container}"
-                            else:
-                                # Sem healthcheck: fica process_running, não application_ready
-                                svc_healthy = True
-                                svc_state = "process_running"
-                                svc_remediation = ""
+                            svc_state = f"indeterminado: {exc}"
+                            svc_remediation = f"podman inspect {svc_container}"
 
                         if not svc_healthy:
                             ws_healthy = False
@@ -562,8 +584,6 @@ def diagnose(root: Path) -> dict[str, Any]:
                             "healthy": svc_healthy,
                             "remediation": svc_remediation,
                         })
-                except Exception:
-                    pass
 
         infra_healthy &= ws_healthy
         workspaces.append({

@@ -509,7 +509,7 @@ def _run_mise_installs(agent_container: str, project_root: Path) -> list[tuple[P
         print(f"  info executando mise install em {d.name}...", file=sys.stderr)
         res = podman.run("exec", "-u", "1000", "-w", str(d),
                          agent_container, "mise", "install", "-y", check=False)
-        rc = getattr(res, "returncode", 0)
+        rc = getattr(res, "returncode", 1)  # ausente = falha, nunca sucesso
         if rc == 0:
             print(f"  ok   ferramentas mise instaladas ({d.name})", file=sys.stderr)
         else:
@@ -920,18 +920,30 @@ def suspend(ws: str) -> int:
     n, _, _ = _require_workspace(ws)
 
     target = f"asb-{ws}.target"
-    subprocess.run(
-        ["systemctl", "--user", "disable", target],
-        check=False,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    subprocess.run(
-        ["systemctl", "--user", "stop", target],
-        check=False,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
+
+    def _systemctl(*args: str):
+        return subprocess.run(["systemctl", "--user", *args],
+                              check=False, capture_output=True, text=True)
+
+    # A saida ia para /dev/null: um systemctl que falha (hook sem barramento
+    # do usuario, por exemplo) era invisivel, e a verificacao seguinte
+    # perguntava ao Podman — subsistema errado. Quem devolve o container e o
+    # `Restart=always` da unidade, entao e a unidade que precisa estar fora.
+    for verb in ("disable", "stop"):
+        res = _systemctl(verb, target)
+        if res.returncode != 0 and (res.stderr or "").strip():
+            print(f"aviso: systemctl --user {verb} {target} falhou: "
+                  f"{res.stderr.strip()}", file=sys.stderr)
+
+    state = (_systemctl("is-active", target).stdout or "").strip()
+    if state in ("active", "activating", "reloading"):
+        print(
+            f"erro: falha ao suspender workspace {ws}: a unidade {target} "
+            f"continua {state}, e o systemd devolve os containers em segundos. "
+            f"Veja 'systemctl --user status {target}'.",
+            file=sys.stderr,
+        )
+        return 1
 
     containers = podman.out(
         "ps", "--filter", f"label=asb.workspace={ws}",

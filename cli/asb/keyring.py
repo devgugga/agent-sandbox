@@ -173,13 +173,15 @@ def check_keyring_service(container: str | None = None, timeout: float | None = 
         schema, mounts = _inspect_keyring_container(name, timeout=timeout)
         if schema != KEYRING_SCHEMA:
             return (False, f"schema do Secret Service ({name}) desatualizado ({schema or 'legado'})",
-                    f"recrie o container: podman rm -f {name} "
+                    f"recrie o container: systemctl --user stop {name}.service "
+                    f"&& podman rm -f {name} "
                     "(schema e atualizado automaticamente ao preparar um workspace)")
 
         contract_issue = _keyring_mount_contract_issue(mounts)
         if contract_issue:
             return (False, f"contrato de mounts do Secret Service violado ({name}): {contract_issue}",
-                    f"recrie o container: podman rm -f {name} "
+                    f"recrie o container: systemctl --user stop {name}.service "
+                    f"&& podman rm -f {name} "
                     "(contrato de mounts e restaurado automaticamente ao preparar um workspace)")
 
         sock_check = podman.run(

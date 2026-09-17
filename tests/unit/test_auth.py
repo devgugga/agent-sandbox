@@ -398,6 +398,11 @@ class TestCheckKeyringService(unittest.TestCase):
             self.assertIn("desatualizado", label)
             self.assertNotIn("login", fix)
             self.assertIn("podman rm -f asb-keyring", fix)
+            # Com a unidade ativa, remover o container leva a unidade a
+            # `failed` pelo StartLimitBurst: ela sai da frente primeiro.
+            self.assertIn("systemctl --user stop asb-keyring.service", fix)
+            self.assertLess(fix.index("systemctl --user stop"),
+                            fix.index("podman rm -f"))
 
     def test_check_keyring_service_mounts_violated(self):
         with mock.patch("asb.lifecycle.podman.exists", return_value=True), \
@@ -408,6 +413,11 @@ class TestCheckKeyringService(unittest.TestCase):
             self.assertIn("violado", label)
             self.assertNotIn("login", fix)
             self.assertIn("podman rm -f asb-keyring", fix)
+            # Com a unidade ativa, remover o container leva a unidade a
+            # `failed` pelo StartLimitBurst: ela sai da frente primeiro.
+            self.assertIn("systemctl --user stop asb-keyring.service", fix)
+            self.assertLess(fix.index("systemctl --user stop"),
+                            fix.index("podman rm -f"))
 
     def test_check_keyring_service_rejects_wrong_volume_source(self):
         inspected = {

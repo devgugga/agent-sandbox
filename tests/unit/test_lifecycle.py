@@ -1227,6 +1227,38 @@ class TestManagedLifecycleCommands(unittest.TestCase):
             self.assertTrue(any("disable" in c and "asb-demo.target" in c for c in systemctl_calls))
             self.assertTrue(any("stop" in c and "asb-demo.target" in c for c in systemctl_calls))
 
+    def test_suspend_fails_when_the_unit_survives_the_stop(self):
+        """Achado da revisao final: `systemctl` falhando (hook sem barramento
+        do usuario, por exemplo) ia para /dev/null, e a verificacao perguntava
+        ao Podman. Com a unidade viva, `Restart=always` devolve o container
+        cinco segundos depois e o operador ja leu 'suspenso'."""
+        from unittest import mock
+        from cli.asb import lifecycle
+
+        fake_n = {"agent": "asb-demo-agent", "proxy": "asb-demo-proxy"}
+
+        def fake_subprocess_run(cmd, *args, **kwargs):
+            if cmd[:3] == ["systemctl", "--user", "is-active"]:
+                return mock.MagicMock(returncode=0, stdout="active\n", stderr="")
+            return mock.MagicMock(returncode=1, stdout="", stderr="Failed to connect to bus")
+
+        with mock.patch("cli.asb.lifecycle._require_workspace", return_value=(fake_n, Path("/tmp"), Path("/origin"))), \
+             mock.patch("subprocess.run", side_effect=fake_subprocess_run), \
+             mock.patch("cli.asb.podman.out", return_value=""), \
+             mock.patch("cli.asb.podman.exists", return_value=True), \
+             mock.patch("cli.asb.podman.running", return_value=False), \
+             mock.patch("cli.asb.podman.run") as podman_run:
+            import contextlib, io
+            stderr = io.StringIO()
+            with contextlib.redirect_stderr(stderr):
+                rc = lifecycle.suspend("demo")
+        self.assertEqual(rc, 1)
+        self.assertIn("asb-demo.target", stderr.getvalue())
+        # Falha do systemctl deixa de ser invisivel.
+        self.assertIn("Failed to connect to bus", stderr.getvalue())
+        # E nao se para container enquanto a unidade pode devolve-lo.
+        podman_run.assert_not_called()
+
     def test_suspend_fails_when_container_refuses_to_stop(self):
         """S1: suspend deve verificar que os containers pararam de fato, e
         retornar codigo != 0 (nunca 0 incondicional) quando algum permanece

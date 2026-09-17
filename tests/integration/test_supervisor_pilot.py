@@ -10,6 +10,7 @@ Validates systemd Type=exec supervision over persistent Podman containers:
 """
 from __future__ import annotations
 
+import getpass
 import subprocess
 import sys
 import time
@@ -246,18 +247,19 @@ class TestSupervisorPilot(unittest.TestCase):
             sandbox.exec("mkdir", "-p", "/run/sshd")
             sandbox.exec("ssh-keygen", "-A")
             pub_key = sandbox.ssh_key.with_suffix(".pub").read_text().strip()
+            user = getpass.getuser()
             auth_script = (
-                f"mkdir -p /home/v/.ssh && "
-                f"echo '{pub_key}' > /home/v/.ssh/authorized_keys && "
-                f"chown -R 1000:1000 /home/v/.ssh && "
-                f"chmod 700 /home/v/.ssh && "
-                f"chmod 600 /home/v/.ssh/authorized_keys"
+                f"mkdir -p /home/{user}/.ssh && "
+                f"echo '{pub_key}' > /home/{user}/.ssh/authorized_keys && "
+                f"chown -R 1000:1000 /home/{user}/.ssh && "
+                f"chmod 700 /home/{user}/.ssh && "
+                f"chmod 600 /home/{user}/.ssh/authorized_keys"
             )
             sandbox.exec("sh", "-c", auth_script)
             sandbox.exec("/usr/sbin/sshd")
 
             # Positive SSH check
-            ssh_ok = probe_ssh(port=host_port, user="v", key=sandbox.ssh_key, timeout=5.0)
+            ssh_ok = probe_ssh(port=host_port, user=user, key=sandbox.ssh_key, timeout=5.0)
             self.assertEqual(ssh_ok.state, "healthy")
             self.assertEqual(ssh_ok.code, "ok")
 
@@ -267,7 +269,7 @@ class TestSupervisorPilot(unittest.TestCase):
                 ["ssh-keygen", "-t", "ed25519", "-N", "", "-f", str(wrong_key)],
                 check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             )
-            ssh_refused = probe_ssh(port=host_port, user="v", key=wrong_key, timeout=3.0)
+            ssh_refused = probe_ssh(port=host_port, user=user, key=wrong_key, timeout=3.0)
             self.assertEqual(ssh_refused.state, "failed")
             self.assertEqual(ssh_refused.code, "key_refused")
 

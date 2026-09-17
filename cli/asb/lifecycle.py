@@ -988,11 +988,15 @@ def resume(root: Path, ws: str) -> int:
     if manifest_file.is_file():
         try:
             manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
-            for info in manifest.get("containers", {}).values():
-                if isinstance(info, dict) and "unit" in info:
-                    reset_units.append(info["unit"])
-        except Exception:
-            pass
+        except (json.JSONDecodeError, OSError) as exc:
+            raise podman.PodmanError(
+                f"manifesto de runtime corrompido: {exc}"
+            ) from exc
+        if not isinstance(manifest, dict):
+            raise podman.PodmanError("manifesto de runtime corrompido: raiz deve ser um objeto JSON")
+        for info in manifest.get("containers", {}).values():
+            if isinstance(info, dict) and "unit" in info:
+                reset_units.append(info["unit"])
     subprocess.run(
         ["systemctl", "--user", "reset-failed", *reset_units],
         check=False,

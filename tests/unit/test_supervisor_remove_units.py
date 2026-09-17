@@ -74,6 +74,18 @@ class TestRemoveWorkspaceUnits(_TmpCase):
         self.assertTrue(link.is_symlink())
         self.assertEqual([c.args[0][2] for c in run.call_args_list], ["stop", "disable"])
 
+    def test_corrupted_manifest_raises_value_error(self) -> None:
+        """R6: manifesto corrompido nunca e silenciado como se estivesse ausente."""
+        state_dir = self.tmp / "state" / WS
+        state_dir.mkdir(parents=True)
+        (state_dir / "runtime.json").write_text("{corrompido: sim", encoding="utf-8")
+        with clean_env(env_for(self.tmp)), \
+                mock.patch("subprocess.run", return_value=subprocess.CompletedProcess([], 0, "", "")):
+            with self.assertRaises(ValueError) as ctx:
+                supervisor.remove_workspace_units(WS, target_dir=self.tmp / "units", state_dir=state_dir)
+            self.assertIn("manifesto de runtime corrompido", str(ctx.exception))
+
+
 
 if __name__ == "__main__":
     unittest.main()

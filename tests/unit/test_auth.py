@@ -13,7 +13,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "cli"))
 
-from asb import keyring, lifecycle  # noqa: E402
+from asb import keyring, lifecycle, podman  # noqa: E402
 
 
 def valid_keyring_mounts(pass_file: Path | None = None) -> dict[str, dict[str, object]]:
@@ -158,6 +158,14 @@ class TestKeyringServiceLifecycle(unittest.TestCase):
             [c.args[0] for c in systemctl.call_args_list],
             [["systemctl", "--user", "enable", unit], ["systemctl", "--user", "start", unit]],
         )
+
+    def test_ensure_keyring_service_fails_when_image_is_missing(self):
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch("asb.lifecycle.podman.exists", return_value=False))
+            with self.assertRaises(podman.PodmanError) as ctx:
+                lifecycle.ensure_keyring_service(self.RUNTIME_DIR)
+            self.assertIn(f"imagem {lifecycle.IMAGE} ausente", str(ctx.exception))
 
     def test_existing_supervised_container_is_kept_and_started_by_systemd(self):
         from contextlib import ExitStack

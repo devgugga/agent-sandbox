@@ -503,7 +503,7 @@ class TestStartForwarder(unittest.TestCase):
 class TestSingleRuntimeUp(unittest.TestCase):
     """Emenda A: `up` tem runtime unico, remove o drop-in, verifica o host e nunca roda `unshare`."""
 
-    def _run_up(self, *, host_state: str = "healthy"):
+    def _run_up(self, *, host_state: str = "healthy", dropin_removed: bool = False):
         import json
         from contextlib import ExitStack
         from unittest import mock
@@ -528,7 +528,7 @@ class TestSingleRuntimeUp(unittest.TestCase):
 
         def fake_remove_dropin(*args, **kwargs):
             events.append("remove-dropin")
-            return False
+            return dropin_removed
 
         tmp_ctx = tempfile.TemporaryDirectory()
         self.addCleanup(tmp_ctx.cleanup)
@@ -614,6 +614,16 @@ class TestSingleRuntimeUp(unittest.TestCase):
         self.assertLess(events.index("host-probe"), first_resource)
         self.assertLess(first_resource, events.index("start-target"))
 
+    def test_up_notifies_stderr_when_legacy_dropin_is_removed(self):
+        import contextlib
+        import io
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            _, error, _, _, _, _, _ = self._run_up(dropin_removed=True)
+        self.assertIsNone(error)
+        self.assertIn("drop-in legado do podman-restart removido", stderr.getvalue())
+
+
     def test_up_without_network_fails_before_creating_any_resource(self):
         rc, error, _, podman_calls, mock_install, mock_start, manifest = self._run_up(
             host_state="unreachable")
@@ -635,9 +645,10 @@ class TestSingleRuntimeUp(unittest.TestCase):
 class TestSingleRuntimeResume(unittest.TestCase):
     """Emenda A: `resume` verifica o host, garante o keyring, sobe o target e nunca roda `unshare`."""
 
-    def _run_resume(self, *, host_state: str = "healthy"):
+    def _run_resume(self, *, host_state: str = "healthy", manifest_content: str | None = None):
         from unittest import mock
         from cli.asb import lifecycle
+        from cli.asb.podman import PodmanError
         from cli.asb.readiness import ProbeResult
         from cli.asb.workspace import Layout
 
@@ -648,6 +659,8 @@ class TestSingleRuntimeResume(unittest.TestCase):
         tmp = Path(tmp_ctx.name)
         state = tmp / "state"
         state.mkdir()
+        if manifest_content is not None:
+            (state / "runtime.json").write_text(manifest_content, encoding="utf-8")
         runtime_dir = tmp / "runtime" / "rev1"
         runtime_dir.mkdir(parents=True)
         layout = Layout(ws="demo", project="proj", mount=tmp / "mount",
@@ -706,6 +719,14 @@ class TestSingleRuntimeResume(unittest.TestCase):
         self.assertEqual(rc, 0)
         (runtime_dir,), _ = mock_keyring.call_args
         self.assertEqual(runtime_dir.name, "rev1")
+
+    def test_resume_corrupted_manifest_raises_podman_error(self):
+        """R6: manifesto corrompido em resume levanta PodmanError em vez de silenciar."""
+        from cli.asb.podman import PodmanError
+        with self.assertRaises(PodmanError) as ctx:
+            self._run_resume(manifest_content="{corrompido: sim")
+        self.assertIn("manifesto de runtime corrompido", str(ctx.exception))
+
 
 
 class TestTransactionalRollback(unittest.TestCase):

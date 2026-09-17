@@ -291,12 +291,14 @@ class TestProbeSSH(unittest.TestCase):
 
 
 class TestProbeWorkspace(unittest.TestCase):
+    @mock.patch("asb.podman.running", return_value=True)
+    @mock.patch("asb.podman.out", return_value="0.0.0.0:2222")
     @mock.patch("asb.readiness.probe_proxy")
     @mock.patch("asb.readiness.probe_host")
     @mock.patch("asb.readiness.probe_ssh")
     @mock.patch("asb.readiness.probe_keyring")
     def test_probe_workspace_integration_and_isolation_from_auth(
-        self, mock_keyring, mock_ssh, mock_host, mock_proxy
+        self, mock_keyring, mock_ssh, mock_host, mock_proxy, mock_out, mock_running
     ):
         failure = ProbeResult("proxy", "failed", "connect_denied", 10, "review_allowlist")
         mock_proxy.return_value = failure
@@ -307,6 +309,29 @@ class TestProbeWorkspace(unittest.TestCase):
         result = probe_workspace("test-readiness")
         self.assertIn("connect_denied", [item.code for item in result])
         self.assertNotIn("unauthenticated", [item.state for item in result])
+        mock_ssh.assert_called_once_with(port=2222)
+        mock_proxy.assert_called_once()
+        mock_host.assert_called_once()
+        mock_keyring.assert_called_once()
+
+    @mock.patch("asb.podman.running", return_value=False)
+    @mock.patch("asb.readiness.probe_proxy")
+    @mock.patch("asb.readiness.probe_host")
+    @mock.patch("asb.readiness.probe_ssh")
+    @mock.patch("asb.readiness.probe_keyring")
+    def test_probe_workspace_when_agent_not_running(
+        self, mock_keyring, mock_ssh, mock_host, mock_proxy, mock_running
+    ):
+        mock_proxy.return_value = ProbeResult("proxy", "healthy", "ok", 10, "")
+        mock_host.return_value = ProbeResult("host", "healthy", "ok", 12, "")
+        mock_keyring.return_value = ProbeResult("keyring", "healthy", "ok", 5, "")
+
+        result = probe_workspace("test-readiness")
+        mock_ssh.assert_not_called()
+        ssh_results = [item for item in result if item.component == "ssh"]
+        self.assertEqual(len(ssh_results), 1)
+        self.assertEqual(ssh_results[0].code, "agent_not_running")
+
 
 
 class TestProbeSshIdentityAtCallSites(unittest.TestCase):

@@ -814,3 +814,32 @@ class TestEmendaAChecks(unittest.TestCase):
             producers = doc_mod.third_party_netns_producers()
         self.assertEqual(producers, ["dropin:other.conf", "container:foreign-app"])
         self.assertEqual(run.call_args.args[:4], ("ps", "-a", "--filter", "should-start-on-boot=true"))
+
+    def test_check_project_dropin_absent_handles_runtime_error(self):
+        with mock.patch("asb.install.read_project_dropin",
+                        side_effect=RuntimeError("symlink outside root")):
+            check = doc_mod.check_project_dropin_absent()
+        self.assertFalse(check["healthy"])
+        self.assertIn("symlink outside root", check["remediation"])
+
+    def test_third_party_producers_handles_podman_error(self):
+        with mock.patch("asb.doctor.podman.run",
+                        side_effect=doc_mod.podman.PodmanError("podman down")):
+            producers = doc_mod.third_party_netns_producers()
+        self.assertEqual(producers, ["desconhecido: podman ps falhou (podman down)"])
+
+    def test_diagnose_with_third_party_producers_reports_label_and_remediation(self):
+        with mock.patch("asb.doctor.third_party_netns_producers",
+                        return_value=["container:foreign-app"]), \
+             mock.patch("asb.doctor.check_project_dropin_absent",
+                        return_value={"name": "dropin", "healthy": True, "label": "ok", "remediation": ""}), \
+             mock.patch("asb.doctor.check_network_gate",
+                        return_value={"name": "gate", "healthy": True, "label": "ok", "remediation": ""}), \
+             mock.patch("asb.doctor.podman.run", return_value=mock.Mock(returncode=0)), \
+             mock.patch("asb.doctor.podman.exists", return_value=True), \
+             mock.patch("asb.doctor.check_keyring_service", return_value=(True, "ok", "")):
+            report = doc_mod.diagnose(self.config_root)
+        netns_checks = [c for c in report["infrastructure"]["checks"] if c["name"] == "netns_producers_third_party"]
+        self.assertEqual(len(netns_checks), 1)
+        self.assertIn("foreign-app", netns_checks[0]["label"])
+        self.assertIn("revise-os", netns_checks[0]["remediation"])

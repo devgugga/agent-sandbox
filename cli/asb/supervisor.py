@@ -464,20 +464,21 @@ def remove_workspace_units(
     if manifest_file.is_file():
         try:
             manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
-        except Exception:
-            manifest = None
-        if isinstance(manifest, dict):
-            containers = manifest.get("containers", {})
-            if isinstance(containers, dict):
-                for role, info in containers.items():
-                    if isinstance(info, dict):
-                        u_name = info.get("unit") or f"asb-{ws}-{role}.service"
-                    elif isinstance(info, str):
-                        u_name = f"{info}.service"
-                    else:
-                        continue
-                    if u_name and "\n" not in u_name and "\r" not in u_name and "/" not in u_name:
-                        unit_names.append(u_name)
+        except (json.JSONDecodeError, OSError) as exc:
+            raise ValueError(f"manifesto de runtime corrompido: {exc}") from exc
+        if not isinstance(manifest, dict):
+            raise ValueError("manifesto de runtime corrompido: raiz deve ser um objeto JSON")
+        containers = manifest.get("containers", {})
+        if isinstance(containers, dict):
+            for role, info in containers.items():
+                if isinstance(info, dict):
+                    u_name = info.get("unit") or f"asb-{ws}-{role}.service"
+                elif isinstance(info, str):
+                    u_name = f"{info}.service"
+                else:
+                    continue
+                if u_name and "\n" not in u_name and "\r" not in u_name and "/" not in u_name:
+                    unit_names.append(u_name)
 
     # Remover arquivos de unidade
     if target_path.is_dir():

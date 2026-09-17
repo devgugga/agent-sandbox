@@ -317,6 +317,8 @@ class Pilot(SandboxFixture):
             "ASB_KEYRING_DATA_VOLUME": self.keyring_data_volume,
             "ASB_KEYRING_PASS_FILE": str(self.passphrase_file),
             "ASB_CONFIG_ROOT": str(self.config_dir),
+            "ASB_NETWORK_UNIT": self.network_unit,
+            "ASB_NETWORK_GATE_TARGET": f"127.0.0.1:{self.control.server_address[1]}",
             "XDG_CONFIG_HOME": str(self.xdg_config),
         }
         self.register_container(self.keyring_container)

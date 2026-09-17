@@ -68,6 +68,7 @@ class SandboxFixture:
         # para que o teardown o remova e o `assert_no_orphans` o cubra.
         self.session_volume = f"{self._prefix}-session"
         self.keyring_container = f"{self._prefix}-keyring"
+        self.network_unit = f"{self._prefix}-network.service"
         self.net_internal = f"{self._prefix}-net"
         self.net_out = f"{self._prefix}-out"
         self.forwarder_ports = list(forwarder_ports) if forwarder_ports is not None else []
@@ -134,6 +135,7 @@ class SandboxFixture:
         self._registered_units.add(f"asb-{self.workspace}-forwarder.service")
         self._registered_units.add(f"asb-{self.workspace}-docker.service")
         self._registered_units.add(f"{self._prefix}-keyring.service")
+        self._registered_units.add(self.network_unit)
 
         # Volume criado por `lifecycle`, nao pela fixture: sem este registro o
         # teardown nao sabia da existencia dele e cada execucao de
@@ -746,6 +748,7 @@ class SandboxFixture:
         env["ASB_KEYRING_PASS_FILE"] = str(self.passphrase_file)
         env["ASB_CONFIG_ROOT"] = str(self.config_dir)
         env["ASB_STATE_ROOT"] = str(self.state_root / "state")
+        env["ASB_NETWORK_UNIT"] = self.network_unit
         cli_bin = Path(__file__).resolve().parents[2] / "cli" / "asb-agent"
         return subprocess.run(
             [sys.executable, str(cli_bin), *args],

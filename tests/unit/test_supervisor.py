@@ -4,6 +4,7 @@ from __future__ import annotations
 import asb_test_isolation  # noqa: F401  (guarda de isolamento da suite: nenhum volume real)
 
 import json
+import os
 import shutil
 import subprocess
 import sys
@@ -198,9 +199,13 @@ class TestContainerUnitAndRender(unittest.TestCase):
             mock_rc = special_dir / "runtime_check.py"
             mock_rc.write_text("#!/bin/sh\nexit 0\n")
             mock_rc.chmod(0o755)
+            # create mock asb-network.service to satisfy Requires=asb-network.service
+            gate_file = self.tmp_path / "asb-network.service"
+            gate_file.write_text(
+                supervisor.render_network_unit(special_launcher), encoding="utf-8")
             unit_file.write_text(text, encoding="utf-8")
             res = subprocess.run(
-                ["systemd-analyze", "verify", str(unit_file)],
+                ["systemd-analyze", "verify", str(unit_file), str(gate_file)],
                 capture_output=True,
                 text=True,
             )
@@ -408,6 +413,111 @@ class TestWorkspaceOperations(unittest.TestCase):
 
         self.assertFalse(target_unit.exists())
         self.assertTrue(stray_service.exists())
+
+
+class TestNetworkGateUnits(unittest.TestCase):
+    """Emenda A §3/§4: toda unidade de container espera a conectividade real."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.root = Path(self._tmp.name)
+        self.runtime_dir = self.root / "runtime" / "rev1"
+        self.runtime_dir.mkdir(parents=True)
+        self.launcher = self.runtime_dir / "launcher.sh"
+        self.launcher.write_text("#!/bin/sh\nexit 0\n")
+        self.state_dir = self.root / "state" / "ws"
+        self.state_dir.mkdir(parents=True)
+        self.manifest = self.state_dir / "runtime.json"
+
+    def _unit_text(self, role: str, **kwargs) -> str:
+        return supervisor.render_unit(supervisor.ContainerUnit(
+            name=f"asb-ws-{role}",
+            container_id="c1",
+            role=role,
+            unit_name=f"asb-ws-{role}.service",
+            target_name="asb-ws.target",
+            helper_path=self.launcher,
+            manifest_path=self.manifest,
+            **kwargs,
+        ))
+
+    def test_render_network_unit_is_an_infinite_oneshot_gate(self):
+        gate = self.runtime_dir / "network_gate.py"
+        text = supervisor.render_network_unit(gate)
+        for line in ("Type=oneshot", "RemainAfterExit=yes",
+                     "TimeoutStartSec=infinity", "Restart=on-failure"):
+            self.assertIn(line + "\n", text)
+        self.assertIn(f"ExecStart={gate}\n", text)
+        self.assertNotIn("podman", text)
+        self.assertNotIn("unshare", text)
+        self.assertNotIn("Environment=", text)
+        self.assertNotIn("[Install]", text)
+
+    def test_render_network_unit_pins_the_gate_target_when_given(self):
+        text = supervisor.render_network_unit(
+            self.runtime_dir / "network_gate.py", target="127.0.0.1:18080")
+        self.assertIn("Environment=ASB_NETWORK_GATE_TARGET=127.0.0.1:18080\n", text)
+
+    def test_every_container_role_requires_and_orders_after_the_gate(self):
+        for role in ("proxy", "agent", "forwarder", "docker", "svc-db"):
+            with self.subTest(role=role):
+                text = self._unit_text(role)
+                self.assertIn("Requires=asb-network.service\n", text)
+                after = next(l for l in text.splitlines() if l.startswith("After="))
+                self.assertIn("asb-network.service", after.split("=", 1)[1].split())
+
+    def test_network_unit_none_omits_the_dependency(self):
+        text = self._unit_text("proxy", network_unit=None)
+        self.assertNotIn("Requires=", text)
+        self.assertNotIn("asb-network.service", text)
+
+    def test_network_unit_name_honors_the_isolation_environment(self):
+        with mock.patch.dict(os.environ, {"ASB_NETWORK_UNIT": "asb-test-x-network.service"}):
+            self.assertEqual(supervisor.network_unit_name(), "asb-test-x-network.service")
+        with mock.patch.dict(os.environ, {}):
+            os.environ.pop("ASB_NETWORK_UNIT", None)
+            self.assertEqual(supervisor.network_unit_name(), "asb-network.service")
+
+    def test_install_workspace_writes_the_shared_gate_and_wires_every_unit(self):
+        unit_dir = self.root / "units"
+        self.manifest.write_text(json.dumps({
+            "schemaVersion": 1,
+            "workspace": "ws",
+            "containers": {
+                "proxy": {"name": "asb-ws-proxy", "id": "p1"},
+                "agent": {"name": "asb-ws-agent", "id": "a1"},
+                "forwarder": {"name": "asb-ws-fwd", "id": "f1", "unit": "asb-ws-fwd.service"},
+            },
+        }))
+        with mock.patch.dict(os.environ, {"ASB_NETWORK_GATE_TARGET": "127.0.0.1:18080"}), \
+             mock.patch("asb.supervisor.subprocess.run") as run:
+            os.environ.pop("ASB_NETWORK_UNIT", None)
+            written = supervisor.install_workspace(
+                "ws", target_dir=unit_dir, state_dir=self.state_dir, helper_path=self.launcher)
+
+        gate = unit_dir / "asb-network.service"
+        self.assertTrue(gate.is_file())
+        gate_text = gate.read_text(encoding="utf-8")
+        self.assertIn(f"ExecStart={self.runtime_dir / 'network_gate.py'}\n", gate_text)
+        self.assertIn("Environment=ASB_NETWORK_GATE_TARGET=127.0.0.1:18080\n", gate_text)
+        # Compartilhada: nunca devolvida para o rollback transacional apagar.
+        self.assertNotIn(gate, written)
+        for unit in ("asb-ws-proxy.service", "asb-ws-agent.service", "asb-ws-fwd.service"):
+            self.assertIn("Requires=asb-network.service\n",
+                          (unit_dir / unit).read_text(encoding="utf-8"))
+        run.assert_called_with(["systemctl", "--user", "daemon-reload"], check=True)
+
+    def test_install_network_unit_writes_file_directly(self):
+        unit_dir = self.root / "direct_units"
+        gate = self.runtime_dir / "network_gate.py"
+        path = supervisor.install_network_unit(
+            target_dir=unit_dir, gate_path=gate, target="127.0.0.1:18080")
+        self.assertEqual(path, unit_dir / "asb-network.service")
+        self.assertTrue(path.is_file())
+        text = path.read_text(encoding="utf-8")
+        self.assertIn(f"ExecStart={gate}\n", text)
+        self.assertIn("Environment=ASB_NETWORK_GATE_TARGET=127.0.0.1:18080\n", text)
 
 
 if __name__ == "__main__":

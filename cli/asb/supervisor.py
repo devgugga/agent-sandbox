@@ -33,8 +33,13 @@ from .install import (
 
 __all__ = [
     "ContainerUnit",
+    "NETWORK_UNIT",
+    "NETWORK_UNIT_NAME",
+    "network_unit_name",
     "render_unit",
     "render_target",
+    "render_network_unit",
+    "install_network_unit",
     "install_runtime",
     "install_workspace",
     "start_workspace",
@@ -57,6 +62,15 @@ def _validate_safe_name(name: str, kind: str = "resource") -> str:
     return name
 
 
+NETWORK_UNIT = "asb-network.service"
+NETWORK_UNIT_NAME = NETWORK_UNIT
+
+
+def network_unit_name() -> str:
+    """Nome da espera por rede; `ASB_NETWORK_UNIT` isola testes de integracao."""
+    return os.environ.get("ASB_NETWORK_UNIT") or NETWORK_UNIT
+
+
 @dataclass(frozen=True)
 class ContainerUnit:
     name: str
@@ -71,6 +85,7 @@ class ContainerUnit:
     include_readiness_check: bool = True
     wants_proxy: bool = True
     keyring_unit: str | None = "asb-keyring.service"
+    network_unit: str | None = NETWORK_UNIT
 
     def __post_init__(self) -> None:
         for field_name in ("name", "container_id", "role", "unit_name", "target_name"):
@@ -83,6 +98,11 @@ class ContainerUnit:
             if not isinstance(self.keyring_unit, str):
                 raise TypeError(f"keyring_unit must be a string or None, got {type(self.keyring_unit).__name__}")
             _validate_safe_name(self.keyring_unit, "keyring_unit")
+
+        if self.network_unit is not None:
+            if not isinstance(self.network_unit, str):
+                raise TypeError(f"network_unit must be a string or None, got {type(self.network_unit).__name__}")
+            _validate_safe_name(self.network_unit, "network_unit")
 
         for path_field in ("helper_path", "manifest_path"):
             pval = getattr(self, path_field)
@@ -121,6 +141,13 @@ def render_unit(unit: ContainerUnit) -> str:
         after_deps = unit.extra_after
         wants_deps = unit.extra_wants
 
+    # Emenda A §3: toda unidade de container espera a conectividade real do
+    # host. Qualquer container bridge que partisse antes criaria o namespace
+    # rootless cedo, sem egresso, e nada a jusante o repararia.
+    network_deps = (unit.network_unit,) if unit.network_unit else ()
+    after_deps = tuple(dict.fromkeys(network_deps + tuple(after_deps)))
+    requires_line = f"Requires={' '.join(network_deps)}\n" if network_deps else ""
+
     after_line = f"After={' '.join(after_deps)}\n" if after_deps else ""
     wants_line = f"Wants={' '.join(wants_deps)}\n" if wants_deps else ""
 
@@ -150,6 +177,7 @@ def render_unit(unit: ContainerUnit) -> str:
         "[Unit]\n"
         f"Description=Agent Sandbox container {unit.name} ({unit.role})\n"
         f"PartOf={target}\n"
+        f"{requires_line}"
         f"{after_line}"
         f"{wants_line}"
         "StartLimitIntervalSec=600s\n"
@@ -190,6 +218,49 @@ def render_target(
         "[Install]\n"
         "WantedBy=default.target\n"
     )
+
+
+def render_network_unit(gate_path: Path, target: str | None = None) -> str:
+    """Renderiza a espera unica por conectividade real (Emenda A §4).
+
+    `TimeoutStartSec=infinity`: sem rede, os workspaces aguardam e sobem
+    sozinhos quando ela chegar. `Restart=on-failure` cobre so falha do proprio
+    script; ausencia de rede nao e falha. Sem `[Install]`: quem a puxa sao as
+    unidades de workspace, por `Requires=`.
+    """
+    gate_escaped = escape_systemd_arg(gate_path)
+    env_line = (
+        f"Environment=ASB_NETWORK_GATE_TARGET={escape_systemd_arg(target)}\n"
+        if target else ""
+    )
+    return (
+        "[Unit]\n"
+        "Description=Agent Sandbox: espera por conectividade real\n"
+        "\n"
+        "[Service]\n"
+        "Type=oneshot\n"
+        "RemainAfterExit=yes\n"
+        "TimeoutStartSec=infinity\n"
+        "Restart=on-failure\n"
+        "RestartSec=5s\n"
+        f"{env_line}"
+        f"ExecStart={gate_escaped}\n"
+    )
+
+
+def install_network_unit(
+    target_dir: Path,
+    gate_path: Path,
+    target: str | None = None,
+) -> Path:
+    """Instala a unidade de espera por conectividade real (Emenda A §4)."""
+    network_unit = network_unit_name()
+    unit_path = target_dir / network_unit
+    _atomic_write_text(
+        unit_path,
+        render_network_unit(gate_path, target=target),
+    )
+    return unit_path
 
 
 def _atomic_write_text(path: Path, content: str, mode: int | None = None) -> None:
@@ -290,6 +361,20 @@ def install_workspace(
     written_files: list[Path] = []
     unit_names: list[str] = []
 
+    # Espera unica por rede, compartilhada por todo workspace. Fica FORA de
+    # `written_files`: essa lista alimenta o rollback transacional do `up`, e
+    # a falha de um workspace nunca pode apagar a espera dos outros.
+    gate_path = (
+        helper_path / "network_gate.py"
+        if helper_path.is_dir()
+        else helper_path.parent / "network_gate.py"
+    )
+    network_unit = network_unit_name()
+    _atomic_write_text(
+        target_path / network_unit,
+        render_network_unit(gate_path, target=os.environ.get("ASB_NETWORK_GATE_TARGET") or None),
+    )
+
     for role, info in containers.items():
         if isinstance(info, dict):
             c_name = info.get("name") or f"asb-{ws}-{role}"
@@ -310,6 +395,7 @@ def install_workspace(
             target_name=target_name,
             helper_path=helper_path,
             manifest_path=manifest_file,
+            network_unit=network_unit,
         )
         content = render_unit(unit)
         unit_file = target_path / u_name

@@ -118,8 +118,13 @@ minuto enquanto espera, para que horas offline não gerem uma linha a cada 5 s.
 desde quando; `systemctl --user list-jobs` mostra os workspaces aguardando; o
 `doctor` informa o estado da espera.
 
-**Chamadas manuais.** `up` e `resume` iniciam o target pelo systemd e passam
-pela mesma espera; com rede disponível ela conclui imediatamente.
+**Chamadas manuais.** `up` e `resume` iniciam o target pelo systemd, que
+bloqueia até as unidades subirem; com a espera sem limite, um `up` interativo
+sem rede ficaria preso para sempre. Por isso `up` e `resume` verificam
+conectividade do host (`probe_host`, até 30 s) **antes** de iniciar o target e
+falham com mensagem clara se não houver rede; o `up` falha antes de criar
+qualquer recurso. Essa verificação é só do host e não cria o namespace. O
+caminho de boot continua esperando sem limite.
 
 **Correção associada.** `probe_host()` recomenda
 `podman unshare --rootless-netns true` quando não há rota. O piloto mostrou
@@ -182,10 +187,11 @@ plano, lendo os chamadores; nada é removido por suposição.
 
 | Arquivo | Sai | Fica ou muda |
 | :--- | :--- | :--- |
-| `cli/asb/lifecycle.py` | ramo legacy de `up`, incluindo a chamada a `install.podman_restart()`, e a escolha de `--restart unless-stopped` | todo container com `--restart=no`; limpeza idempotente do drop-in |
-| `cli/asb/supervisor.py` | bloco de adoção e rollback (aproximadamente da linha 648 ao fim): diário, paridade de ID, baselines, fases, `adopt_workspace`, `rollback_workspace`, `adopt_keyring`, `rollback_keyring` | `_render_keyring_unit` vai para o núcleo; unidades de workspace ganham a dependência de `asb-network` |
-| `cli/asb/install.py` | `podman_restart()`, que instala o drop-in | funções que reconhecem o drop-in (`read_project_dropin`, `_is_project_dropin`), usadas na limpeza; `install_runtime()` passa a instalar `network_gate.py` |
-| `cli/asb/keyring.py` | `--restart unless-stopped` | inicia pelo systemd |
+| `cli/asb/lifecycle.py` | ramo legacy de `up`, `resume`, `suspend` e `down`; chamada a `install.podman_restart()`; **chamadas a `podman.ensure_rootless_netns()` em `up` e `resume`**; `_runtime_of`; a escolha de `--restart unless-stopped` | todo container com `--restart=no`; limpeza idempotente do drop-in; verificação de host com limite em `up` e `resume` |
+| `cli/asb/podman.py` | **`ensure_rootless_netns()`** — executa o mesmo `podman unshare --rootless-netns true` do drop-in | — |
+| `cli/asb/supervisor.py` | bloco de adoção e rollback, **de `_systemctl` (linha 484) ao fim do arquivo**: `_AdoptionLock`, diário, paridade de ID, baselines, fases, verificação de integridade do runtime (`_current_revision`, `_validate_installed_runtime`, `_resolve_versioned_runtime`), `adopt_workspace`, `rollback_workspace`, `adopt_keyring`, `rollback_keyring`. Nenhuma dessas funções é usada fora do `supervisor.py` | núcleo (linhas 1–483) permanece; ganha `render_network_unit`, `render_keyring_unit`, `install_keyring_unit`; unidades de workspace ganham a dependência de `asb-network` |
+| `cli/asb/install.py` | `podman_restart()`, que instala o drop-in; `restore_project_dropin()` e seus auxiliares exclusivos | funções que reconhecem e removem o drop-in (`read_project_dropin`, `_is_project_dropin`, `remove_project_dropin`), usadas na limpeza; `install_runtime()` passa a instalar `network_gate.py` |
+| `cli/asb/keyring.py` | `--restart unless-stopped` | inicia pelo systemd; `ensure_keyring_service` passa a receber o diretório do runtime, e seus três chamadores (`up`, `resume`, `login`) são ajustados |
 | `cli/asb/doctor.py` | checagem de `podman-restart.service` | checagem de `asb-network` e das unidades |
 | `cli/asb/readiness.py` | recomendação `podman unshare --rootless-netns true` | orientação coerente com o piloto |
 | `cli/asb-agent` | parser de `--runtime`, `adopt-runtime`, `rollback-runtime` | — |
@@ -204,11 +210,28 @@ plano, lendo os chamadores; nada é removido por suposição.
 
 - saem: `tests/integration/test_adoption.py`,
   `tests/unit/test_id_swap_protection.py`, `tests/unit/test_journal_schema.py`,
-  e as partes de rollback de `tests/unit/test_systemd_status_and_rollback.py`
-  e de `tests/test-transaction.sh`;
+  `tests/unit/test_runtime_integrity.py`, as partes de adoção e rollback de
+  `tests/unit/test_systemd_status_and_rollback.py`,
+  `tests/unit/test_keyring_readiness.py` e `tests/unit/test_isolation_guard.py`,
+  e os testes de `ensure_rootless_netns` em `tests/unit/test_podman.py`;
+- **fica:** `tests/test-transaction.sh`. O "rollback" que ele testa é o da
+  transação do `up` (falha não deixa recurso para trás), não o de runtime;
 - mudam: `tests/integration/test_workspace_supervision.py` (deixa de passar
   `--runtime`), `tests/unit/test_install.py` (instalação do drop-in vira
   remoção), `tests/unit/test_doctor.py`.
+
+**Isolamento dos testes de integração.** A fixture passa a exportar
+`ASB_NETWORK_UNIT` com nome prefixado e a registrá-lo, e o piloto de T1 passa
+a exportar `ASB_NETWORK_GATE_TARGET` apontando para o destino sintético. Sem
+isso, os testes gravariam `asb-network.service` com o nome de produção.
+
+**Lacunas corrigidas ao escrever o plano (2026-09-16).** A leitura dos
+chamadores, exigida acima, encontrou pontos que a primeira versão desta emenda
+não cobria: `ensure_rootless_netns()` em `up`/`resume` (o mesmo `unshare` do
+drop-in); o travamento de `up`/`resume` interativos sem rede; a fronteira real
+do bloco de adoção (linha 484, não 648); o terceiro chamador do keyring
+(`login`); e o `test-transaction.sh`, que não é de rollback de runtime. Todos
+são consequência direta das decisões já aprovadas, e não decisões novas.
 
 **Spec original**
 

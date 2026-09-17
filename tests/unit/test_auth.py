@@ -198,7 +198,7 @@ class TestKeyringServiceLifecycle(unittest.TestCase):
                                            return_value=(lifecycle.KEYRING_SCHEMA, valid_keyring_mounts(fake_pass))))
             stack.enter_context(mock.patch("asb.keyring._restart_policy", return_value="unless-stopped"))
             mock_run = stack.enter_context(mock.patch("asb.lifecycle.podman.run"))
-            self._systemd_mocks(stack, tmp)
+            _, systemctl = self._systemd_mocks(stack, tmp)
 
             lifecycle.ensure_keyring_service(self.RUNTIME_DIR)
 
@@ -207,6 +207,13 @@ class TestKeyringServiceLifecycle(unittest.TestCase):
         self.assertEqual(calls[1][0], "create")
         # So o container sai: nenhum volume e removido.
         self.assertFalse(any("volume" in c for c in calls))
+        # A unidade para ANTES do rm: com ela ativa, o `rm` mata o processo
+        # anexado, o Restart=always tenta subir um container que ja nao
+        # existe e cada tentativa gasta uma partida do StartLimitBurst.
+        unit = f"{lifecycle.KEYRING_CONTAINER}.service"
+        systemctl_calls = [c.args[0] for c in systemctl.call_args_list]
+        self.assertEqual(systemctl_calls[0],
+                         ["systemctl", "--user", "stop", unit])
 
     def test_systemd_start_failure_is_an_infrastructure_error(self):
         import subprocess as _subprocess

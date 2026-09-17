@@ -254,6 +254,13 @@ def ensure_keyring_service(runtime_dir: Path, timeout: float = 180.0) -> str:
             or _restart_policy(container) != "no"
         )
         if needs_recreate:
+            # A unidade sai da frente ANTES do `rm`: com ela ativa, remover o
+            # container mata o processo anexado, o `Restart=always` tenta
+            # subir um container que ja nao existe, e cada tentativa gasta
+            # uma partida do `StartLimitBurst` — a troca podia terminar em
+            # `start-limit-hit`. Ignora falha: a unidade pode nem existir.
+            subprocess.run(["systemctl", "--user", "stop", f"{container}.service"],
+                           check=False, capture_output=True, text=True)
             podman.run("rm", "-f", container, check=False)
             present = False
 

@@ -15,6 +15,7 @@ import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from pathlib import Path
+from collections.abc import Sequence
 from time import monotonic, sleep
 
 # Emenda A: o piloto T2 mostrou que `unshare` na rede rootless NAO recupera um
@@ -177,12 +178,18 @@ def probe_proxy(
         if "HTTP/" in first_line:
             parts = first_line.split()
             code = parts[1] if len(parts) > 1 else "unknown_http"
-            return ProbeResult("proxy", "failed", f"http_{code}", elapsed, f"proxy retornou status inesperado: {first_line}")
+            return ProbeResult("proxy", "failed", f"http_{code}", elapsed,
+                               f"proxy retornou status inesperado; veja "
+                               f"podman logs --tail 50 {proxy_host}")
 
         if res.returncode != 0 and not output.strip():
             return ProbeResult("proxy", "unreachable", "proxy_unreachable", elapsed, "proxy nao respondeu na porta 3128")
 
-        return ProbeResult("proxy", "failed", "unknown_response", elapsed, output.strip() or "resposta desconhecida do proxy")
+        # A remediacao vai para o stderr do operador e para o journal:
+        # saida capturada nunca entra nela (§ credenciais da revisao final).
+        return ProbeResult("proxy", "failed", "unknown_response", elapsed,
+                           f"resposta desconhecida do proxy; veja "
+                           f"podman logs --tail 50 {proxy_host}")
     except subprocess.TimeoutExpired:
         elapsed = int((monotonic() - started) * 1000)
         return ProbeResult("proxy", "unreachable", "timeout", elapsed, "timeout na sonda de egresso do proxy")
@@ -265,6 +272,42 @@ def probe_keyring(container: str | None = None, timeout: float = 5.0) -> ProbeRe
     except Exception as exc:
         elapsed = int((monotonic() - started) * 1000)
         return ProbeResult("keyring", "failed", "keyring_error", elapsed, str(exc))
+
+
+def probe_host_ports(agent_container: str, ports: Sequence[int],
+                     timeout: float = 5.0) -> ProbeResult:
+    """Prova que cada porta de `[docker] host_ports` tem listener no agente.
+
+    O entrypoint sobe um `socat` por porta declarada, em segundo plano. Sem
+    esta sonda o `up` imprimia o JSON de conexao com a porta prometida ao
+    projeto simplesmente ausente — o servico "nao esta la" e nada reprova.
+    """
+    started = monotonic()
+    if not ports:
+        return ProbeResult("host_ports", "healthy", "ok", 0, "")
+    podman_bin = shutil.which("podman") or "podman"
+    missing: list[int] = []
+    for port in ports:
+        try:
+            res = subprocess.run(
+                # bash, nao sh: /dev/tcp e recurso do bash, e o `sh` da
+                # imagem (dash) falha SEMPRE — a sonda reprovaria um listener
+                # saudavel.
+                [podman_bin, "exec", "-u", "1000", agent_container, "bash", "-c",
+                 f"exec 3<>/dev/tcp/127.0.0.1/{int(port)}"],
+                capture_output=True, text=True, timeout=timeout)
+            if res.returncode != 0:
+                missing.append(int(port))
+        except subprocess.TimeoutExpired:
+            missing.append(int(port))
+    elapsed = int((monotonic() - started) * 1000)
+    if missing:
+        listed = ", ".join(str(p) for p in missing)
+        return ProbeResult(
+            "host_ports", "failed", "no_listener", elapsed,
+            f"sem listener para as portas declaradas em host_ports: {listed}; "
+            f"veja 'podman logs --tail 50 {agent_container}'")
+    return ProbeResult("host_ports", "healthy", "ok", elapsed, "")
 
 
 def probe_workspace(ws: str) -> list[ProbeResult]:

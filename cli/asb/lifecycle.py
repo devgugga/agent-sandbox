@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import getpass
+import hashlib
 import json
 import os
 import shutil
@@ -324,6 +325,10 @@ class WorkspaceTransaction:
         self.created_networks: list[str] = []
         self.created_volumes: list[str] = []
         self.created_units: list[Path] = []
+        # Arquivos que existiam ANTES e esta transacao sobrescreveu: a espera
+        # por rede e compartilhada por todos os workspaces, entao um `up` que
+        # falha nao pode deixar a versao dele no lugar.
+        self.overwritten: list[tuple[Path, str]] = []
 
     def record_container(self, container_id: str) -> None:
         if container_id and container_id not in self.created_containers:
@@ -341,6 +346,10 @@ class WorkspaceTransaction:
         if unit_path and unit_path not in self.created_units:
             self.created_units.append(unit_path)
 
+    def record_restore(self, path: Path, previous: str) -> None:
+        if path and all(path != p for p, _ in self.overwritten):
+            self.overwritten.append((path, previous))
+
     def rollback(self) -> None:
         # Falha em workspace existente NUNCA executa sweep destrutivo de containers preexistentes
         if self.is_existing:
@@ -357,6 +366,13 @@ class WorkspaceTransaction:
         for vol in self.created_volumes:
             if podman.exists("volume", vol):
                 podman.run("volume", "rm", "-f", vol, check=False)
+
+        for path, previous in self.overwritten:
+            try:
+                path.write_text(previous, encoding="utf-8")
+            except OSError as exc:
+                print(f"aviso: falha ao restaurar {path} durante rollback: {exc}",
+                      file=sys.stderr)
 
         if self.created_units:
             try:
@@ -533,7 +549,11 @@ def _current_revision(root: Path) -> str:
             return rev
     except Exception:
         pass
-    return "dev"
+    # `dev` era compartilhado: dois checkouts sem git instalariam o runtime no
+    # MESMO diretorio, e `install_runtime` o substitui em lugar — inclusive o
+    # `network_gate.py` que as unidades de TODOS os workspaces executam.
+    digest = hashlib.sha256(str(root.resolve()).encode()).hexdigest()[:12]
+    return f"nogit-{digest}"
 
 
 def ensure_runtime(root: Path) -> Path:
@@ -762,6 +782,9 @@ def prepare_workspace(
     manifest_file.write_text(json.dumps(manifest_data, indent=2), encoding="utf-8")
 
     # 7. Instalar unidades systemd (runtime unico)
+    gate_unit = supervisor.unit_dir() / supervisor.network_unit_name()
+    if tx is not None and gate_unit.is_file():
+        tx.record_restore(gate_unit, gate_unit.read_text(encoding="utf-8"))
     units = supervisor.install_workspace(ws, state_dir=layout.state)
     if tx and isinstance(units, (list, tuple)):
         for u in units:
@@ -827,6 +850,24 @@ def up(root: Path, ws: str, repo: Path) -> int:
         port = mapping.splitlines()[0].rsplit(":", 1)[-1] if mapping else ""
         if not port:
             raise podman.PodmanError("nao foi possivel determinar a porta SSH")
+
+        # `host_ports` e uma pos-condicao prometida ao projeto: o entrypoint
+        # sobe um socat por porta declarada, em segundo plano, e sem sonda o
+        # `up` imprimia a conexao com o servico simplesmente ausente.
+        declared_ports = load_profile(repo).host_ports
+        if declared_ports:
+            ports_res = readiness.wait_until(
+                lambda to: readiness.probe_host_ports(
+                    n["agent"], declared_ports, timeout=to),
+                timeout=20.0,
+            )
+            if ports_res.state != "healthy":
+                print(f"erro: portas de host_ports sem listener no agente "
+                      f"({ports_res.code}): {ports_res.remediation}",
+                      file=sys.stderr)
+                print("workspace mantido no ar; corrija e execute "
+                      "'asb-agent up' novamente.", file=sys.stderr)
+                return 1
 
         key = ensure_ssh_key()
         ssh_res = readiness.wait_until(
@@ -894,9 +935,9 @@ def down(ws: str) -> int:
     for network in (n["net"], n["out"]):
         if podman.exists("network", network):
             podman.run("network", "rm", "-f", network, check=False)
-    volume = f"asb-{ws}-containers"
-    if podman.exists("volume", volume):
-        podman.run("volume", "rm", "-f", volume, check=False)
+    # O volume de containers aninhados guarda o que o agente puxou e
+    # construiu: e dado do workspace, como a sessao, e `down` preserva dado.
+    # So `purge` o remove.
     origin = _origin_of(ws, home)
     if origin is not None:
         remove_state(layout_for(origin, ws, home))
@@ -1096,12 +1137,21 @@ def purge(ws: str, confirmed: bool) -> int:
     """Remove tambem os ARQUIVOS do workspace. Irreversivel, logo explicito."""
     home = Path(os.path.expanduser("~"))
     origin = _origin_of(ws, home)
-    if origin is None:
+    # `down` apaga o estado, mas PRESERVA os volumes de sessao e de containers
+    # aninhados. Sem este ramo, um `purge` depois de um `down` so respondia
+    # "workspace desconhecido" e os volumes ficavam orfaos, sem nenhum comando
+    # do CLI capaz de remove-los.
+    layout = layout_for(origin, ws, home) if origin is not None else None
+    leftovers = [v for v in (names(ws)["session"], f"asb-{ws}-containers")
+                 if podman.exists("volume", v)]
+    if layout is None and not leftovers:
+        # Nada com este nome existe: e engano de digitacao, nao um workspace
+        # derrubado. Sucesso silencioso aqui esconderia o erro do operador.
         raise podman.PodmanError(f"workspace desconhecido: {ws}")
-    layout = layout_for(origin, ws, home)
     if not confirmed:
+        alvo = layout.mount if layout is not None else f"os volumes de {ws}"
         raise podman.PodmanError(
-            f"purge apaga {layout.mount}, incluindo commits que ainda nao "
+            f"purge apaga {alvo}, incluindo commits que ainda nao "
             f"voltaram para o host. Rode 'asb-agent pull --workspace {ws}' "
             "antes, e repita com --yes se for isso mesmo.")
     down(ws)
@@ -1109,9 +1159,12 @@ def purge(ws: str, confirmed: bool) -> int:
     # so aqui. `down` preserva o trabalho, entao um `down`/`up` mantem as
     # transcricoes. Este volume nunca guarda credencial: a credencial vive no
     # volume compartilhado, que purge algum jamais toca.
-    session = names(ws)["session"]
-    if podman.exists("volume", session):
-        podman.run("volume", "rm", "-f", session, check=False)
+    for volume in leftovers:
+        podman.run("volume", "rm", "-f", volume, check=False)
+    if layout is None:
+        print(f"removidos os volumes de {ws}; os arquivos do workspace ja "
+              "tinham saido com um 'down' anterior", file=sys.stderr)
+        return 0
     remove_workspace(layout)
     print(f"removido: {layout.mount}", file=sys.stderr)
     return 0

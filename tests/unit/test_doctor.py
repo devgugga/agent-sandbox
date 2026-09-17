@@ -380,14 +380,18 @@ class TestPull(unittest.TestCase):
 
 
 class TestPurge(unittest.TestCase):
+    @mock.patch("asb.lifecycle.podman.exists", return_value=False)
     @mock.patch("asb.lifecycle._origin_of", return_value=None)
-    def test_purge_unknown_workspace_raises(self, mock_origin):
+    def test_purge_unknown_workspace_raises(self, mock_origin, mock_exists):
+        # Sem estado E sem volume com esse nome: engano de digitacao, nao um
+        # workspace derrubado por `down`.
         with self.assertRaises(PodmanError) as ctx:
             lifecycle.purge("unknown-ws", confirmed=True)
         self.assertIn("workspace desconhecido: unknown-ws", str(ctx.exception))
 
+    @mock.patch("asb.lifecycle.podman.exists", return_value=False)
     @mock.patch("asb.lifecycle._origin_of")
-    def test_purge_unconfirmed_raises(self, mock_origin):
+    def test_purge_unconfirmed_raises(self, mock_origin, mock_exists):
         with tempfile.TemporaryDirectory() as tmp:
             origin = Path(tmp) / "origin"
             origin.mkdir()

@@ -144,8 +144,11 @@ if [ -n "${ASB_HOST_PORTS:-}" ]; then
   fwd="asb-${ASB_WORKSPACE}-fwd"
   echo "$ASB_HOST_PORTS" | tr ',' '\n' | while read -r port; do
     [ -n "$port" ] || continue
+    # stderr fica: era descartado, entao um socat que nao sobe era invisivel
+    # no journal da unidade do agente (a sonda de host_ports do `up` e que
+    # reprova, mas o operador precisa da causa).
     setsid socat "TCP-LISTEN:${port},bind=127.0.0.1,fork,reuseaddr" \
-      "TCP:${fwd}:${port}" >/dev/null 2>&1 &
+      "TCP:${fwd}:${port}" >/dev/null &
   done
 fi
 

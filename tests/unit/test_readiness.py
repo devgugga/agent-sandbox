@@ -466,6 +466,64 @@ class TestNoRootlessNetnsAdvice(unittest.TestCase):
                 self.assertNotIn("--rootless-netns", (cli / name).read_text(encoding="utf-8"))
 
 
+class TestHostPortsProbe(unittest.TestCase):
+    """`host_ports` e uma pos-condicao prometida ao projeto: sem sonda, o `up`
+    imprimia o JSON de conexao com o banco declarado simplesmente ausente."""
+
+    def test_missing_listener_is_reported_with_the_port(self):
+        def fake_run(argv, **kwargs):
+            # dash nao tem /dev/tcp: a sonda precisa pedir bash explicitamente.
+            assert "bash" in argv, argv
+            port = argv[-1].rsplit("/", 1)[-1]
+            return mock.Mock(returncode=0 if port == "5432" else 1, stdout="", stderr="")
+
+        with mock.patch("asb.readiness.subprocess.run", side_effect=fake_run):
+            res = readiness.probe_host_ports("asb-demo-agent", [5432, 18080])
+        self.assertEqual(res.state, "failed")
+        self.assertEqual(res.code, "no_listener")
+        self.assertIn("18080", res.remediation)
+        self.assertNotIn("5432", res.remediation)
+
+    def test_every_listener_present_is_healthy(self):
+        with mock.patch("asb.readiness.subprocess.run",
+                        return_value=mock.Mock(returncode=0, stdout="", stderr="")):
+            res = readiness.probe_host_ports("asb-demo-agent", [5432])
+        self.assertEqual(res.state, "healthy")
+        self.assertEqual(res.remediation, "")
+
+    def test_no_declared_port_is_healthy_without_touching_podman(self):
+        with mock.patch("asb.readiness.subprocess.run") as run:
+            res = readiness.probe_host_ports("asb-demo-agent", [])
+        run.assert_not_called()
+        self.assertEqual(res.state, "healthy")
+
+
+class TestProbeRemediationNeverCarriesCapturedOutput(unittest.TestCase):
+    """A remediacao vai para o stderr do operador e para o journal. Interpolar
+    saida capturada ali e o padrao que nao pode chegar aos caminhos de
+    autenticacao, onde apareceriam codigos OAuth."""
+
+    def test_unknown_proxy_response_points_at_the_logs(self):
+        with mock.patch("asb.podman.running", return_value=True), \
+             mock.patch("asb.readiness.subprocess.run",
+                        return_value=mock.Mock(returncode=0,
+                                               stdout="SEGREDO-DA-SAIDA", stderr="")):
+            res = readiness.probe_proxy("asb-demo-agent", "asb-demo-proxy")
+        self.assertEqual(res.code, "unknown_response")
+        self.assertNotIn("SEGREDO-DA-SAIDA", res.remediation)
+        self.assertIn("podman logs", res.remediation)
+
+    def test_unexpected_http_status_points_at_the_logs(self):
+        with mock.patch("asb.podman.running", return_value=True), \
+             mock.patch("asb.readiness.subprocess.run",
+                        return_value=mock.Mock(returncode=0,
+                                               stdout="HTTP/1.1 418 SEGREDO", stderr="")):
+            res = readiness.probe_proxy("asb-demo-agent", "asb-demo-proxy")
+        self.assertEqual(res.code, "http_418")
+        self.assertNotIn("SEGREDO", res.remediation)
+        self.assertIn("podman logs", res.remediation)
+
+
 class TestNoDirectPodmanLifecycleAdvice(unittest.TestCase):
     """R11: orientacao que dirige container supervisionado por fora do systemd.
 

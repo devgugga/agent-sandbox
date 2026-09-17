@@ -1241,7 +1241,10 @@ class TestSessionStateIsolation(unittest.TestCase):
                 redirect_stderr(io.StringIO()):
             lifecycle.purge("demo", confirmed=True)
 
-        self.assertEqual(removed, [["volume", "rm", "-f", "asb-demo-session"]])
+        # Volume de sessao e o de containers aninhados (que `down` agora
+        # preserva); nenhum volume compartilhado.
+        self.assertEqual(removed, [["volume", "rm", "-f", "asb-demo-session"],
+                                   ["volume", "rm", "-f", "asb-demo-containers"]])
 
 
 class TestEntrypointNeverDestroysSharedDirectories(unittest.TestCase):

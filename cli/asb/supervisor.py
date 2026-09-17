@@ -24,6 +24,7 @@ __all__ = [
     "NETWORK_UNIT",
     "NETWORK_UNIT_NAME",
     "network_unit_name",
+    "unit_dir",
     "render_unit",
     "render_target",
     "render_network_unit",
@@ -284,6 +285,13 @@ def _resolve_paths(
     else:
         target_path = Path.home() / ".config" / "systemd" / "user"
     return state_path, target_path
+
+
+def unit_dir(ws: str = "", target_dir: Path | None = None,
+             state_dir: Path | None = None) -> Path:
+    """Diretorio onde as unidades deste manager vivem (respeita as variaveis
+    de isolamento da suite)."""
+    return _resolve_paths(ws, target_dir, state_dir)[1]
 
 
 def install_workspace(

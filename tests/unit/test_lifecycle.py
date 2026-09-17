@@ -459,7 +459,11 @@ class TestKeyringPreservation(unittest.TestCase):
         # pode encostar neles.
         removed = [" ".join(str(a) for a in call.args)
                    for call in mock_run.call_args_list]
-        self.assertEqual(removed, ["volume rm -f asb-demo-session"])
+        # `down` passou a preservar o volume de containers aninhados, entao
+        # e o `purge` que o remove — junto com o de sessao, nunca os
+        # compartilhados.
+        self.assertEqual(removed, ["volume rm -f asb-demo-session",
+                                   "volume rm -f asb-demo-containers"])
         joined = " ".join(removed)
         for shared in ("asb-credentials", lifecycle.KEYRING_CONTAINER,
                        lifecycle.KEYRING_DATA_VOLUME,
@@ -510,7 +514,8 @@ class TestStartForwarder(unittest.TestCase):
 class TestSingleRuntimeUp(unittest.TestCase):
     """Emenda A: `up` tem runtime unico, remove o drop-in, verifica o host e nunca roda `unshare`."""
 
-    def _run_up(self, *, host_state: str = "healthy", dropin_removed: bool = False):
+    def _run_up(self, *, host_state: str = "healthy", dropin_removed: bool = False,
+                host_ports: list | None = None, ports_state: str = "healthy"):
         import json
         from contextlib import ExitStack
         from unittest import mock
@@ -551,7 +556,8 @@ class TestSingleRuntimeUp(unittest.TestCase):
         fake_key = tmp / "key"
         fake_key.write_text("dummy")
         (tmp / "key.pub").write_text("ssh-ed25519 AAA dummy")
-        fake_profile = Profile(services=[], host_ports=[], publish_ports=[],
+        fake_profile = Profile(services=[], host_ports=list(host_ports or []),
+                               publish_ports=[],
                                host_api="none", container_mode="standard", allow=[])
         healthy = ProbeResult("probe", "healthy", "ok", 0, "")
 
@@ -575,11 +581,16 @@ class TestSingleRuntimeUp(unittest.TestCase):
             stack.enter_context(mock.patch("cli.asb.lifecycle.ensure_session_volume", return_value="asb-demo-session"))
             stack.enter_context(mock.patch("cli.asb.lifecycle.ensure_toolcache_volume", return_value="t-vol"))
             stack.enter_context(mock.patch("cli.asb.lifecycle.discover_mise_dirs", return_value=[]))
-            stack.enter_context(mock.patch("cli.asb.lifecycle.emit", return_value=0))
+            mock_emit = stack.enter_context(mock.patch("cli.asb.lifecycle.emit", return_value=0))
             stack.enter_context(mock.patch("cli.asb.install.remove_project_dropin", side_effect=fake_remove_dropin))
             stack.enter_context(mock.patch("cli.asb.readiness.probe_host", side_effect=fake_probe_host))
             stack.enter_context(mock.patch("cli.asb.readiness.probe_proxy", return_value=healthy))
             stack.enter_context(mock.patch("cli.asb.readiness.probe_ssh", return_value=healthy))
+            stack.enter_context(mock.patch(
+                "cli.asb.readiness.probe_host_ports",
+                return_value=ProbeResult("host_ports", ports_state,
+                                         "ok" if ports_state == "healthy" else "no_listener",
+                                         0, "" if ports_state == "healthy" else "sem listener: 5432")))
             stack.enter_context(mock.patch(
                 "cli.asb.readiness.wait_until",
                 side_effect=lambda probe, *, timeout, interval=1.0: probe(1.0)))
@@ -595,6 +606,7 @@ class TestSingleRuntimeUp(unittest.TestCase):
 
         manifest_file = fake_state / "runtime.json"
         manifest = json.loads(manifest_file.read_text()) if manifest_file.is_file() else None
+        self.last_emit = mock_emit
         return rc, error, events, podman_calls, mock_install, mock_start, manifest
 
     def test_up_creates_stopped_containers_without_restart_policy_and_starts_the_target(self):
@@ -642,6 +654,26 @@ class TestSingleRuntimeUp(unittest.TestCase):
         mock_install.assert_not_called()
         mock_start.assert_not_called()
         self.assertIsNone(manifest)
+
+    def test_up_refuses_to_emit_when_a_declared_host_port_has_no_listener(self):
+        """`host_ports` e pos-condicao prometida ao projeto: sem sonda, o `up`
+        imprimia a conexao com o servico declarado simplesmente ausente."""
+        import contextlib
+        import io
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            rc, error, _, _, _, _, _ = self._run_up(host_ports=[5432],
+                                                    ports_state="failed")
+        self.assertIsNone(error)
+        self.assertEqual(rc, 1)
+        self.last_emit.assert_not_called()
+        self.assertIn("5432", stderr.getvalue())
+
+    def test_up_emits_when_every_declared_host_port_answers(self):
+        rc, error, _, _, _, _, _ = self._run_up(host_ports=[5432])
+        self.assertIsNone(error)
+        self.assertEqual(rc, 0)
+        self.last_emit.assert_called_once()
 
     def test_up_never_initializes_the_rootless_namespace(self):
         _, error, _, podman_calls, _, _, _ = self._run_up()
@@ -1202,6 +1234,147 @@ class TestNoRuntimeSelection(unittest.TestCase):
     def test_runtime_selection_helper_no_longer_exists(self):
         from cli.asb import lifecycle
         self.assertFalse(hasattr(lifecycle, "_runtime_of"))
+
+
+class TestRevisionFallbackIsPerCheckout(unittest.TestCase):
+    """`dev` era compartilhado: dois checkouts sem git escreviam por cima do
+    mesmo diretorio de runtime, e as unidades dos outros workspaces apontam
+    para ele."""
+
+    def test_revision_without_git_is_derived_from_the_checkout_path(self):
+        from unittest import mock
+        from cli.asb import lifecycle
+
+        with mock.patch("cli.asb.lifecycle.subprocess.run",
+                        side_effect=FileNotFoundError("git")):
+            a = lifecycle._current_revision(Path("/home/v/checkout-a"))
+            b = lifecycle._current_revision(Path("/home/v/checkout-b"))
+        self.assertNotEqual(a, b)
+        self.assertNotEqual(a, "dev")
+        for rev in (a, b):
+            self.assertTrue(all(c not in rev for c in ("/", "\\", "..", " ")))
+
+
+class TestDownKeepsWorkspaceData(unittest.TestCase):
+    """`down` preserva o trabalho; so `purge` apaga. O volume de containers
+    aninhados (imagens que o agente puxou) saia no `down`, ao contrario do
+    volume de sessao — mesma classe de dado, tratamento oposto."""
+
+    def _down(self, ws="demo"):
+        from unittest import mock
+        from cli.asb import lifecycle
+
+        removed = []
+
+        def fake_run(*args, **kwargs):
+            if args[:1] == ("volume",):
+                removed.append(args[-1])
+            return mock.MagicMock(returncode=0)
+
+        with mock.patch("cli.asb.lifecycle._require_workspace",
+                        return_value=(lifecycle.names(ws), Path("/tmp"), Path("/origin"))), \
+             mock.patch("cli.asb.lifecycle.layout_for"), \
+             mock.patch("cli.asb.lifecycle.remove_state"), \
+             mock.patch("cli.asb.lifecycle.supervisor.remove_workspace_units"), \
+             mock.patch("subprocess.run", return_value=mock.MagicMock(returncode=0)), \
+             mock.patch("cli.asb.podman.out", return_value=""), \
+             mock.patch("cli.asb.podman.exists", return_value=True), \
+             mock.patch("cli.asb.podman.running", return_value=False), \
+             mock.patch("cli.asb.podman.run", side_effect=fake_run):
+            lifecycle.down(ws)
+        return removed
+
+    def test_down_keeps_the_nested_containers_volume(self):
+        self.assertNotIn("asb-demo-containers", self._down())
+
+
+class TestSharedNetworkGateSurvivesRollback(unittest.TestCase):
+    """`up` reescreve `asb-network.service`, que TODO workspace `Requires=`,
+    fora do rollback: um `up` que falhava deixava a espera compartilhada
+    apontando para o runtime da invocacao que nao vingou."""
+
+    def test_rollback_restores_the_previous_gate_unit(self):
+        from unittest import mock
+        from cli.asb import lifecycle
+
+        with tempfile.TemporaryDirectory() as tmp:
+            gate = Path(tmp) / "asb-network.service"
+            gate.write_text("ANTES\n")
+            tx = lifecycle.WorkspaceTransaction("demo", is_existing=False)
+            tx.record_restore(gate, gate.read_text())
+            gate.write_text("DEPOIS\n")
+
+            with mock.patch("cli.asb.podman.run"), \
+                 mock.patch("cli.asb.podman.exists", return_value=False), \
+                 mock.patch("cli.asb.lifecycle.supervisor.remove_workspace_units"):
+                tx.rollback()
+
+            self.assertEqual(gate.read_text(), "ANTES\n")
+
+
+class TestPurgeRemovesNestedContainersVolume(unittest.TestCase):
+    def test_purge_removes_what_down_now_preserves(self):
+        from unittest import mock
+        from cli.asb import lifecycle
+
+        removed = []
+
+        def fake_run(*args, **kwargs):
+            if args[:1] == ("volume",):
+                removed.append(args[-1])
+            return mock.MagicMock(returncode=0)
+
+        with mock.patch("cli.asb.lifecycle._origin_of", return_value=Path("/origin")), \
+             mock.patch("cli.asb.lifecycle.layout_for"), \
+             mock.patch("cli.asb.lifecycle.down", return_value=0), \
+             mock.patch("cli.asb.lifecycle.remove_workspace"), \
+             mock.patch("cli.asb.podman.exists", return_value=True), \
+             mock.patch("cli.asb.podman.run", side_effect=fake_run):
+            lifecycle.purge("demo", confirmed=True)
+
+        self.assertIn("asb-demo-containers", removed)
+        self.assertIn("asb-demo-session", removed)
+
+
+class TestPurgeAfterDown(unittest.TestCase):
+    """`down` passou a preservar os volumes de sessao e de containers
+    aninhados, mas apaga o estado — e o `purge` dependia do estado para saber
+    o que limpar. Sem isto, os volumes preservados ficavam orfaos para sempre,
+    sem nenhum comando do CLI capaz de remove-los."""
+
+    def _purge(self, confirmed=True):
+        from unittest import mock
+        from cli.asb import lifecycle
+
+        removed = []
+
+        def fake_run(*args, **kwargs):
+            if args[:1] == ("volume",):
+                removed.append(args[-1])
+            return mock.MagicMock(returncode=0)
+
+        with tempfile.TemporaryDirectory() as tmp, \
+             mock.patch("cli.asb.lifecycle.os.path.expanduser", return_value=tmp), \
+             mock.patch("cli.asb.lifecycle._origin_of", return_value=None), \
+             mock.patch("cli.asb.lifecycle.down", return_value=0) as down, \
+             mock.patch("cli.asb.podman.exists", return_value=True), \
+             mock.patch("cli.asb.podman.run", side_effect=fake_run):
+            import contextlib, io
+            with contextlib.redirect_stderr(io.StringIO()):
+                rc = lifecycle.purge("demo", confirmed=confirmed)
+        return rc, removed, down
+
+    def test_purge_without_state_still_removes_the_named_volumes(self):
+        rc, removed, down = self._purge()
+        self.assertEqual(rc, 0)
+        self.assertIn("asb-demo-session", removed)
+        self.assertIn("asb-demo-containers", removed)
+        down.assert_called_once_with("demo")
+
+    def test_purge_without_state_still_requires_confirmation(self):
+        from cli.asb import lifecycle
+        with self.assertRaises(lifecycle.podman.PodmanError):
+            self._purge(confirmed=False)
 
 
 class TestManagedLifecycleCommands(unittest.TestCase):

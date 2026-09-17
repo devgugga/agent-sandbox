@@ -1156,6 +1156,75 @@ volume. A causa do vazamento não foi investigada.
 - Testes interrompidos deixam containers com política `always`, que voltam no
   boot seguinte.
 
+## 6.9. Boot A1 (normal, runtime único): APROVADO, com um defeito de partida
+
+Reboot às 13:02 (kernel), autologin, nenhum comando antes da coleta.
+`boot_id` `23bc2391…` → `a30edd68…`. Evidência em
+`t2-evidence/pre-bootA1-*`, `post-bootA1.txt` e `post-bootA1-*.json`.
+
+### Linha do tempo (journal, `short-precise`)
+
+| Hora | Evento |
+| :--- | :--- |
+| 13:05:40.689 | `asb-network.service` começa a esperar; primeira sonda `dns_failed` |
+| 13:05:42 | `asb-keyring.service` ativo |
+| 13:05:45.935 | espera confirma github.com:443 após 2 tentativas e 5 s |
+| 13:05:45.961 | `asb-network.service` concluída; os dois proxies começam |
+| ≈13:05:46.28 | `pasta` nasce (derivado do relógio monotônico, resolução de 10 ms) |
+| 13:05:46.9 | os dois proxies prontos |
+| 13:05:47.58 | agente do scratch morre na partida (ver abaixo) |
+| 13:05:49 | agente do BlackICE pronto |
+| 13:05:56 | agente do scratch pronto no reinício automático (`NRestarts=1`) |
+
+**Medida decisiva:** pelo relógio monotônico, `asb-network.service` entrou em
+`active` em 199 232 302 µs e o `pasta` nasceu em 199 550 000 µs, **318 ms
+depois**. Nenhum produtor criou o namespace antes da espera.
+
+### Critérios do boot
+
+| # | Critério | Resultado |
+| :--- | :--- | :--- |
+| 1 | `boot_id` mudou | sim |
+| 2 | `pasta` nasceu depois da espera | sim, +318 ms |
+| 3 | egresso real nos dois workspaces | github 200 nos dois; example.com negado (403) nos dois |
+| 4 | porta, trabalho e credenciais preservados | portas 45115 e 42887 iguais; trabalho do BlackICE idêntico; credenciais presentes e `authenticated` |
+| — | unidades | as seis `active`; coletor com host, proxy, SSH e keyring `healthy` nos dois |
+
+O hash de `claude/.credentials.json` mudou (`c564e177…` → `67ff9a76…`), mas
+o arquivo foi reescrito às 12:42:45, **antes** do reboot e 23 s depois da
+checagem da §6.8, com os mesmos campos e `expiresAt` 8 h adiante. É uma
+renovação real do token, não efeito do boot; quem a escreveu não foi
+identificado. O Codex não mudou (`9069867d…`).
+
+### Defeito: corrida no entrypoint entre agentes que partem juntos
+
+Primeira partida do agente do scratch:
+`rm: cannot remove '/home/v/.claude/plugins.asb-staging.1/cache/claude-plugins-official': Directory not empty`.
+
+`image/entrypoint.sh` nomeia a cópia temporária da configuração como
+`${dst}.asb-staging.$$`. Dentro do container o entrypoint é PID 1, então `$$`
+vale 1 em **todo** agente, e `~/.claude` é volume compartilhado. Os dois
+agentes partiram com 90 ms de diferença (13:05:47.389 e 13:05:47.456) e um
+apagou o diretório que o outro copiava. Não é regressão da Emenda A (o nome
+vem do volume compartilhado da A3), mas a espera única faz os workspaces
+partirem juntos a cada boot. O `Restart=always` recuperou em 5 s; cada corrida
+consome uma das 3 partidas de `StartLimitBurst`.
+
+**Corrigido antes do boot A2**, por decisão do operador. A troca de cada
+destino do manifesto passa a ser serializada com `flock` no diretório pai,
+um lock do kernel no inode do volume, visível entre containers e sem arquivo de lock.
+`tests/integration/test_entrypoint_concurrency.py` roda o entrypoint real em
+6 pares de partidas simultâneas sobre um volume compartilhado: com a imagem
+anterior (`e034d2a24124`) falhou nas 6 rodadas com o mesmo `Directory not
+empty`; com a imagem corrigida (`287d071ee4ce`) passou. Suítes: unitária 583
+OK; integração 49 OK (1 skip), sem resíduo `asb-test-*`.
+
+Os dois pilotos foram recriados na imagem nova às 13:19 (`down` + `up`):
+credenciais (`67ff9a76…`, `9069867d…`) e trabalho do BlackICE idênticos, seis
+unidades `active`, `doctor` rc 0. Portas SSH novas: `t2-pilot-blackice`
+41837, `t2-pilot-scratch` 46823. O `asb-keyring` não foi recriado e segue na
+imagem anterior; ele não materializa manifesto.
+
 ---
 
 ## 7. Critérios de aceite (spec §8)
@@ -1195,8 +1264,8 @@ disruptiva, e não considerar espera sem resposta uma autorização.
 
 | Recurso | Origem |
 | :--- | :--- |
-| workspace `t2-pilot-blackice` (porta 45115 desde §6.8) | BlackICE |
-| workspace `t2-pilot-scratch` (porta 42887 desde §6.8) | repo descartável |
+| workspace `t2-pilot-blackice` (porta 41837 desde §6.9) | BlackICE |
+| workspace `t2-pilot-scratch` (porta 46823 desde §6.9) | repo descartável |
 | `/home/v/Data/Projects/t2-pilot-scratch` | criado para §5.3.2 |
 | `/home/v/Data/Projects/BlackICE.bk` | backup pedido pelo operador |
 

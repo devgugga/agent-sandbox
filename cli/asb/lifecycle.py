@@ -653,7 +653,7 @@ def prepare_workspace(
         published.extend(["-p", f"127.0.0.1:{host_p}:{cont_p}"])
 
     runtime_dir = ensure_runtime(root)
-    ensure_keyring_service()
+    ensure_keyring_service(runtime_dir)
 
     agent_args = [
         cmd_action,
@@ -980,7 +980,7 @@ def resume(root: Path, ws: str) -> int:
               "e rode 'asb-agent resume' de novo", file=sys.stderr)
         return 1
 
-    ensure_keyring_service()
+    ensure_keyring_service(ensure_runtime(root))
 
     target = f"asb-{ws}.target"
     subprocess.run(["systemctl", "--user", "enable", target], check=True)

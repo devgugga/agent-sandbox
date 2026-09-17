@@ -46,6 +46,10 @@ __all__ = [
     "stop_workspace",
     "remove_workspace_units",
     "escape_systemd_arg",
+    "keyring_container_name",
+    "keyring_unit_name",
+    "render_keyring_unit",
+    "install_keyring_unit",
     "adopt_workspace",
     "rollback_workspace",
     "adopt_keyring",
@@ -396,6 +400,7 @@ def install_workspace(
             helper_path=helper_path,
             manifest_path=manifest_file,
             network_unit=network_unit,
+            keyring_unit=keyring_unit_name(),
         )
         content = render_unit(unit)
         unit_file = target_path / u_name
@@ -503,6 +508,66 @@ def remove_workspace_units(
 
     # Recarregar daemon
     subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
+
+
+def keyring_container_name() -> str:
+    """Container do keyring singleton; `ASB_KEYRING_CONTAINER` isola testes."""
+    return os.environ.get("ASB_KEYRING_CONTAINER", "asb-keyring")
+
+
+def keyring_unit_name() -> str:
+    """Unidade do keyring, nomeada pelo container como `asb-{ws}-{role}.service`."""
+    return f"{keyring_container_name()}.service"
+
+
+def render_keyring_unit(c_name: str, runtime_dir: Path) -> str:
+    """Renderiza a unidade Type=exec do keyring singleton (Emenda A §5).
+
+    `ExecStartPost` so deixa a unidade ativa com o Secret Service respondendo,
+    entao o `After=` do agente espera o D-Bus pronto, nao so o processo. O
+    container roda com `--network none`: a unidade NAO depende da espera por
+    rede.
+    """
+    _validate_safe_name(c_name, "keyring_container")
+    launcher = escape_systemd_arg(runtime_dir / "launcher.sh")
+    check = escape_systemd_arg(runtime_dir / "runtime_check.py")
+    name_escaped = escape_systemd_arg(c_name)
+    podman_escaped = escape_systemd_arg(shutil.which("podman") or "/usr/bin/podman")
+    return (
+        "[Unit]\n"
+        "Description=Agent Sandbox Secret Service keyring singleton\n"
+        "StartLimitIntervalSec=600s\n"
+        "StartLimitBurst=3\n"
+        "\n"
+        "[Service]\n"
+        "Type=exec\n"
+        f"ExecStart={launcher} start --attach --sig-proxy=false {name_escaped}\n"
+        f"ExecStartPost={check} --role keyring --container {name_escaped}\n"
+        f"ExecStop={podman_escaped} stop --ignore --time=10 {name_escaped}\n"
+        f"ExecStopPost={podman_escaped} stop --ignore --time=10 {name_escaped}\n"
+        "Restart=always\n"
+        "RestartSec=5s\n"
+        "TimeoutStartSec=150s\n"
+        "TimeoutStopSec=20s\n"
+        "KillMode=process\n"
+        "\n"
+        "[Install]\n"
+        "WantedBy=default.target\n"
+    )
+
+
+def install_keyring_unit(
+    c_name: str,
+    runtime_dir: Path,
+    target_dir: Path | None = None,
+) -> Path:
+    """Grava a unidade do keyring atomicamente e executa daemon-reload."""
+    _, target_path = _resolve_paths("", target_dir, None)
+    target_path.mkdir(parents=True, exist_ok=True)
+    unit_file = target_path / f"{c_name}.service"
+    _atomic_write_text(unit_file, render_keyring_unit(c_name, runtime_dir))
+    subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
+    return unit_file
 
 
 # ==============================================================================

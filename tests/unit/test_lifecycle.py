@@ -220,7 +220,7 @@ class TestLifecycleOrdering(unittest.TestCase):
                 stack.enter_context(mock.patch("cli.asb.lifecycle.podman.exists", side_effect=fake_exists))
                 stack.enter_context(mock.patch("cli.asb.lifecycle.ensure_runtime", return_value=runtime_dir))
                 stack.enter_context(mock.patch("cli.asb.install.remove_project_dropin", return_value=False))
-                stack.enter_context(mock.patch("cli.asb.lifecycle.ensure_keyring_service", side_effect=lambda: events.append("ensure_keyring_service")))
+                stack.enter_context(mock.patch("cli.asb.lifecycle.ensure_keyring_service", side_effect=lambda *a, **k: events.append("ensure_keyring_service")))
                 stack.enter_context(mock.patch("cli.asb.lifecycle.ensure_keyring_runtime_volume", return_value="asb-keyring-runtime"))
                 stack.enter_context(mock.patch("cli.asb.lifecycle.ensure_credentials_volume", return_value="asb-credentials"))
                 stack.enter_context(mock.patch.multiple("cli.asb.lifecycle",
@@ -700,6 +700,12 @@ class TestSingleRuntimeResume(unittest.TestCase):
         rc, _, podman_calls, _, _ = self._run_resume()
         self.assertEqual(rc, 0)
         self.assertEqual([c for c in podman_calls if c and c[0] == "unshare"], [])
+
+    def test_resume_hands_the_installed_runtime_to_the_keyring(self):
+        rc, _, _, mock_keyring, _ = self._run_resume()
+        self.assertEqual(rc, 0)
+        (runtime_dir,), _ = mock_keyring.call_args
+        self.assertEqual(runtime_dir.name, "rev1")
 
 
 class TestTransactionalRollback(unittest.TestCase):

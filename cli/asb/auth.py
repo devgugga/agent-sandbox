@@ -570,7 +570,7 @@ def login(root: Path, provider: str = "all") -> int:
         raise podman.PodmanError(
             f"imagem {lifecycle.IMAGE} ausente; execute 'asb-agent build'")
 
-    lifecycle.ensure_keyring_service()
+    lifecycle.ensure_keyring_service(lifecycle.ensure_runtime(root))
 
     print("\nEntre em cada agente. Use SEMPRE fluxos de device-auth: o OAuth "
           "padrao abre um servidor de callback numa porta do container que o "

@@ -520,5 +520,57 @@ class TestNetworkGateUnits(unittest.TestCase):
         self.assertIn("Environment=ASB_NETWORK_GATE_TARGET=127.0.0.1:18080\n", text)
 
 
+class TestKeyringUnit(unittest.TestCase):
+    """Emenda A §5: o keyring e uma unidade systemd com sonda de prontidao."""
+
+    def test_render_keyring_unit_runs_readiness_and_ignores_the_network_gate(self):
+        runtime_dir = Path("/opt/asb/runtime/rev1")
+        text = supervisor.render_keyring_unit("asb-keyring", runtime_dir)
+        self.assertIn(
+            "ExecStart=/opt/asb/runtime/rev1/launcher.sh start --attach --sig-proxy=false asb-keyring\n", text)
+        self.assertIn(
+            "ExecStartPost=/opt/asb/runtime/rev1/runtime_check.py --role keyring --container asb-keyring\n", text)
+        self.assertIn("WantedBy=default.target\n", text)
+        self.assertNotIn("asb-network", text)
+        self.assertNotIn("Requires=", text)
+
+    def test_install_keyring_unit_writes_the_unit_and_reloads(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            unit_dir = Path(tmp) / "units"
+            with mock.patch("asb.supervisor.subprocess.run") as run:
+                path = supervisor.install_keyring_unit(
+                    "asb-keyring", Path("/opt/rt"), target_dir=unit_dir)
+            self.assertEqual(path, unit_dir / "asb-keyring.service")
+            self.assertIn("--role keyring", path.read_text(encoding="utf-8"))
+            run.assert_called_once_with(["systemctl", "--user", "daemon-reload"], check=True)
+
+    def test_keyring_names_honor_the_isolation_environment(self):
+        with mock.patch.dict(os.environ, {"ASB_KEYRING_CONTAINER": "asb-test-k-keyring"}):
+            self.assertEqual(supervisor.keyring_container_name(), "asb-test-k-keyring")
+            self.assertEqual(supervisor.keyring_unit_name(), "asb-test-k-keyring.service")
+
+    def test_install_workspace_points_the_agent_at_the_keyring_unit_in_use(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runtime_dir = root / "runtime" / "rev1"
+            runtime_dir.mkdir(parents=True)
+            launcher = runtime_dir / "launcher.sh"
+            launcher.write_text("#!/bin/sh\n")
+            state_dir = root / "state" / "ws"
+            state_dir.mkdir(parents=True)
+            (state_dir / "runtime.json").write_text(json.dumps({
+                "schemaVersion": 1, "workspace": "ws",
+                "containers": {"agent": {"name": "asb-ws-agent", "id": "a1"}},
+            }))
+            unit_dir = root / "units"
+            with mock.patch.dict(os.environ, {"ASB_KEYRING_CONTAINER": "asb-test-k-keyring"}), \
+                 mock.patch("asb.supervisor.subprocess.run"):
+                supervisor.install_workspace(
+                    "ws", target_dir=unit_dir, state_dir=state_dir, helper_path=launcher)
+            agent_text = (unit_dir / "asb-ws-agent.service").read_text(encoding="utf-8")
+            self.assertIn("asb-test-k-keyring.service", agent_text)
+            self.assertNotIn(" asb-keyring.service", agent_text)
+
+
 if __name__ == "__main__":
     unittest.main()

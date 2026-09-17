@@ -89,6 +89,7 @@ def login_harness(*, exec_returncode: int = 0, tty: bool = True,
             mock.patch.object(auth.subprocess, "run",
                               side_effect=fake_subprocess_run), \
             mock.patch.object(auth.lifecycle, "ensure_keyring_service"), \
+            mock.patch.object(auth.lifecycle, "ensure_runtime", return_value=Path("/tmp/asb-test-runtime")), \
             mock.patch.object(auth.lifecycle, "ensure_keyring_runtime_volume",
                               return_value="asb-keyring-runtime"), \
             mock.patch.object(auth.lifecycle, "ensure_credentials_volume",
@@ -441,7 +442,7 @@ class TestLoginKeyringContract(unittest.TestCase):
         order = []
         with login_harness() as captured, \
                 mock.patch.object(auth.lifecycle, "ensure_keyring_service",
-                                  side_effect=lambda: order.append("keyring")), \
+                                  side_effect=lambda *a, **kw: order.append("keyring")), \
                 mock.patch.object(
                     auth.podman, "run",
                     side_effect=lambda *a, **kw: (

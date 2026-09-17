@@ -226,8 +226,8 @@ def pilot_cli(state: Path, args: list[str]) -> int:
             log.write(json.dumps(command) + "\n")
         return real_run(command, *pos, **kw)
 
-    def ensure_then_fault():
-        real_ensure()
+    def ensure_then_fault(runtime_dir):
+        real_ensure(runtime_dir)
         if Path(cfg["fault"]).read_text() == "keyring":
             # Real failure AFTER repair: readiness must detect the stopped service.
             run("podman", "stop", "-t", "1", cfg["env"]["ASB_KEYRING_CONTAINER"], check=True)
@@ -245,7 +245,7 @@ def pilot_cli(state: Path, args: list[str]) -> int:
         stack.enter_context(mock.patch.object(auth, "_verify_command", side_effect=synthetic_verify))
         stack.enter_context(mock.patch.object(subprocess, "run", side_effect=traced))
         if args == ["setup-keyring"]:
-            lifecycle.ensure_keyring_service()
+            lifecycle.ensure_keyring_service(lifecycle.ensure_runtime(ROOT))
             return 0
         sys.argv = [str(ROOT / "cli/asb-agent"), *args]
         rc = runpy.run_path(str(ROOT / "cli/asb-agent"))["main"]()

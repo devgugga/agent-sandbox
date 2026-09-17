@@ -17,6 +17,7 @@ import base64
 import json
 import os
 import shutil
+import subprocess
 import time
 from pathlib import Path
 
@@ -226,74 +227,80 @@ def _wait_for_keyring_readiness(container: str, timeout: float = 5.0) -> bool:
     return False
 
 
-def ensure_keyring_service(timeout: float = 5.0) -> str:
-    """Garante o servico global de keyring (singleton).
+def _restart_policy(container: str) -> str:
+    """Politica de reinicio do Podman do container (vazio quando nao declarada)."""
+    return podman.out(
+        "inspect", container, "--format", "{{.HostConfig.RestartPolicy.Name}}").strip()
 
-    Cria e/ou inicia o container asb-keyring com rede isolada (--network none),
-    reinicializacao automatica (--restart unless-stopped), permissao uid 1000,
-    volume de dados exclusivo do keyring e volume de runtime compartilhado.
 
-    Se o container existente for schema 1 ou violar o contrato de mounts
-    legado, recria automaticamente apenas o container singleton (upgrade
-    transparente), sem remover volumes, passfile ou dados legados.
+def ensure_keyring_service(runtime_dir: Path, timeout: float = 180.0) -> str:
+    """Garante o keyring singleton supervisionado pelo systemd de usuario (Emenda A §5).
+
+    O container nasce com `--restart=no`; quem o inicia e reinicia e a unidade
+    `<container>.service`, cuja sonda `runtime_check --role keyring` so deixa a
+    unidade ativa com o Secret Service respondendo.
+
+    Container de schema 1, com contrato de mounts legado ou ainda com politica
+    de reinicio do Podman (o runtime legacy) e recriado. SO o container sai:
+    volumes e passfile ficam intactos, entao nenhuma credencial e apagada.
+    A existencia e consultada uma vez so; depois do `rm` o estado segue pela
+    variavel `present`.
     """
+    from . import supervisor
     from .lifecycle import IMAGE, ensure_credentials_volume
 
     container = os.environ.get("ASB_KEYRING_CONTAINER", KEYRING_CONTAINER)
-    if podman.exists("container", container):
+    present = podman.exists("container", container)
+    if present:
         schema, mounts = _inspect_keyring_container(container)
         if schema not in ("", "1", KEYRING_SCHEMA):
             raise podman.PodmanError(
                 f"container '{container}' possui schema incompativel ({schema}). "
                 f"Remova-o com 'podman rm -f {container}' e execute 'asb-agent login'."
             )
-        needs_upgrade = schema in ("", "1") or bool(
-            _keyring_mount_contract_issue(mounts))
-        if needs_upgrade:
-            # Upgrade automático: remove somente o container singleton, mantendo volumes e passfile intactos
+        needs_recreate = (
+            schema in ("", "1")
+            or bool(_keyring_mount_contract_issue(mounts))
+            or _restart_policy(container) != "no"
+        )
+        if needs_recreate:
             podman.run("rm", "-f", container, check=False)
-        else:
-            if not podman.running(container):
-                podman.run("start", container)
-            if not _wait_for_keyring_readiness(container, timeout=timeout):
-                # Recuperacao idempotente nao-circular: reinicia o servico uma vez e revalida
-                podman.run("restart", container)
-                if not _wait_for_keyring_readiness(container, timeout=timeout):
-                    raise podman.PodmanError(
-                        f"servico de keyring '{container}' permanece sem resposta apos reinicio; "
-                        f"remova o container com 'podman rm -f {container}' e execute 'asb-agent login'"
-                    )
-            return container
+            present = False
 
-    if not podman.exists("image", IMAGE):
-        raise podman.PodmanError(
-            f"imagem {IMAGE} ausente; execute 'asb-agent build'")
-
-    pass_file = ensure_keyring_pass()
-    cred_vol = ensure_credentials_volume()
-    keyring_data_vol = ensure_keyring_data_volume()
-    run_vol = ensure_keyring_runtime_volume()
-
-    podman.run(
-        "run", "-d", "--name", container,
-        "--label", f"asb.keyring.schema={KEYRING_SCHEMA}",
-        "--network", "none",
-        "--restart", "unless-stopped",
-        "--user", "1000",
-        "--userns", "keep-id:uid=1000,gid=1000",
-        "-v", f"{pass_file}:/run/asb-keyring-pass:ro,Z",
-        "-v", f"{cred_vol}:/run/asb-credentials:ro,z",
-        "-v", f"{keyring_data_vol}:/run/asb-keyring-data:z",
-        "-v", f"{run_vol}:/run/asb-keyring:z",
-        "-e", f"DBUS_SESSION_BUS_ADDRESS=unix:path={KEYRING_BUS}",
-        "--entrypoint", "/usr/local/bin/start-keyring.sh",
-        IMAGE,
-    )
-    if not _wait_for_keyring_readiness(container, timeout=timeout):
-        podman.run("restart", container)
-        if not _wait_for_keyring_readiness(container, timeout=timeout):
+    if not present:
+        if not podman.exists("image", IMAGE):
             raise podman.PodmanError(
-                f"servico de keyring '{container}' falhou ao inicializar; "
-                f"remova o container com 'podman rm -f {container}' e execute 'asb-agent login'"
-            )
+                f"imagem {IMAGE} ausente; execute 'asb-agent build'")
+        pass_file = ensure_keyring_pass()
+        cred_vol = ensure_credentials_volume()
+        keyring_data_vol = ensure_keyring_data_volume()
+        run_vol = ensure_keyring_runtime_volume()
+        podman.run(
+            "create", "--name", container,
+            "--label", f"asb.keyring.schema={KEYRING_SCHEMA}",
+            "--network", "none",
+            "--restart", "no",
+            "--user", "1000",
+            "--userns", "keep-id:uid=1000,gid=1000",
+            "-v", f"{pass_file}:/run/asb-keyring-pass:ro,Z",
+            "-v", f"{cred_vol}:/run/asb-credentials:ro,z",
+            "-v", f"{keyring_data_vol}:/run/asb-keyring-data:z",
+            "-v", f"{run_vol}:/run/asb-keyring:z",
+            "-e", f"DBUS_SESSION_BUS_ADDRESS=unix:path={KEYRING_BUS}",
+            "--entrypoint", "/usr/local/bin/start-keyring.sh",
+            IMAGE,
+        )
+
+    unit_name = supervisor.install_keyring_unit(container, runtime_dir).name
+    try:
+        subprocess.run(["systemctl", "--user", "enable", unit_name],
+                       check=True, capture_output=True, text=True)
+        subprocess.run(["systemctl", "--user", "start", unit_name],
+                       check=True, capture_output=True, text=True, timeout=timeout)
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as exc:
+        raise podman.PodmanError(
+            f"servico de keyring '{unit_name}' nao ficou pronto; veja "
+            f"'systemctl --user status {unit_name}' e "
+            f"'journalctl --user -u {unit_name}'"
+        ) from exc
     return container

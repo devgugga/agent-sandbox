@@ -1,22 +1,22 @@
 # Graph Report - agent-sandbox  (2026-09-17)
 
 ## Corpus Check
-- 159 files · ~209,516 words
+- 160 files · ~212,998 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
-- 2555 nodes · 3956 edges · 186 communities (147 shown, 39 thin omitted)
+- 2608 nodes · 4008 edges · 192 communities (152 shown, 40 thin omitted)
 - Extraction: 97% EXTRACTED · 3% INFERRED · 0% AMBIGUOUS · INFERRED: 127 edges (avg confidence: 0.86)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `859665a1`
+- Built from commit: `9c6d9152`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
 ## Community Hubs (Navigation)
-- run
-- layout_for
+- TestPodmanRun
+- Path
 - assert.sh
 - load_profile
 - build_staging
@@ -39,7 +39,7 @@
 - AGENTS.md
 - graphify reference: query, path, explain
 - graphify reference: query, path, explain
-- lifecycle.py
+- Path
 - Model Selection & Routing
 - Design: agent-sandbox
 - asb-guard
@@ -69,13 +69,13 @@
 - Sandbox Domain Pack
 - Integração project-scoped do Graphify no agent-sandbox
 - Git Commit Conventions
-- classify_verification
+- layout_for
 - Global Constraints
 - discover_mise_dirs
 - 2. Explicit Declarations: What Is NOT Protected
 - Orca Reboot Persistence Implementation Plan
 - Design: persistência profissional do sandbox no Orca
-- exists
+- PodmanError
 - Skill: Agent Authoring
 - Skill: Commit Curator
 - Skill: Agent Authoring
@@ -95,30 +95,30 @@
 - TestSupervisorPilot
 - 3. Resultados dos Ensaios Empíricos
 - TestForwarderIntegration
-- ensure_session_volume
+- lifecycle.py
 - IsolationError
 - Secret Service singleton para credenciais dos agentes
 - integration/__init__.py
 - SandboxFixture
-- TestCliParserDispatchParity
+- Design: Modular TUI for projects, worktrees, and agent sessions
 - TestTeardownCommandClasses
 - Path
+- Piloto assistido de autenticação — 2026-09-07
 - Adendo — 2026-09-07, 22:00–22:50 BRT
-- TestCliExitCodes
 - auth.py
 - test_cli_dispatch.py
 - test_entrypoint_concurrency.py
 - TestNetworkGateUnits
 - 7. Graphify
 - 4. Agent Workflow & Operational Rules
-- suspend
+- 4.2 Entities
 - TestToolDrift
 - TestSingleRuntimeResume
-- TestRevisionFallbackIsPerCheckout
+- TestForwarderScriptValidation
 - Known Regressions — Sandbox Domain
 - forwarder.sh
 - ProbeResult
-- test_lifecycle.py
+- Profile
 - TestManagedLifecycleCommands
 - Test Shape
 - unit/test_network_gate.py
@@ -127,17 +127,17 @@
 - TestClassifyVerification
 - TestCredentialDirectoryMounts
 - test_provider_auth.py
-- TestLifecycleLoginReexport
+- test_login_flow.py
 - claim-verifier/agent.md
 - regression-sentinel/agent.md
 - test-shape-auditor/agent.md
-- readiness.py
+- test_readiness.py
 - _ok
 - Global Constraints
 - probe_ssh
 - supervisor.py
 - TestAggregateExitCodeDeniesByDefault
-- TestAllowlistBaseCobreOsAgentes
+- 14. Incremental migration
 - TestProbeSshIdentityAtCallSites
 - Emenda A — runtime único systemd e espera única por rede
 - asb_test_isolation.py
@@ -156,7 +156,7 @@
 - TestUnitSuiteIsolation
 - TestLegacyCredentialLayoutWarning
 - TestEntrypointCredentialLayout
-- normalize_domains
+- 10. Finishing, merging, and cleanup
 - TestLiveAuthDoubleOptIn
 - TestDoctor
 - TestVerifyFreshClient
@@ -165,8 +165,8 @@
 - Recuperação do uplink rootless do Podman
 - 5. Estado de autenticação medido
 - TestEmendaAChecks
-- TestSingleRuntimeCli
-- prepare_workspace
+- 5. Module architecture
+- WorkspaceTransaction
 - TestPurgeAfterDown
 - Supervisão da inicialização — Implementation Plan
 - asb/__init__.py
@@ -178,11 +178,11 @@
 - Inicialização e autenticação — Implementation Plan
 - TestCheckWorkspaceEgress
 - TestEntrypointNeverDestroysSharedDirectories
-- TestHostPortsProbe
-- Profile
+- 7. Session continuity
+- TestLoginTtyAndCancellation
 - TestSingleRuntimeUp
 - .is_container_running
-- LoginBusy
+- login
 - Autenticação por fornecedor — Implementation Plan
 - 6.4. Boot 2 — APROVADO sem comando corretivo
 - 6.6. Boot 3 — configuração real: REPROVADO, e com falha silenciosa
@@ -198,6 +198,12 @@
 - TestPurge
 - 6.7. Validação pelo Orca BLOQUEADA por defeito do Orca
 - git/README.md
+- asb-agent
+- 13. Test strategy
+- 8. TUI
+- start-keyring.sh
+- 11. Failure handling
+- stop_workspace
 
 ## God Nodes (most connected - your core abstractions)
 1. `SandboxFixture` - 93 edges
@@ -226,15 +232,15 @@
 ## Import Cycles
 - None detected.
 
-## Communities (186 total, 39 thin omitted)
+## Communities (192 total, 40 thin omitted)
 
-### Community 0 - "run"
-Cohesion: 0.12
-Nodes (16): _inspect_keyring_container(), Retorna o schema e os mounts reais do singleton, indexados por destino., _volume_mountpoint(), json_out(), out(), PodmanError, Any, CompletedProcess (+8 more)
+### Community 0 - "TestPodmanRun"
+Cohesion: 0.18
+Nodes (3): json_out(), Any, TestPodmanRun
 
-### Community 1 - "layout_for"
-Cohesion: 0.10
-Nodes (23): _git(), layout_for(), prepare_clone(), Exception, Path, cli/asb/workspace.py — identidade do workspace, layout em disco e clone. Duas…, Identidade do workspace, sempre reproduzivel a partir das entradas. O Orca…, Onde tudo mora. `home` e o mesmo caminho no host e no container (D4). (+15 more)
+### Community 1 - "Path"
+Cohesion: 0.14
+Nodes (11): Identidade do workspace, sempre reproduzivel a partir das entradas. O Orca…, workspace_id(), git(), origin_repo(), Path, Testes de cli/asb/workspace.py — identidade, layout e clone., F7: o Orca cria <projectRoot>-<Nome>. Se isso cair fora do mount, a worktree…, Spec §5.2: squid.conf dentro do mount deixaria o agente editar a propria… (+3 more)
 
 ### Community 2 - "assert.sh"
 Cohesion: 0.06
@@ -249,12 +255,12 @@ Cohesion: 0.07
 Nodes (38): _allowed_destination_roots(), _allowed_symlink_roots(), build_staging(), copy_file(), denied(), filter_claude_settings(), filter_codex_config(), _key() (+30 more)
 
 ### Community 5 - "Pilot"
-Cohesion: 0.06
-Nodes (18): AssertionError, Pilot, pilot_cli(), CompletedProcess, Path, Process-local seams; host HOME and Podman storage stay unchanged., Connect I1 resource ownership to lifecycle names and on-disk state., Defensive unit contract for WorkspaceTransaction(is_existing=True). Production… (+10 more)
+Cohesion: 0.07
+Nodes (16): AssertionError, Pilot, pilot_cli(), CompletedProcess, Path, Process-local seams; host HOME and Podman storage stay unchanged., Connect I1 resource ownership to lifecycle names and on-disk state., Defensive unit contract for WorkspaceTransaction(is_existing=True). Production… (+8 more)
 
 ### Community 7 - "permitted"
 Cohesion: 0.10
-Nodes (11): Handler, main(), permitted(), relay(), Server, Testa cli/asb/install.py broker()., Testa a função permitted(method, target) do broker., Testa a rejeição no nível de protocolo HTTP no Handler. (+3 more)
+Nodes (12): Handler, main(), permitted(), relay(), Server, socket, Testa cli/asb/install.py broker()., Testa a função permitted(method, target) do broker. (+4 more)
 
 ### Community 8 - "What You Must Do When Invoked"
 Cohesion: 0.08
@@ -269,8 +275,8 @@ Cohesion: 0.08
 Nodes (24): For /graphify add and --watch, For /graphify query, For the commit hook and native AGENTS.md integration, For --update and --cluster-only, /graphify, Honesty Rules, Interpreter guard for subcommands, Part A - Structural extraction for code files (+16 more)
 
 ### Community 12 - "common.sh"
-Cohesion: 0.14
-Nodes (10): entrypoint.sh script, DBUS_SESSION_BUS_ADDRESS, start-keyring.sh script, asb_recipe_json(), asb_workspace_id(), common.sh script, create.sh script, destroy.sh script (+2 more)
+Cohesion: 0.26
+Nodes (7): asb_recipe_json(), asb_workspace_id(), common.sh script, create.sh script, destroy.sh script, resume.sh script, suspend.sh script
 
 ### Community 13 - "sync-skills.mjs"
 Cohesion: 0.17
@@ -316,9 +322,9 @@ Nodes (5): For /graphify explain, For /graphify path, graphify reference: query,
 Cohesion: 0.33
 Nodes (5): For /graphify explain, For /graphify path, graphify reference: query, path, explain, Step 0 — Constrained query expansion (REQUIRED before traversal), Step 1 — Traversal
 
-### Community 24 - "lifecycle.py"
-Cohesion: 0.09
-Nodes (43): build(), _current_revision(), down(), emit(), ensure_runtime(), ensure_ssh_key(), list_workspaces(), login() (+35 more)
+### Community 24 - "Path"
+Cohesion: 0.11
+Nodes (22): _current_revision(), down(), ensure_runtime(), login(), _origin_of(), pull(), purge(), Path (+14 more)
 
 ### Community 25 - "Model Selection & Routing"
 Cohesion: 0.09
@@ -373,8 +379,8 @@ Cohesion: 0.04
 Nodes (7): Testes de cli/asb/auth.py — separacao de status de conta, rede e…, Exemplos verbatim do brief da tarefa A2., TestAuthResult, TestCheckStatus, TestParseClaudeStatus, TestParseCodexStatus, TestStatusCommand
 
 ### Community 48 - "doctor.py"
-Cohesion: 0.09
-Nodes (29): ArgumentParser, build_parser(), main(), check_legacy_agent_container(), check_network_gate(), check_project_dropin_absent(), check_workspace_egress(), diagnose() (+21 more)
+Cohesion: 0.11
+Nodes (27): check_legacy_agent_container(), check_network_gate(), check_project_dropin_absent(), check_workspace_egress(), diagnose(), doctor(), _host_version(), _image_version() (+19 more)
 
 ### Community 49 - "Singleton Secret Service Implementation Plan"
 Cohesion: 0.22
@@ -404,9 +410,9 @@ Nodes (10): 1. Objetivo e Contexto, 2.1 Baseline e Tooling Local, 2.2 Adaptador 
 Cohesion: 0.25
 Nodes (8): 1. Authority and Branching Rules, 2. Safe Scope Selection (Surgical Changes), 3. Prerequisites & Empirical Verification, 4. Commit Message Format, 5. Attribution, Commit Body (Mandatory), Git Commit Conventions, Gitmoji Selection
 
-### Community 56 - "classify_verification"
-Cohesion: 0.25
-Nodes (8): _agy_model_row(), _agy_models_output_valid(), classify_verification(), _contains_code(), Casa um CODIGO NUMERICO delimitado (nao digito antes nem depois). R4 do…, A linha e uma LINHA DE MODELO da lista do agy? O formato real (capturado no…, Continua falhando FECHADO; so reconhece o formato real. A guarda anterior…, Classifica o RESULTADO de uma chamada real (ou a decisao de nao faze-la). Pura:…
+### Community 56 - "layout_for"
+Cohesion: 0.16
+Nodes (16): _git(), layout_for(), prepare_clone(), Exception, Path, cli/asb/workspace.py — identidade do workspace, layout em disco e clone. Duas…, Chamado por `down`. NAO toca no mount: la vive o trabalho do agente., Chamado por `purge`, so apos confirmacao explicita do operador. (+8 more)
 
 ### Community 57 - "Global Constraints"
 Cohesion: 0.22
@@ -428,13 +434,13 @@ Nodes (6): Orca Reboot Persistence Implementation Plan, Task 1: readiness de red
 Cohesion: 0.33
 Nodes (5): Critérios de aceitação, Decisões, Design: persistência profissional do sandbox no Orca, Limites deliberados, Problema confirmado
 
-### Community 62 - "exists"
-Cohesion: 0.15
-Nodes (19): check_keyring_service(), ensure_keyring_data_volume(), ensure_keyring_pass(), ensure_keyring_runtime_volume(), ensure_keyring_service(), _keyring_mount_contract_issue(), Path, cli/asb/keyring.py — singleton de Secret Service (asb-keyring). Extraido de… (+11 more)
+### Community 62 - "PodmanError"
+Cohesion: 0.09
+Nodes (31): check_keyring_service(), ensure_keyring_data_volume(), ensure_keyring_pass(), ensure_keyring_runtime_volume(), ensure_keyring_service(), _inspect_keyring_container(), _keyring_mount_contract_issue(), Path (+23 more)
 
 ### Community 69 - "AuthResult"
-Cohesion: 0.07
-Nodes (23): AuthResult, login_harness(), _ok(), Testes do fluxo de login seletivo, persistencia e fixacao de versoes (A3).…, I5: erro de infraestrutura de UM fornecedor nao apaga o resultado ja…, A evidencia continua sendo texto enlatado: o erro do podman nao e saida…, Caso do brief: o login interativo termina bem, mas o cliente NOVO diz deslogado…, A4 ainda nao esta integrado: sem `verify_client`, o resultado do agy e… (+15 more)
+Cohesion: 0.10
+Nodes (18): AuthResult, login_harness(), I5: erro de infraestrutura de UM fornecedor nao apaga o resultado ja…, A evidencia continua sendo texto enlatado: o erro do podman nao e saida…, Caso do brief: o login interativo termina bem, mas o cliente NOVO diz deslogado…, A4 ainda nao esta integrado: sem `verify_client`, o resultado do agy e…, Um fornecedor que falha nao apaga o resultado dos outros, e o codigo agregado…, Cancelar no codex nao pode engolir o resultado ja obtido do claude: o operador… (+10 more)
 
 ### Community 70 - "patch"
 Cohesion: 0.21
@@ -457,8 +463,8 @@ Cohesion: 0.50
 Nodes (4): Available Subagents (`.agents/agents/`), Google Antigravity & Gemini CLI Configuration, Knowledge Graph (`graphify-out/`), Skills (`.agents/skills/`)
 
 ### Community 75 - "TestForwarderProcessLifecycle"
-Cohesion: 0.14
-Nodes (6): Popen, tests/unit/test_forwarder_script.py — Unit tests for image/forwarder.sh…, Tests input validation of image/forwarder.sh., Tests process supervision semantics: fail-fast on child death and SIGTERM…, TestForwarderProcessLifecycle, TestForwarderScriptValidation
+Cohesion: 0.31
+Nodes (3): Popen, Tests process supervision semantics: fail-fast on child death and SIGTERM…, TestForwarderProcessLifecycle
 
 ### Community 76 - "Contratos de Autenticação por Fornecedor e Protocolo de Validação"
 Cohesion: 0.08
@@ -484,9 +490,9 @@ Nodes (12): 1. Objetivo e Escopo, 2. Artefatos Desenvolvidos, 3.1. Recuperação
 Cohesion: 0.12
 Nodes (9): tests/integration/test_forwarder.py — Integration tests for port forwarder…, Proves initial bind errors or invalid port arguments fail immediately., Empirical integration tests for asb-forwarder and unprivileged low ports., Proves undeclared ports remain closed and forwarder is not a general proxy., Proves killing one listener causes forwarder failure, supervisor restart, and…, Proves the proxy image explicitly contains bash and the forwarder executable., Proves the old un-supervised script masks child process failure., Proves forwarder handles SIGTERM cleanly and exits status 0. (+1 more)
 
-### Community 82 - "ensure_session_volume"
-Cohesion: 0.25
-Nodes (8): credential_mount_args(), ensure_credential_dirs(), ensure_session_volume(), _mkdir_private(), Cria, no host, um diretorio por fornecedor dentro do volume. Pelo host porque…, `mkdir -m 700` de cada subpath, com erro TRADUZIDO. Um volume cujo `_data`…, Argumentos de mount das credenciais, para o agente e para os clientes efemeros…, Volume de estado de sessao DESTE workspace. Um por workspace, sempre. Separado…
+### Community 82 - "lifecycle.py"
+Cohesion: 0.08
+Nodes (42): build(), build_proxy(), credential_mount_args(), emit(), ensure_credential_dirs(), ensure_credentials_volume(), ensure_session_volume(), ensure_ssh_key() (+34 more)
 
 ### Community 83 - "IsolationError"
 Cohesion: 0.12
@@ -500,9 +506,9 @@ Nodes (9): Ciclo de vida, Compatibilidade e migração, Contexto, Critérios de 
 Cohesion: 0.06
 Nodes (19): Sets up dedicated isolated paths, keys, launcher, and volumes., Creates the synthetic persistent container., Renders the systemd unit content for the pilot., Installs and reloads the unit in user systemd., Isolated sandbox fixture context manager for integration tests., Stops the supervised systemd unit., Simulates container failure by sending SIGKILL., Stops container cleanly (exit 0) to test unexpected zero-exit. (+11 more)
 
-### Community 87 - "TestCliParserDispatchParity"
-Cohesion: 0.29
-Nodes (3): `lifecycle.login(ROOT)` nao recebe workspace: registrar `login` via o helper…, Guarda do proprio teste: uma varredura que nao achasse nada passaria vazia nos…, TestCliParserDispatchParity
+### Community 87 - "Design: Modular TUI for projects, worktrees, and agent sessions"
+Cohesion: 0.18
+Nodes (10): 12. Security, 15. Acceptance criteria, 16. Expected outcome, 1. Context, 2. Goals, 3. Non-goals, 6.1 Storage, 6. Sources of truth and persistence (+2 more)
 
 ### Community 88 - "TestTeardownCommandClasses"
 Cohesion: 0.09
@@ -512,21 +518,21 @@ Nodes (7): _FixtureCase, `down` remove o arquivo, mas o manager guarda o service
 Cohesion: 0.17
 Nodes (6): CompletedProcess, Path, Runs a command inside a container via podman exec. `container` defaults to the…, Sobe (ou reaproveita) um cliente PROPRIO da fixture, montando SOMENTE as…, Executes the ASB CLI within the isolated environment., Onde units registradas podem morar: runtime do manager e config do usuario.
 
-### Community 90 - "Adendo — 2026-09-07, 22:00–22:50 BRT"
-Cohesion: 0.10
-Nodes (18): A1. Correção de escopo: a topologia do piloto anterior não era fiel, A2. Achado bloqueante: namespace rootless sem uplink, A3. Antigravity: reclassificado, não era falha de autenticação, A4. Codex: login sob topologia fiel — PASS, A5. Claude: causa confirmada também por inspeção direta, A6. Correção de redação sobre a cobertura dos testes, A7. Situação por fornecedor, com as quatro separações exigidas, A8. Pendências que impedem fechar o gate (+10 more)
+### Community 90 - "Piloto assistido de autenticação — 2026-09-07"
+Cohesion: 0.18
+Nodes (9): Escopo e estado, Evidência anterior ao login, Login Antigravity — executado pelo operador, Login Claude — executado pelo operador, Piloto assistido de autenticação — 2026-09-07, Recursos efetivamente criados, Resultado observado (2026-09-07, aproximadamente 20:14–20:16 BRT), Resultado observado após o login (2026-09-07, aproximadamente 20:11 BRT) (+1 more)
 
-### Community 91 - "TestCliExitCodes"
-Cohesion: 0.43
-Nodes (3): I5: `PodmanError` e INFRAESTRUTURA, e infraestrutura vale 2. O CLI inteiro usa…, Guarda do proprio teste: um `main()` que sempre devolvesse 2 passaria no…, TestCliExitCodes
+### Community 91 - "Adendo — 2026-09-07, 22:00–22:50 BRT"
+Cohesion: 0.22
+Nodes (9): A1. Correção de escopo: a topologia do piloto anterior não era fiel, A2. Achado bloqueante: namespace rootless sem uplink, A3. Antigravity: reclassificado, não era falha de autenticação, A4. Codex: login sob topologia fiel — PASS, A5. Claude: causa confirmada também por inspeção direta, A6. Correção de redação sobre a cobertura dos testes, A7. Situação por fornecedor, com as quatro separações exigidas, A8. Pendências que impedem fechar o gate (+1 more)
 
 ### Community 92 - "auth.py"
-Cohesion: 0.09
-Nodes (40): _aggregate_exit_code(), call_budget(), check_status(), _client_name(), _client_run_args(), _lock_path(), login(), login_command() (+32 more)
+Cohesion: 0.10
+Nodes (31): _aggregate_exit_code(), _agy_model_row(), _agy_models_output_valid(), call_budget(), check_status(), classify_verification(), _contains_code(), _now_iso() (+23 more)
 
 ### Community 93 - "test_cli_dispatch.py"
-Cohesion: 0.24
-Nodes (7): _dispatched_commands(), _load_cli_module(), ArgumentParser, Unit tests for cli/asb-agent — paridade entre parser e despacho. B#1: a Tarefa…, Carrega cli/asb-agent, que nao tem sufixo .py e por isso escapa do import…, Coleta os literais comparados contra `args.command`. Restrito ao atributo…, _registered_commands()
+Cohesion: 0.09
+Nodes (15): _dispatched_commands(), _load_cli_module(), ArgumentParser, Unit tests for cli/asb-agent — paridade entre parser e despacho. B#1: a Tarefa…, `lifecycle.login(ROOT)` nao recebe workspace: registrar `login` via o helper…, I5: `PodmanError` e INFRAESTRUTURA, e infraestrutura vale 2. O CLI inteiro usa…, Guarda do proprio teste: um `main()` que sempre devolvesse 2 passaria no…, Emenda A: nao ha escolha de runtime nem adocao/rollback na CLI. (+7 more)
 
 ### Community 94 - "test_entrypoint_concurrency.py"
 Cohesion: 0.25
@@ -544,17 +550,17 @@ Nodes (6): 1. Fast Path Querying, 2. Semantic Update Timing, 3. Rebuild Pause Du
 Cohesion: 0.33
 Nodes (6): 1. Specification Before Implementation (Spec-Driven), 2. Context Hygiene & Progressive Disclosure, 3. Least Privilege & Role Separation, 4. Agent Workflow & Operational Rules, 4. Verification Before Assertions, 5. Human Gatekeeper
 
-### Community 98 - "suspend"
-Cohesion: 0.33
-Nodes (3): Para o workspace: desabilita e para o target systemd e verifica que todos os…, suspend(), TestKeyringPreservation
+### Community 98 - "4.2 Entities"
+Cohesion: 0.25
+Nodes (8): 4.1 Relationships, 4.2 Entities, 4.3 Distinct identifiers, 4. Domain model, `AgentSession`, `Checkout`, `Project`, `SandboxRuntime`
 
 ### Community 100 - "TestSingleRuntimeResume"
 Cohesion: 0.36
 Nodes (3): Emenda A: `resume` verifica o host, garante o keyring, sobe o target e nunca…, R6: manifesto corrompido em resume levanta PodmanError em vez de silenciar., TestSingleRuntimeResume
 
-### Community 101 - "TestRevisionFallbackIsPerCheckout"
-Cohesion: 0.27
-Nodes (4): `dev` era compartilhado: dois checkouts sem git escreviam por cima do mesmo…, `up` reescreve `asb-network.service`, que TODO workspace `Requires=`, fora do…, TestRevisionFallbackIsPerCheckout, TestSharedNetworkGateSurvivesRollback
+### Community 101 - "TestForwarderScriptValidation"
+Cohesion: 0.25
+Nodes (3): tests/unit/test_forwarder_script.py — Unit tests for image/forwarder.sh…, Tests input validation of image/forwarder.sh., TestForwarderScriptValidation
 
 ### Community 102 - "Known Regressions — Sandbox Domain"
 Cohesion: 0.14
@@ -564,9 +570,9 @@ Nodes (14): Known Regressions — Sandbox Domain, R10 — Initializing the rootl
 Cohesion: 0.17
 Nodes (9): probe_workspace(), ProbeResult, Executa o conjunto de probes de prontidão para o workspace informado., A#2: `resume` so publica conexao depois do gate de prontidao; falha de…, Executa o callback UMA vez: exercita o `check_ws` real sem gastar os 30s de…, TestResumeReadinessGate, TestProbeResult, TestProbeWorkspace (+1 more)
 
-### Community 105 - "test_lifecycle.py"
-Cohesion: 0.11
-Nodes (11): Layout, C1 regression: `manifest_containers["forwarder"]` referenciava `fwd_name`, uma…, I4: `up` resolvia a porta SSH duas vezes (uma para o gate de prontidao, outra…, I5: `WorkspaceTransaction.rollback` engolia qualquer excecao ao remover…, A politica de egresso e do operador, nunca do agente. `layout.project_root`…, `credential_mount_args` toca o disco (resolve o mountpoint do volume e cria os…, TestLifecycleOrdering, TestNoRuntimeSelection (+3 more)
+### Community 105 - "Profile"
+Cohesion: 0.08
+Nodes (19): Profile, Layout, Testa o comportamento de host_api em cli/asb/lifecycle.py., TestLifecycleHostApi, C1 regression: `manifest_containers["forwarder"]` referenciava `fwd_name`, uma…, I4: `up` resolvia a porta SSH duas vezes (uma para o gate de prontidao, outra…, I5: `WorkspaceTransaction.rollback` engolia qualquer excecao ao remover…, A politica de egresso e do operador, nunca do agente. `layout.project_root`… (+11 more)
 
 ### Community 106 - "TestManagedLifecycleCommands"
 Cohesion: 0.14
@@ -600,9 +606,13 @@ Nodes (12): prepare_workspace_harness(), Roda `lifecycle.prepare_workspace` DE V
 Cohesion: 0.13
 Nodes (12): get_test_image(), _live_auth_enabled(), _live_auth_file_selected(), skipUnless, tests/integration/test_provider_auth.py — verificacao real e piloto (A4). Duas…, Guarda de isolamento: os volumes NOMEADOS nos mounts sao SOMENTE os desta…, Chamadas REAIS via `auth.verify_client()`. So rodam com `ASB_LIVE_AUTH=1` E…, Returns the local agent-sandbox image name if available, else ''. (+4 more)
 
-### Community 118 - "readiness.py"
-Cohesion: 0.11
-Nodes (13): probe_host_ports(), cli/asb/readiness.py — sondas tipadas de prontidão observacional. Implementa…, Prova que cada porta de `[docker] host_ports` tem listener no agente. O…, socket, Unit tests for cli/asb/readiness.py and cli/asb/runtime_check.py., Emenda A: nenhuma orientacao pode mandar rodar `podman unshare --rootless-…, A remediacao vai para o stderr do operador e para o journal. Interpolar saida…, R11: orientacao que dirige container supervisionado por fora do systemd. O… (+5 more)
+### Community 114 - "test_login_flow.py"
+Cohesion: 0.14
+Nodes (5): _ok(), Testes do fluxo de login seletivo, persistencia e fixacao de versoes (A3).…, `claude -p ping` e `agy -p ping` mandavam PROMPT ao modelo para checar sessao,…, TestLifecycleLoginReexport, TestOperatorLock
+
+### Community 118 - "test_readiness.py"
+Cohesion: 0.10
+Nodes (11): Unit tests for cli/asb/readiness.py and cli/asb/runtime_check.py., Emenda A: nenhuma orientacao pode mandar rodar `podman unshare --rootless-…, `host_ports` e uma pos-condicao prometida ao projeto: sem sonda, o `up`…, A remediacao vai para o stderr do operador e para o journal. Interpolar saida…, R11: orientacao que dirige container supervisionado por fora do systemd. O…, T3: o domain pack e o que agentes e operador leem antes de agir. Ele descreveu…, TestDomainPackDescribesTheSingleRuntime, TestHostPortsProbe (+3 more)
 
 ### Community 119 - "_ok"
 Cohesion: 0.25
@@ -617,28 +627,28 @@ Cohesion: 0.23
 Nodes (8): probe_keyring(), probe_ssh(), Path, Executa 'true' via SSH com chave e porta informadas. `user` omitido resolve…, Checa saúde do Secret Service / keyring singleton., main(), cli/asb/runtime_check.py — entry point para sondas de prontidão do systemd.…, TestProbeSSH
 
 ### Community 122 - "supervisor.py"
-Cohesion: 0.10
-Nodes (35): _atomic_write_text(), ContainerUnit, escape_systemd_arg(), install_keyring_unit(), install_workspace(), keyring_container_name(), keyring_unit_name(), network_unit_name() (+27 more)
+Cohesion: 0.12
+Nodes (31): _atomic_write_text(), ContainerUnit, escape_systemd_arg(), install_keyring_unit(), install_workspace(), keyring_container_name(), keyring_unit_name(), Path (+23 more)
 
 ### Community 123 - "TestAggregateExitCodeDeniesByDefault"
 Cohesion: 0.18
 Nodes (6): C1: o agregado nega por padrao. A versao anterior testava os estados RUINS e…, A regressao propriamente dita: um estado que ninguem previu., O caminho exato do achado: quando a A4 alimentar `pending` no `auth status`, um…, Nao ter perguntado a ninguem nao e prova de nada., Duas copias da regra foi como `pending` ficou certo num caminho e valendo 0 no…, TestAggregateExitCodeDeniesByDefault
 
-### Community 124 - "TestAllowlistBaseCobreOsAgentes"
-Cohesion: 0.50
-Nodes (3): Semantica do dstdomain do Squid: '.x.com' casa x.com e subdominios., A imagem instala claude, codex e agy. Se a base nao alcanca a API de um deles,…, TestAllowlistBaseCobreOsAgentes
+### Community 124 - "14. Incremental migration"
+Cohesion: 0.29
+Nodes (7): 14. Incremental migration, Stage 1 — Model and connection without runtime changes, Stage 2 — Agent drivers, Stage 3 — Persistent sessions, Stage 4 — Navigator TUI, Stage 5 — Worktrees and cleanup, Stage 6 — Reduce large modules
 
 ### Community 126 - "Emenda A — runtime único systemd e espera única por rede"
 Cohesion: 0.14
 Nodes (14): 10. Evidência, 1. Motivo, 2. Decisões do operador, 3. Arquitetura, 4. A espera por rede, 5. Keyring e troca, 6. O que sai e o que muda, 7.1. Testes automatizados (+6 more)
 
 ### Community 127 - "asb_test_isolation.py"
-Cohesion: 0.29
-Nodes (5): _mount_volume_source(), named_volumes(), Isolamento IMPOSTO da suite unitaria: nenhum teste fala de volume real. Nao e…, Nome do volume citado num `--mount type=volume,src=...`., Volumes que esta linha de comando do podman nomeia.
+Cohesion: 0.22
+Nodes (7): _mount_volume_source(), named_volumes(), Isolamento IMPOSTO da suite unitaria: nenhum teste fala de volume real. Nao e…, Um teste unitario tentou nomear um volume para o podman de verdade., Nome do volume citado num `--mount type=volume,src=...`., Volumes que esta linha de comando do podman nomeia., RealPodmanVolumeAccess
 
 ### Community 128 - "render"
-Cohesion: 0.17
-Nodes (12): Exception, Path, cli/asb/squid.py — junta a allowlist base com o perfil e emite squid.conf. A…, read_base(), render(), SquidError, a_file(), Path (+4 more)
+Cohesion: 0.10
+Nodes (19): normalize_domains(), Exception, Path, cli/asb/squid.py — junta a allowlist base com o perfil e emite squid.conf. A…, read_base(), render(), SquidError, a_file() (+11 more)
 
 ### Community 129 - "test_supervisor_remove_units.py"
 Cohesion: 0.21
@@ -653,7 +663,7 @@ Cohesion: 0.15
 Nodes (13): 6.2. Boot 1 — REPROVADO, e o teste estava contaminado, A ferramenta tinha avisado, Causa-raiz: o drop-in do próprio projeto cria o namespace em todo boot, Diagnóstico, Duas medições descartadas por serem inválidas, Estado preparado depois do boot 1, Linha do tempo medida, O papel do workspace legacy (+5 more)
 
 ### Community 132 - "TestLoginKeyringContract"
-Cohesion: 0.23
+Cohesion: 0.25
 Nodes (5): Contrato herdado de `TestLoginKeyringIntegration`, que vivia em `test_auth.py`…, O cliente fala com o Secret Service pelo socket. A passphrase e do singleton;…, `PodmanError` na verificacao nao escapa mais do laco (I5): vira resultado…, Herdado de `TestVerificacaoDeLogin`: `--version` responde 0 com o agente…, TestLoginKeyringContract
 
 ### Community 133 - "test_auth_verify.py"
@@ -684,9 +694,9 @@ Nodes (4): I3: o layout de raiz e detectado e ANUNCIADO. Nada e apagado., A poli
 Cohesion: 0.20
 Nodes (4): A causa confirmada em A1 vive nestas linhas do entrypoint., Guarda do proprio teste: os assertos acima varrem so o codigo, e passariam num…, A copia acontece ao lado e so entra no lugar pronta. O contrato completo —…, TestEntrypointCredentialLayout
 
-### Community 143 - "normalize_domains"
+### Community 143 - "10. Finishing, merging, and cleanup"
 Cohesion: 0.33
-Nodes (4): normalize_domains(), Squid aborta com 'FATAL: Bungled' quando .github.com e api.github.com aparecem…, notgithub.com termina em 'github.com' como texto, mas nao e subdominio de…, TestNormalize
+Nodes (6): 10.1 Principle, 10.2 `finish`, 10.3 Integration evidence, 10.4 External merge, 10.5 Policy, 10. Finishing, merging, and cleanup
 
 ### Community 146 - "TestVerifyFreshClient"
 Cohesion: 0.25
@@ -712,9 +722,9 @@ Nodes (10): 5.1. Antes do login humano (imagem já reconstruída), 5.2. Depois d
 Cohesion: 0.17
 Nodes (3): Emenda A: o doctor aponta o drop-in legado, a espera de rede e produtores…, Toda unidade de workspace tem Requires=asb-network.service: com a espera em…, TestEmendaAChecks
 
-### Community 153 - "prepare_workspace"
-Cohesion: 0.15
-Nodes (8): build_proxy(), ensure_toolcache_volume(), _get_container_id(), prepare_workspace(), Rastreia recursos criados durante a transacao de up para rollback estrito por…, Prepara clone, redes, containers e manifesto sem restauracao global., start_services(), WorkspaceTransaction
+### Community 152 - "5. Module architecture"
+Cohesion: 0.40
+Nodes (5): 5.1 `CheckoutManager`, 5.2 `SessionManager`, 5.3 `AgentDriver`, 5.4 Interfaces, 5. Module architecture
 
 ### Community 155 - "Supervisão da inicialização — Implementation Plan"
 Cohesion: 0.22
@@ -748,17 +758,17 @@ Nodes (8): Estrutura de arquivos, Global Constraints, Inicialização e autentic
 Cohesion: 0.29
 Nodes (3): I6, segunda metade: com `~/.claude` compartilhado, todo `up` apagava e recriava…, O limite fica escrito: `mv` sobre diretorio nao e `renameat2(RENAME_EXCHANGE)`,…, TestEntrypointNeverDestroysSharedDirectories
 
-### Community 167 - "Profile"
-Cohesion: 0.33
-Nodes (6): Encaminha SO as portas declaradas para o host., start_forwarder(), Profile, Testa o comportamento de host_api em cli/asb/lifecycle.py., TestLifecycleHostApi, TestStartForwarder
+### Community 166 - "7. Session continuity"
+Cohesion: 0.40
+Nodes (5): 7.1 Two continuity levels, 7.2 Recovery flow, 7.3 States, 7.4 Terminal, 7. Session continuity
 
 ### Community 168 - "TestSingleRuntimeUp"
 Cohesion: 0.31
 Nodes (3): Emenda A: `up` tem runtime unico, remove o drop-in, verifica o host e nunca…, `host_ports` e pos-condicao prometida ao projeto: sem sonda, o `up` imprimia a…, TestSingleRuntimeUp
 
-### Community 170 - "LoginBusy"
-Cohesion: 0.50
-Nodes (3): LoginBusy, Exception, Ja existe uma sessao de login deste fornecedor nesta maquina.
+### Community 170 - "login"
+Cohesion: 0.12
+Nodes (20): _client_name(), _client_run_args(), _lock_path(), login(), login_command(), LoginBusy, operator_lock(), Exception (+12 more)
 
 ### Community 171 - "Autenticação por fornecedor — Implementation Plan"
 Cohesion: 0.29
@@ -804,18 +814,34 @@ Nodes (5): 1. Three Separate Questions, 2. Where Credentials Live, 3. Logging In
 Cohesion: 0.67
 Nodes (3): 6.7. Validação pelo Orca BLOQUEADA por defeito do Orca, Consequência para o plano, Por que o Orca cria workspaces `legacy`
 
+### Community 186 - "asb-agent"
+Cohesion: 0.67
+Nodes (3): ArgumentParser, build_parser(), main()
+
+### Community 187 - "13. Test strategy"
+Cohesion: 0.50
+Nodes (4): 13.1 Interfaces as test surfaces, 13.2 Required cases, 13.3 Verification by stage, 13. Test strategy
+
+### Community 188 - "8. TUI"
+Cohesion: 0.50
+Nodes (4): 8.1 Technology, 8.2 Main tree, 8.3 First-version actions, 8. TUI
+
+### Community 190 - "11. Failure handling"
+Cohesion: 0.67
+Nodes (3): 11.1 General rule, 11.2 Main cases, 11. Failure handling
+
 ## Knowledge Gaps
-- **573 isolated node(s):** `entrypoint.sh script`, `start-keyring.sh script`, `DBUS_SESSION_BUS_ADDRESS`, `common.sh script`, `shim.template.sh script` (+568 more)
+- **614 isolated node(s):** `entrypoint.sh script`, `start-keyring.sh script`, `DBUS_SESSION_BUS_ADDRESS`, `common.sh script`, `shim.template.sh script` (+609 more)
   These have ≤1 connection - possible missing edges or undocumented components.
-- **39 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **40 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
 - **Why does `SandboxFixture` connect `SandboxFixture` to `Pilot`, `.is_container_running`, `test_credential_writers.py`, `test_sandbox_fixture_guard.py`, `TestSupervisorPilot`, `TestForwarderIntegration`, `test_provider_auth.py`, `IsolationError`, `TestTeardownCommandClasses`, `Path`, `asb/__init__.py`, `test_entrypoint_concurrency.py`?**
-  _High betweenness centrality (0.054) - this node is a cross-community bridge._
-- **Why does `load_profile()` connect `load_profile` to `doctor.py`, `lifecycle.py`, `prepare_workspace`, `Profile`?**
-  _High betweenness centrality (0.017) - this node is a cross-community bridge._
+  _High betweenness centrality (0.053) - this node is a cross-community bridge._
+- **Why does `load_profile()` connect `load_profile` to `doctor.py`, `Path`, `lifecycle.py`, `Profile`?**
+  _High betweenness centrality (0.020) - this node is a cross-community bridge._
 - **Are the 14 inferred relationships involving `SandboxFixture` (e.g. with `TestBindMountAtomicReplace` and `TestContainerPermissionsAndPaths`) actually correct?**
   _`SandboxFixture` has 14 INFERRED edges - model-reasoned connections that need verification._
 - **Are the 10 inferred relationships involving `ProbeResult` (e.g. with `wait_for_network()` and `TestResumeReadinessGate`) actually correct?**
@@ -823,6 +849,6 @@ _Questions this graph is uniquely positioned to answer:_
 - **Are the 9 inferred relationships involving `AuthResult` (e.g. with `TestVerifyCommand` and `TestAggregateExitCodeDeniesByDefault`) actually correct?**
   _`AuthResult` has 9 INFERRED edges - model-reasoned connections that need verification._
 - **What connects `entrypoint.sh script`, `start-keyring.sh script`, `DBUS_SESSION_BUS_ADDRESS` to the rest of the system?**
-  _573 weakly-connected nodes found - possible documentation gaps or missing edges._
-- **Should `run` be split into smaller, more focused modules?**
-  _Cohesion score 0.12433862433862433 - nodes in this community are weakly interconnected._
+  _614 weakly-connected nodes found - possible documentation gaps or missing edges._
+- **Should `Path` be split into smaller, more focused modules?**
+  _Cohesion score 0.14333333333333334 - nodes in this community are weakly interconnected._

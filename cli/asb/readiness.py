@@ -17,6 +17,18 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from time import monotonic, sleep
 
+# Emenda A: o piloto T2 mostrou que `unshare` na rede rootless NAO recupera um
+# namespace sem egresso, e que esse mesmo unshare no boot era o que o criava
+# quebrado. O unico boot que se recuperou foi aquele em que nada mantinha o
+# namespace aberto: ele foi recriado ja com rede. Isso e hipotese, nao prova
+# (docs/validation/startup-auth-pilot.md §6.4), e a orientacao diz isso.
+DEAD_UPLINK_REMEDIATION = (
+    "com a rede do host ativa, suspenda e retome TODOS os workspaces "
+    "(asb-agent suspend --workspace <id>; depois asb-agent resume --workspace <id>) "
+    "para o namespace rootless ser recriado com rede; hipotese do piloto T2, "
+    "ver docs/validation/startup-auth-pilot.md §6.4"
+)
+
 
 @dataclass(frozen=True)
 class ProbeResult:
@@ -149,7 +161,7 @@ def probe_proxy(
         output = (res.stdout or "") + (res.stderr or "")
 
         if "Network is unreachable" in output or "Network unreachable" in output:
-            return ProbeResult("proxy", "unreachable", "no_route", elapsed, "podman unshare --rootless-netns true")
+            return ProbeResult("proxy", "unreachable", "no_route", elapsed, DEAD_UPLINK_REMEDIATION)
         if "succeeded" in output or " 200 " in output:
             return ProbeResult("proxy", "healthy", "ok", elapsed, "")
         if " 403 " in output:

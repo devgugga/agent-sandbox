@@ -246,10 +246,11 @@ class TestDoctor(unittest.TestCase):
         origin_file.parent.mkdir(parents=True)
         origin_file.write_text("/fake/origin")
 
+        remediation = "com a rede do host ativa, suspenda e retome todos os workspaces"
         mock_egress.return_value = (
             False,
             "broken-ws: uplink rootless morto (Network is unreachable)",
-            "podman unshare --rootless-netns true",
+            remediation,
         )
 
         out = io.StringIO()
@@ -261,7 +262,7 @@ class TestDoctor(unittest.TestCase):
         self.assertEqual(code, 1)
         output = out.getvalue()
         self.assertIn(
-            "FALTA broken-ws: uplink rootless morto (Network is unreachable)  ->  podman unshare --rootless-netns true",
+            f"FALTA broken-ws: uplink rootless morto (Network is unreachable)  ->  {remediation}",
             output,
         )
 
@@ -292,7 +293,21 @@ class TestCheckWorkspaceEgress(unittest.TestCase):
         ok, label, fix = doc_mod.check_workspace_egress("demo")
         self.assertFalse(ok)
         self.assertIn("demo: uplink rootless morto (Network is unreachable)", label)
-        self.assertEqual(fix, "podman unshare --rootless-netns true")
+        self.assertNotIn("--rootless-netns", fix)
+        self.assertIn("asb-agent suspend", fix)
+        self.assertIn("asb-agent resume", fix)
+
+    @mock.patch("asb.doctor.podman.running", return_value=True)
+    @mock.patch("asb.doctor.podman.require_binary", return_value="/usr/bin/podman")
+    @mock.patch("asb.doctor.subprocess.run", side_effect=OSError("sonda quebrou"))
+    def test_egress_probe_error_points_at_the_proxy_logs(self, mock_run, mock_bin, mock_running):
+        # Causa desconhecida: nao e necessariamente o uplink, entao a orientacao
+        # e diagnostica e nunca manda recriar nem reinicializar o namespace.
+        ok, label, fix = doc_mod.check_workspace_egress("demo")
+        self.assertFalse(ok)
+        self.assertIn("sonda quebrou", label)
+        self.assertNotIn("--rootless-netns", fix)
+        self.assertEqual(fix, "podman logs --tail 50 asb-demo-proxy")
 
     @mock.patch("asb.doctor.podman.running", return_value=True)
     @mock.patch("asb.doctor.podman.require_binary", return_value="/usr/bin/podman")
@@ -321,7 +336,9 @@ class TestCheckWorkspaceEgress(unittest.TestCase):
         ok, label, fix = doc_mod.check_workspace_egress("demo")
         self.assertFalse(ok)
         self.assertIn("demo: uplink rootless morto (timeout na sonda de egresso)", label)
-        self.assertEqual(fix, "podman unshare --rootless-netns true")
+        self.assertNotIn("--rootless-netns", fix)
+        self.assertIn("asb-agent suspend", fix)
+        self.assertIn("asb-agent resume", fix)
 
 
 

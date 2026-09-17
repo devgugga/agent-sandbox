@@ -251,6 +251,9 @@ class TestProbeProxy(unittest.TestCase):
         self.assertEqual(res.component, "proxy")
         self.assertEqual(res.state, "unreachable")
         self.assertEqual(res.code, "no_route")
+        self.assertNotIn("--rootless-netns", res.remediation)
+        self.assertIn("asb-agent suspend", res.remediation)
+        self.assertIn("asb-agent resume", res.remediation)
 
 
 class TestProbeSSH(unittest.TestCase):
@@ -445,6 +448,21 @@ class TestRuntimeCheck(unittest.TestCase):
             with mock.patch("asb.runtime_check.wait_until", return_value=ProbeResult("proxy", "failed", "connect_failed", 5, "fix")):
                 code = runtime_check.main(["--manifest", f.name, "--role", "agent"])
                 self.assertNotEqual(code, 0)
+
+
+class TestNoRootlessNetnsAdvice(unittest.TestCase):
+    """Emenda A: nenhuma orientacao pode mandar rodar `podman unshare --rootless-netns`.
+
+    O piloto T2 mostrou que o comando nao recupera um namespace sem egresso e
+    que o proprio `unshare` no boot era o produtor do defeito. `install.py` fica
+    fora: ali o texto so serve para RECONHECER o drop-in legado e remove-lo.
+    """
+
+    def test_diagnostic_modules_never_recommend_the_rootless_netns_unshare(self):
+        cli = Path(__file__).resolve().parents[2] / "cli" / "asb"
+        for name in ("readiness.py", "doctor.py", "runtime_check.py", "lifecycle.py"):
+            with self.subTest(module=name):
+                self.assertNotIn("--rootless-netns", (cli / name).read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

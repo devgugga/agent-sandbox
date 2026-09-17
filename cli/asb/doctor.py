@@ -25,6 +25,7 @@ from .lifecycle import (
     names,
 )
 from .profile import load_profile
+from .readiness import DEAD_UPLINK_REMEDIATION
 from .supervisor import network_unit_name
 
 
@@ -147,15 +148,15 @@ def check_workspace_egress(ws: str, target: str = "github.com", port: int = 443,
         else:
             return (False,
                     f"{ws}: uplink rootless morto (Network is unreachable)",
-                    "podman unshare --rootless-netns true")
+                    DEAD_UPLINK_REMEDIATION)
     except subprocess.TimeoutExpired:
         return (False,
                 f"{ws}: uplink rootless morto (timeout na sonda de egresso)",
-                "podman unshare --rootless-netns true")
+                DEAD_UPLINK_REMEDIATION)
     except Exception as exc:
         return (False,
                 f"{ws}: falha ao sondar egresso ({exc})",
-                "podman unshare --rootless-netns true")
+                f"podman logs --tail 50 {proxy}")
 
 
 def check_legacy_agent_container(agent: str) -> tuple[bool, str]:

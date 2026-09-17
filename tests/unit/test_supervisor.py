@@ -508,17 +508,6 @@ class TestNetworkGateUnits(unittest.TestCase):
                           (unit_dir / unit).read_text(encoding="utf-8"))
         run.assert_called_with(["systemctl", "--user", "daemon-reload"], check=True)
 
-    def test_install_network_unit_writes_file_directly(self):
-        unit_dir = self.root / "direct_units"
-        gate = self.runtime_dir / "network_gate.py"
-        path = supervisor.install_network_unit(
-            target_dir=unit_dir, gate_path=gate, target="127.0.0.1:18080")
-        self.assertEqual(path, unit_dir / "asb-network.service")
-        self.assertTrue(path.is_file())
-        text = path.read_text(encoding="utf-8")
-        self.assertIn(f"ExecStart={gate}\n", text)
-        self.assertIn("Environment=ASB_NETWORK_GATE_TARGET=127.0.0.1:18080\n", text)
-
 
 class TestKeyringUnit(unittest.TestCase):
     """Emenda A §5: o keyring e uma unidade systemd com sonda de prontidao."""

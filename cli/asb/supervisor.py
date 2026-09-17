@@ -27,7 +27,6 @@ __all__ = [
     "render_unit",
     "render_target",
     "render_network_unit",
-    "install_network_unit",
     "install_runtime",
     "install_workspace",
     "start_workspace",
@@ -234,21 +233,6 @@ def render_network_unit(gate_path: Path, target: str | None = None) -> str:
         f"{env_line}"
         f"ExecStart={gate_escaped}\n"
     )
-
-
-def install_network_unit(
-    target_dir: Path,
-    gate_path: Path,
-    target: str | None = None,
-) -> Path:
-    """Instala a unidade de espera por conectividade real (Emenda A §4)."""
-    network_unit = network_unit_name()
-    unit_path = target_dir / network_unit
-    _atomic_write_text(
-        unit_path,
-        render_network_unit(gate_path, target=target),
-    )
-    return unit_path
 
 
 def _atomic_write_text(path: Path, content: str, mode: int | None = None) -> None:

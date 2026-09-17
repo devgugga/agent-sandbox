@@ -377,7 +377,10 @@ class TestCheckKeyringService(unittest.TestCase):
             self.assertFalse(ok)
             self.assertEqual(label, "asb-keyring parado")
             self.assertNotIn("login", fix)
-            self.assertEqual(fix, "reinicie o container: podman start asb-keyring")
+            # O keyring e supervisionado pelo systemd (Emenda A): iniciar o
+            # container por fora deixa a unidade inativa e sem reinicio.
+            self.assertEqual(fix, "systemctl --user restart asb-keyring.service")
+            self.assertNotIn("podman start", fix)
 
     def test_check_keyring_service_schema_outdated(self):
         with mock.patch("asb.lifecycle.podman.exists", return_value=True), \

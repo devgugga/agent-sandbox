@@ -165,8 +165,10 @@ def check_keyring_service(container: str | None = None, timeout: float | None = 
                     "prepare um workspace para criar o container "
                     "automaticamente, ou verifique 'asb-agent doctor'")
         if not podman.running(name, timeout=timeout):
+            # Pela unidade: `podman start` por fora deixa asb-keyring.service
+            # inativa e sem o reinicio do systemd.
             return (False, f"{name} parado",
-                    f"reinicie o container: podman start {name}")
+                    f"systemctl --user restart {name}.service")
 
         schema, mounts = _inspect_keyring_container(name, timeout=timeout)
         if schema != KEYRING_SCHEMA:

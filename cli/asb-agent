@@ -7,14 +7,13 @@ Este arquivo faz APENAS parsing e despacho; toda a logica vive em cli/asb/.
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from asb import install, lifecycle, supervisor  # noqa: E402
+from asb import install, lifecycle  # noqa: E402
 from asb.auth import login as auth_login  # noqa: E402
 from asb.auth import status as auth_status  # noqa: E402
 from asb.auth import verify as auth_verify  # noqa: E402
@@ -39,12 +38,6 @@ def build_parser() -> argparse.ArgumentParser:
 
     up = workspace_command("up", "cria e sobe um workspace")
     up.add_argument("--repo", required=True)
-    up.add_argument(
-        "--runtime",
-        choices=["legacy", "systemd"],
-        default="legacy",
-        help="backend de supervisao (default: legacy)",
-    )
 
     workspace_command("down", "remove containers e rede; preserva o trabalho")
     workspace_command("suspend", "para os containers do workspace")
@@ -90,27 +83,6 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("install-guards", help="instala asb-claude/codex/agy")
     sub.add_parser("install-broker", help="instala o broker do Docker (sudo)")
 
-    adopt_parser = sub.add_parser(
-        "adopt-runtime", help="adota supervisao systemd sem recriar containers")
-    adopt_target = adopt_parser.add_mutually_exclusive_group(required=True)
-    adopt_target.add_argument("--workspace", help="ID do workspace a adotar")
-    adopt_target.add_argument("--keyring", action="store_true", help="adotar servico singleton de keyring")
-    adopt_parser.add_argument(
-        "--apply", action="store_true",
-        help="aplica alteracoes (default: inventario/dry-run)")
-    adopt_parser.add_argument(
-        "--json", action="store_true", dest="as_json",
-        help="emite resultado em formato JSON")
-
-    rollback_parser = sub.add_parser(
-        "rollback-runtime", help="reverte supervisao systemd para legado sem recriar containers")
-    rollback_target = rollback_parser.add_mutually_exclusive_group(required=True)
-    rollback_target.add_argument("--workspace", help="ID do workspace a reverter")
-    rollback_target.add_argument("--keyring", action="store_true", help="reverter servico singleton de keyring")
-    rollback_parser.add_argument(
-        "--json", action="store_true", dest="as_json",
-        help="emite resultado em formato JSON")
-
     return parser
 
 
@@ -131,7 +103,6 @@ def main() -> int:
                 ROOT,
                 args.workspace,
                 Path(args.repo).resolve(),
-                runtime=args.runtime,
             )
         if args.command == "down":
             return lifecycle.down(args.workspace)
@@ -155,54 +126,6 @@ def main() -> int:
             return install.guards(ROOT)
         if args.command == "install-broker":
             return install.broker(ROOT)
-        if args.command == "adopt-runtime":
-            if getattr(args, "workspace", None):
-                res = supervisor.adopt_workspace(
-                    args.workspace,
-                    apply=args.apply,
-                )
-                if getattr(args, "as_json", False):
-                    print(json.dumps(res, indent=2))
-                else:
-                    if res.get("status") == "dry_run":
-                        c_count = len((res.get("inventory") or {}).get("containers", {}))
-                        print(f"dry-run concluido para workspace '{args.workspace}': {c_count} container(s) inventariado(s)")
-                    else:
-                        print(f"workspace '{args.workspace}' adotado sob supervisao systemd (fase: {res.get('phase')})")
-            elif getattr(args, "keyring", False):
-                res = supervisor.adopt_keyring(
-                    apply=args.apply,
-                )
-                if getattr(args, "as_json", False):
-                    print(json.dumps(res, indent=2))
-                else:
-                    if res.get("status") == "dry_run":
-                        print("dry-run concluido para keyring: 1 container inventariado")
-                    else:
-                        print(f"keyring adotado sob supervisao systemd (fase: {res.get('phase')})")
-            else:
-                print("asb-agent: especifique --workspace ID ou --keyring", file=sys.stderr)
-                return 2
-            return 0
-        if args.command == "rollback-runtime":
-            if getattr(args, "workspace", None):
-                res = supervisor.rollback_workspace(
-                    args.workspace,
-                )
-                if getattr(args, "as_json", False):
-                    print(json.dumps(res, indent=2))
-                else:
-                    print(f"workspace '{args.workspace}' revertido com sucesso para runtime legado")
-            elif getattr(args, "keyring", False):
-                res = supervisor.rollback_keyring()
-                if getattr(args, "as_json", False):
-                    print(json.dumps(res, indent=2))
-                else:
-                    print("keyring revertido com sucesso para runtime legado")
-            else:
-                print("asb-agent: especifique --workspace ID ou --keyring", file=sys.stderr)
-                return 2
-            return 0
     except (ValueError, FileNotFoundError, RuntimeError) as error:
         print(f"asb-agent: {error}", file=sys.stderr)
         return 2

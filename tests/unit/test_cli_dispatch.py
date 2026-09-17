@@ -18,6 +18,7 @@ import asb_test_isolation  # noqa: F401  (guarda de isolamento da suite: nenhum 
 
 import argparse
 import ast
+import contextlib
 import io
 import importlib.machinery
 import importlib.util
@@ -150,6 +151,28 @@ class TestCliExitCodes(unittest.TestCase):
         from unittest import mock
         code = self._run(["asb-agent", "build"], build=mock.Mock(return_value=0))
         self.assertEqual(code, 0)
+
+
+class TestSingleRuntimeCli(unittest.TestCase):
+    """Emenda A: nao ha escolha de runtime nem adocao/rollback na CLI."""
+
+    def _subcommands(self):
+        parser = _load_cli_module().build_parser()
+        action = next(a for a in parser._actions
+                      if isinstance(a, argparse._SubParsersAction))
+        return parser, action.choices
+
+    def test_adoption_and_rollback_commands_are_gone(self):
+        _, choices = self._subcommands()
+        self.assertNotIn("adopt-runtime", choices)
+        self.assertNotIn("rollback-runtime", choices)
+
+    def test_up_rejects_a_runtime_option(self):
+        parser, _ = self._subcommands()
+        stderr = io.StringIO()
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(stderr):
+            parser.parse_args(["up", "--workspace", "w", "--repo", "/tmp", "--runtime", "systemd"])
+        self.assertIn("--runtime", stderr.getvalue())
 
 
 if __name__ == "__main__":

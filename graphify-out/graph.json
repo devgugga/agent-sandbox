@@ -19165,7 +19165,7 @@
       "node_kind": "heading",
       "norm_label": "defeitos menores achados durante a troca e os boots",
       "source_file": "docs/validation/startup-auth-pilot.md",
-      "source_location": "L1411"
+      "source_location": "L1417"
     },
     {
       "id": "docs_validation_startup_auth_pilot_fora_do_escopo_desta_emenda_registrado_para_t3",
@@ -19177,17 +19177,17 @@
       "node_kind": "heading",
       "norm_label": "fora do escopo desta emenda, registrado para t3",
       "source_file": "docs/validation/startup-auth-pilot.md",
-      "source_location": "L1401"
+      "source_location": "L1407"
     },
     {
-      "id": "docs_validation_startup_auth_pilot_recursos_criados_por_este_piloto_a_limpar_ao_final",
-      "label": "Recursos criados por este piloto (a limpar ao final)",
+      "id": "docs_validation_startup_auth_pilot_recursos_criados_por_este_piloto",
+      "label": "Recursos criados por este piloto",
       "_origin": "ast",
       "community": 176,
       "community_name": "8. Fases pendentes e janelas",
       "file_type": "document",
       "node_kind": "heading",
-      "norm_label": "recursos criados por este piloto (a limpar ao final)",
+      "norm_label": "recursos criados por este piloto",
       "source_file": "docs/validation/startup-auth-pilot.md",
       "source_location": "L1380"
     },
@@ -55013,7 +55013,7 @@
     },
     {
       "source": "docs_validation_startup_auth_pilot_8_fases_pendentes_e_janelas",
-      "target": "docs_validation_startup_auth_pilot_recursos_criados_por_este_piloto_a_limpar_ao_final",
+      "target": "docs_validation_startup_auth_pilot_recursos_criados_por_este_piloto",
       "relation": "contains",
       "_origin": "ast",
       "confidence": "EXTRACTED",
@@ -55030,7 +55030,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "docs/validation/startup-auth-pilot.md",
-      "source_location": "L1401",
+      "source_location": "L1407",
       "weight": 1.0
     },
     {
@@ -55041,7 +55041,7 @@
       "confidence": "EXTRACTED",
       "confidence_score": 1.0,
       "source_file": "docs/validation/startup-auth-pilot.md",
-      "source_location": "L1411",
+      "source_location": "L1417",
       "weight": 1.0
     },
     {
@@ -73618,5 +73618,5 @@
     }
   ],
   "hyperedges": [],
-  "built_at_commit": "ca37542193d23ca354bee3a5f510b776e417f4fd"
+  "built_at_commit": "adf9a9c107f48c4c8ba0fbd07916eaf831c0dc74"
 }

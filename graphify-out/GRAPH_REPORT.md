@@ -1,7 +1,7 @@
 # Graph Report - agent-sandbox  (2026-09-17)
 
 ## Corpus Check
-- 157 files · ~204,753 words
+- 157 files · ~204,865 words
 - Verdict: corpus is large enough that graph structure adds value.
 
 ## Summary
@@ -10,7 +10,7 @@
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `ca375421`
+- Built from commit: `adf9a9c1`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
@@ -207,21 +207,21 @@
 5. `Profile` - 34 edges
 6. `run()` - 31 edges
 7. `Layout` - 29 edges
-8. `prepare_workspace()` - 28 edges
-9. `PodmanError` - 28 edges
+8. `PodmanError` - 28 edges
+9. `prepare_workspace()` - 28 edges
 10. `build_staging()` - 27 edges
 
 ## Surprising Connections (you probably didn't know these)
-- `TestVerifyCommand` --uses--> `AuthResult`  [INFERRED]
-  tests/unit/test_auth_verify.py → cli/asb/auth.py
-- `TestAggregateExitCodeDeniesByDefault` --uses--> `AuthResult`  [INFERRED]
-  tests/unit/test_login_flow.py → cli/asb/auth.py
-- `TestLoginKeyringContract` --uses--> `AuthResult`  [INFERRED]
-  tests/unit/test_login_flow.py → cli/asb/auth.py
-- `TestLoginPreservesResultsAcrossFailures` --uses--> `AuthResult`  [INFERRED]
-  tests/unit/test_login_flow.py → cli/asb/auth.py
-- `TestLoginSelection` --uses--> `AuthResult`  [INFERRED]
-  tests/unit/test_login_flow.py → cli/asb/auth.py
+- `TestEmendaAChecks` --uses--> `PodmanError`  [INFERRED]
+  tests/unit/test_doctor.py → cli/asb/podman.py
+- `TestPull` --uses--> `PodmanError`  [INFERRED]
+  tests/unit/test_doctor.py → cli/asb/podman.py
+- `TestPurge` --uses--> `PodmanError`  [INFERRED]
+  tests/unit/test_doctor.py → cli/asb/podman.py
+- `TestSingleRuntimeResume` --uses--> `PodmanError`  [INFERRED]
+  tests/unit/test_lifecycle.py → cli/asb/podman.py
+- `TestSingleRuntimeUp` --uses--> `PodmanError`  [INFERRED]
+  tests/unit/test_lifecycle.py → cli/asb/podman.py
 
 ## Import Cycles
 - None detected.
@@ -794,7 +794,7 @@ Nodes (5): 6.8. Troca para o runtime único (Emenda A, Task 13), Medições, Pen
 
 ### Community 176 - "8. Fases pendentes e janelas"
 Cohesion: 0.40
-Nodes (5): 8. Fases pendentes e janelas, Decisões pendentes do operador, Defeitos menores achados durante a troca e os boots, Fora do escopo desta emenda, registrado para T3, Recursos criados por este piloto (a limpar ao final)
+Nodes (5): 8. Fases pendentes e janelas, Decisões pendentes do operador, Defeitos menores achados durante a troca e os boots, Fora do escopo desta emenda, registrado para T3, Recursos criados por este piloto
 
 ### Community 177 - "TestLoginPreservesResultsAcrossFailures"
 Cohesion: 0.40
@@ -821,7 +821,7 @@ Cohesion: 0.67
 Nodes (3): 6.7. Validação pelo Orca BLOQUEADA por defeito do Orca, Consequência para o plano, Por que o Orca cria workspaces `legacy`
 
 ## Knowledge Gaps
-- **560 isolated node(s):** `entrypoint.sh script`, `start-keyring.sh script`, `DBUS_SESSION_BUS_ADDRESS`, `common.sh script`, `shim.template.sh script` (+555 more)
+- **560 isolated node(s):** `1.1. A imagem foi reconstruída antes do piloto`, `2. Inventário de coexistência (spec §7)`, `3. Workspace-piloto`, `4. Coletor de evidência`, `5.1. Antes do login humano (imagem já reconstruída)` (+555 more)
   These have ≤1 connection - possible missing edges or undocumented components.
 - **35 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
@@ -829,16 +829,16 @@ Nodes (3): 6.7. Validação pelo Orca BLOQUEADA por defeito do Orca, Consequênc
 _Questions this graph is uniquely positioned to answer:_
 
 - **Why does `SandboxFixture` connect `SandboxFixture` to `patch`, `test_credential_writers.py`, `test_sandbox_fixture_guard.py`, `TestSupervisorPilot`, `TestForwarderIntegration`, `test_provider_auth.py`, `IsolationError`, `.is_container_running`, `test_startup_auth.py`, `Path`, `TestTeardownCommandClasses`, `integration/test_network_gate.py`, `sandbox_fixture.py`?**
-  _High betweenness centrality (0.053) - this node is a cross-community bridge._
-- **Why does `TestInstallRuntime` connect `TestInstallRuntime` to `asb_test_isolation.py`?**
-  _High betweenness centrality (0.035) - this node is a cross-community bridge._
-- **Why does `TestClassifyVerification` connect `TestClassifyVerification` to `test_auth_verify.py`?**
-  _High betweenness centrality (0.020) - this node is a cross-community bridge._
+  _High betweenness centrality (0.092) - this node is a cross-community bridge._
+- **Why does `TestDoctorSecretService` connect `patch` to `test_doctor.py`?**
+  _High betweenness centrality (0.018) - this node is a cross-community bridge._
 - **Are the 14 inferred relationships involving `SandboxFixture` (e.g. with `TestBindMountAtomicReplace` and `TestContainerPermissionsAndPaths`) actually correct?**
   _`SandboxFixture` has 14 INFERRED edges - model-reasoned connections that need verification._
 - **Are the 10 inferred relationships involving `ProbeResult` (e.g. with `wait_for_network()` and `TestResumeReadinessGate`) actually correct?**
   _`ProbeResult` has 10 INFERRED edges - model-reasoned connections that need verification._
 - **Are the 9 inferred relationships involving `AuthResult` (e.g. with `TestVerifyCommand` and `TestAggregateExitCodeDeniesByDefault`) actually correct?**
   _`AuthResult` has 9 INFERRED edges - model-reasoned connections that need verification._
-- **What connects `entrypoint.sh script`, `start-keyring.sh script`, `DBUS_SESSION_BUS_ADDRESS` to the rest of the system?**
+- **What connects `1.1. A imagem foi reconstruída antes do piloto`, `2. Inventário de coexistência (spec §7)`, `3. Workspace-piloto` to the rest of the system?**
   _560 weakly-connected nodes found - possible documentation gaps or missing edges._
+- **Should `run` be split into smaller, more focused modules?**
+  _Cohesion score 0.12433862433862433 - nodes in this community are weakly interconnected._

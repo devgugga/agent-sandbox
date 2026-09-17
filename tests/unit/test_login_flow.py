@@ -629,6 +629,8 @@ class TestVerifyFreshClient(unittest.TestCase):
         run.assert_not_called()
         self.assertEqual(result.state, "pending")
         self.assertNotEqual(result.state, "authenticated")
+        self.assertEqual(result.remediation,
+                         "asb-agent auth verify --workspace <id> --agent agy")
 
     def test_verify_rejects_all(self):
         with self.assertRaises(ValueError):

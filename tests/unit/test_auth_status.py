@@ -138,6 +138,10 @@ class TestCheckStatus(unittest.TestCase):
         mock_running.assert_not_called()
         mock_run.assert_not_called()
         self.assertIn("verify", result.remediation.lower())
+        # A4 entregou o `verify`: a orientacao e o comando real, com o
+        # --workspace que ele exige, e nao "quando disponivel".
+        self.assertEqual(result.remediation,
+                         "asb-agent auth verify --workspace <id> --agent agy")
 
     def test_container_not_running_is_unreachable_not_unauthenticated(self):
         # Infra parada != conta deslogada.

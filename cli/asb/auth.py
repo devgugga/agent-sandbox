@@ -209,7 +209,7 @@ def check_status(provider: str, container: str) -> AuthResult:
                 "agy nao possui comando de status local comprovado; "
                 "'agy -p ping' bloqueia ate 60s aguardando entrada quando deslogado"
             ),
-            remediation="use 'asb-agent auth verify --agent agy' quando disponivel (Tarefa A4)",
+            remediation="asb-agent auth verify --workspace <id> --agent agy",
         )
 
     try:
@@ -490,8 +490,8 @@ def verify_fresh_client(provider: str) -> AuthResult:
             state="pending",
             checked_at=_now_iso(),
             evidence=("agy nao possui status local comprovado; a verificacao "
-                      "depende do verify_client limitado da Tarefa A4"),
-            remediation="asb-agent auth verify --agent agy (Tarefa A4)",
+                      "exige uma chamada real pelo workspace (auth verify)"),
+            remediation="asb-agent auth verify --workspace <id> --agent agy",
         )
 
     name = _client_name("verify", provider)
@@ -627,7 +627,8 @@ def login(root: Path, provider: str = "all") -> int:
         _report_login(result)
     if any(r.state == "pending" for r in results):
         print("um resultado PENDENTE nao autoriza declarar login concluido; "
-              "a verificacao do agy depende da Tarefa A4", file=sys.stderr)
+              "confirme o agy com 'asb-agent auth verify --workspace <id> "
+              "--agent agy'", file=sys.stderr)
     # Mesmo agregado do `status()`, de proposito: um unico lugar decide o que
     # vale 0, e ele nega por padrao. Duas copias da regra eram como `pending`
     # ficou correto num caminho e valendo 0 no outro.

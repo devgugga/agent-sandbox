@@ -15,7 +15,7 @@ git init -q -b main . && git config user.email t@e.com && git config user.name T
 echo ok > README.md && git add -A && git commit -qm inicial
 cd "$ROOT"
 
-cleanup() { "$ROOT/cli/asb-agent" down --workspace "$WS" >/dev/null 2>&1; }
+cleanup() { "$ROOT/cli/asb-agent" purge --workspace "$WS" --yes >/dev/null 2>&1; }
 trap cleanup EXIT
 
 AGENT="asb-${WS}-agent"

@@ -18,7 +18,7 @@ git -C "$repo" add -A && git -C "$repo" commit -qm inicial
 WS_ROLLBACK="test-tx-rb-$$"
 
 cleanup() {
-  "$ROOT/cli/asb-agent" down --workspace "$WS_ROLLBACK" >/dev/null 2>&1 || true
+  "$ROOT/cli/asb-agent" purge --workspace "$WS_ROLLBACK" --yes >/dev/null 2>&1 || true
   rm -rf "$tmp"
 }
 trap cleanup EXIT
@@ -80,8 +80,8 @@ WS_A="test-demo-$$"
 WS_B="test-demo-$$-2"
 
 cleanup_siblings() {
-  "$ROOT/cli/asb-agent" down --workspace "$WS_A" >/dev/null 2>&1 || true
-  "$ROOT/cli/asb-agent" down --workspace "$WS_B" >/dev/null 2>&1 || true
+  "$ROOT/cli/asb-agent" purge --workspace "$WS_A" --yes >/dev/null 2>&1 || true
+  "$ROOT/cli/asb-agent" purge --workspace "$WS_B" --yes >/dev/null 2>&1 || true
 }
 trap 'cleanup; cleanup_siblings' EXIT
 

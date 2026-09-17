@@ -19,7 +19,7 @@ git -C "$repo" add -A && git -C "$repo" commit -qm inicial
 WS="test-reload-$$"
 
 cleanup() {
-  "$ROOT/cli/asb-agent" down --workspace "$WS" >/dev/null 2>&1 || true
+  "$ROOT/cli/asb-agent" purge --workspace "$WS" --yes >/dev/null 2>&1 || true
   rm -rf "$tmp"
 }
 trap cleanup EXIT

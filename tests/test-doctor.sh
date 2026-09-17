@@ -40,7 +40,7 @@ git -C "$repo" add -A && git -C "$repo" commit -qm inicial
 
 WS_DOC="test-doctor-probe-$$"
 cleanup() {
-  "$ROOT/cli/asb-agent" down --workspace "$WS_DOC" >/dev/null 2>&1 || true
+  "$ROOT/cli/asb-agent" purge --workspace "$WS_DOC" --yes >/dev/null 2>&1 || true
   rm -rf "$tmp"
 }
 trap cleanup EXIT

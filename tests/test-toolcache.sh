@@ -17,8 +17,12 @@ git add -A && git commit -qm inicial
 cd "$ROOT"
 
 cleanup() {
-  "$ROOT/cli/asb-agent" down --workspace "$WS_A" >/dev/null 2>&1
-  "$ROOT/cli/asb-agent" down --workspace "$WS_B" >/dev/null 2>&1
+  # WS_MULTI e WS_FAIL nascem no meio do teste: sem eles aqui, o volume de
+  # sessao de cada um ficava na maquina do operador.
+  for ws in "$WS_A" "$WS_B" "${WS_MULTI:-}" "${WS_FAIL:-}"; do
+    [ -n "$ws" ] || continue
+    "$ROOT/cli/asb-agent" purge --workspace "$ws" --yes >/dev/null 2>&1
+  done
   rm -rf "$(dirname "$REPO")"
 }
 trap cleanup EXIT

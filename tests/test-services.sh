@@ -34,7 +34,7 @@ PY
 HOST_SVC=$!
 cleanup() {
   kill "$HOST_SVC" 2>/dev/null
-  "$ROOT/cli/asb-agent" down --workspace "$WS" >/dev/null 2>&1
+  "$ROOT/cli/asb-agent" purge --workspace "$WS" --yes >/dev/null 2>&1
 }
 trap cleanup EXIT
 sleep 1

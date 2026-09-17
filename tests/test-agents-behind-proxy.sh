@@ -7,7 +7,7 @@ source "$ROOT/tests/assert.sh"
 WS="test-agents-proxy-$$"
 REPO=$(mktemp -d -t asb-test-agents-proxy-XXXXXX)
 cleanup() {
-  "$ROOT/cli/asb-agent" down --workspace "$WS" >/dev/null 2>&1 || true
+  "$ROOT/cli/asb-agent" purge --workspace "$WS" --yes >/dev/null 2>&1 || true
   rm -rf "$REPO"
 }
 trap cleanup EXIT

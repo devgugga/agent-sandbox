@@ -4,14 +4,14 @@
   [`2026-09-07-startup-auth-redesign.md`](../superpowers/plans/2026-09-07-startup-auth-redesign.md)
 - **Spec:** §7 (migração e retorno) e §8 (aceitação) do
   [desenho](../superpowers/specs/2026-09-07-startup-auth-redesign-design.md)
-- **Status:** EM EXECUÇÃO — fases (a) e (b) concluídas. Boot 1 REPROVADO: o
-  drop-in do projeto cria o namespace rootless sem egresso (§6.2). Boot 2
-  APROVADO com o drop-in desativado para a janela (§6.4). Boot 3 — o boot
-  normal, na configuração real com o drop-in reinstalado pelo Orca — REPROVADO,
-  e o workspace legacy do Orca falha em silêncio: SSH saudável, sem egresso
-  (§6.6). Falta o boot com rede atrasada, adiado. Validação pelo Orca
-  BLOQUEADA por defeito do Orca na reidratação do terminal (§6.7)
-- **Última atualização:** 2026-09-16
+- **Status:** EM EXECUÇÃO — boots 1 e 3 REPROVADOS na configuração antiga
+  (namespace rootless criado cedo, sem egresso; §6.2, §6.6), o que levou à
+  [Emenda A](../superpowers/specs/2026-09-16-single-systemd-runtime-design.md)
+  (runtime único systemd com espera única por rede). Troca feita (§6.8) e os
+  três boots da Emenda A APROVADOS sem comando corretivo (§6.9–§6.11).
+  Validação pelo Orca BLOQUEADA por defeito do Orca (§6.7). Faltam critérios
+  4 (queda de rede depois do boot) e 8 (dois dias de uso real)
+- **Última atualização:** 2026-09-17
 
 > Este relatório registra somente o que foi medido. Todo item não executado
 > está marcado como tal. Nenhum cenário é simulado como comprovação.
@@ -417,7 +417,7 @@ O operador executou `asb-agent login --agent codex`. Resultado medido:
 | :--- | :--- | :--- |
 | `codex/auth.json` | symlink → raiz | **arquivo comum**, 3876 B, 16:11 |
 | `codex-auth.json` (raiz) | alvo do symlink, 5 set | **órfão**, inalterado, 5 set |
-| symlinks no volume | 1 | Três boots reais, incl. rede com atraso de 60 s | **REPROVADO na configuração real** — boot 1 (`5acb7550`) e boot 3 (`019a9a43`, configuração de uso real com Orca) reprovados pelo mesmo motivo: namespace criado cedo sem egresso, sem recuperação (§6.2, §6.6). Boot 2 (`155a3648`) aprovado só com o drop-in desativado (§6.4). Boot com rede atrasada adiado. Reconexão do Orca **BLOQUEADA** por defeito do Orca na reidratação do terminal após reboot (§6.7) |
+| symlinks no volume | 1 | **0** |
 
 O escritor do Codex usou rename atômico e, ao fazê-lo, **substituiu o próprio
 symlink** — exatamente o comportamento que A1 documentou como o mecanismo que
@@ -1318,20 +1318,46 @@ mensagem de commit e os logs das suítes de shell da §6.8.
 
 ---
 
-## 7. Critérios de aceite (spec §8)
+## 6.12. Retomada do suspenso (critério 2)
+
+Depois do boot A3, com o scratch ainda suspenso, em 2026-09-17 às 13:39
+(`t2-evidence/resume-scratch.txt`):
+
+| Medida | Antes | Depois |
+| :--- | :--- | :--- |
+| `resume` a partir do boot | — | rc 0; JSON com a mesma porta 46823 |
+| IDs dos containers (proxy / agente) | `1a3cb865265d` / `fc5f45af53cf` | iguais |
+| porta SSH publicada | 46823 | 46823 |
+| egresso | — | github 200; example.com negado (403) |
+
+Segundo ciclo, com trabalho não commitado criado dentro do agente antes de
+suspender (`M README.md`, `?? CICLO2-UNTRACKED.txt`): depois de `suspend` (rc 0,
+containers `Exited (0)`) e `resume` (rc 0), HEAD `d660cab`, `git status`, os
+hashes dos dois arquivos (`456a25bf…`, `d1c3d7fb…`), os IDs e a porta ficaram
+idênticos. Os pilotos não têm serviços declarados, então a preservação de
+**dados de serviço** não foi exercitada.
+
+---
+
+## 7. Critérios de aceite (spec §8, com a Emenda A)
+
+A Emenda A removeu o critério 7 (rollback de supervisão) e trocou a exigência
+de preservar ID e porta **na troca** por preservar dados e credenciais; dentro
+do runtime, ID e porta continuam exigidos (critério 2).
 
 | # | Critério | Estado |
 | :--- | :--- | :--- |
-| 1 | Três boots reais, incl. rede com atraso de 60 s | **PARCIAL** — boot 1 (`5acb7550`) REPROVADO: o drop-in cria o namespace sem egresso e nada o repara (§6.2). Boot 2 (`155a3648`) APROVADO sem comando corretivo, com o drop-in desativado (§6.4), registrado como o cenário ativo+suspenso. Faltam: boot normal e boot com rede atrasada 60 s. Reconexão do Orca **pendente** — exclusão retirada pelo operador (§6.5) |
-| 2 | Suspenso continua suspenso; retomado preserva porta, ID, trabalho não commitado e dados de serviço | **PARCIAL** — suspenso **permaneceu suspenso** no boot 2 (§6.4). Retomada e preservação ainda não medidas |
-| 3 | Login real nos três fornecedores; cliente novo e dois workspaces; renovação observada ou pendente | **PARCIAL** — Claude (§5.2) e Antigravity (§5.3.1) reproduzidos e resolvidos individualmente; cliente novo e dois workspaces simultâneos utilizáveis nos três fornecedores (§5.3.2). **Em aberto:** Codex está `authenticated` por credencial de 2026-09-05 via symlink legado, não por login desta janela (§5.5); **renovação real não observada**; e dois workspaces do MESMO projeto com `publish_ports` não sobem juntos (§5.3.2) |
-| 4 | Queda de rede não apaga credencial; sem reset global | **PARCIAL** — credenciais intactas nos três boots; indisponibilidade classificada como `unreachable`, não logout; nenhum reset global usado. **Recuperação automática reprovada** nos boots 1 e 3 (`start-limit-hit`). Cenário de queda de rede (fase d) não executado |
-| 5 | Proxy ausente, porta 80 sem listener e keyring indisponível detectados | **PARCIAL** — falha de egresso do proxy foi detectada e a unidade **não** foi dada como pronta (§6.2, §6.4). Porta 80 e keyring indisponível não revalidados no piloto real. A parte "JSON de sucesso ao Orca" está **pendente** — exclusão retirada pelo operador (§6.5) |
-| 6 | Bloqueios de rede válidos, com controles positivos de SSH e proxy | **SATISFEITO no boot 2** (§6.4) — egresso permitido github 200, negado example.com 403, SSH OK |
-| 7 | Rollback de supervisão ensaiado sem perda de dados nem troca de porta | **SATISFEITO** (§6) — porta, IDs e trabalho não commitado preservados; ressalva: workspace criado pelo piloto |
+| 1 | Três boots reais, incl. rede com atraso de 60 s | **SATISFEITO no runtime único** — A1 normal com dois workspaces simultâneos (§6.9), A2 sem rede por ~2 min no boot (§6.10) e A3 ativo + suspenso (§6.11), todos sem comando corretivo e com o `pasta` nascido depois da espera (+318, +105 e +211 ms). A configuração antiga reprovou nos boots 1 e 3 (§6.2, §6.6). Ressalva: no A1 um agente só subiu no reinício automático, por corrida no entrypoint, corrigida antes do A2 (§6.9). A confirmação explícita do operador de que o reboot do A3 foi o dele não foi registrada; o journal não mostra comando nem reinício de unidade. Reconexão do Orca **BLOQUEADA** (§6.7) |
+| 2 | Suspenso continua suspenso; retomado preserva porta, ID, trabalho não commitado e dados de serviço | **SATISFEITO, exceto dados de serviço** — suspenso permaneceu parado no boot (§6.4, §6.11); retomada preservou porta, IDs e trabalho não commitado (§6.12). Dados de serviço não exercitados: os pilotos não declaram serviços |
+| 3 | Login real nos três fornecedores; cliente novo e dois workspaces; renovação observada ou pendente | **SATISFEITO, com uma limitação aberta** — Claude (§5.2), Antigravity (§5.3.1) e Codex (§5.6) com login nesta janela; cliente novo e dois workspaces simultâneos (§5.3.2). **Renovação real observada** para o Claude: `claude/.credentials.json` reescrito em 2026-09-17 12:42:45 com `expiresAt` 8 h adiante, seguindo `authenticated` (§6.9); o escritor não foi identificado. Aberto: dois workspaces do MESMO projeto com `publish_ports` fixas não sobem juntos (§5.3.2) |
+| 4 | Queda de rede não apaga credencial; sem reset global | **PARCIAL** — credenciais intactas em todos os boots, inclusive com rede ausente no boot (§6.10); nenhum reset global usado. Queda de rede **depois** do boot (fase d) não executada; a Emenda A declara que a espera não a cobre (§9 da emenda) |
+| 5 | Proxy ausente, porta 80 sem listener e keyring indisponível detectados | **PARCIAL** — egresso morto detectado e a unidade não dada como pronta (§6.2, §6.4); proxy parado e agente fora detectados pelo coletor no suspenso (§6.11). Porta 80 e keyring indisponível não revalidados no piloto real. "JSON de sucesso ao Orca" **BLOQUEADO** (§6.7) |
+| 6 | Bloqueios de rede válidos, com controles positivos de SSH e proxy | **SATISFEITO** — github 200 e example.com 403 com SSH e proxy saudáveis em todos os boots da Emenda A (§6.9–§6.11) e na troca (§6.8) |
+| 7 | ~~Rollback de supervisão ensaiado~~ | **REMOVIDO pela Emenda A** (o ensaio da §6 fica como histórico) |
 | 8 | Dois dias de uso real sem reparo manual | **NÃO EXECUTADO** |
 
-Nenhum critério está aprovado. O gate de autenticação continua aberto.
+Critérios 1, 3 e 6 satisfeitos; 2 satisfeito exceto dados de serviço; 4 e 5
+parciais; 8 não executado. O gate de autenticação continua aberto.
 
 ---
 
@@ -1342,8 +1368,8 @@ disruptiva, e não considerar espera sem resposta uma autorização.
 
 ### Decisões pendentes do operador
 
-1. **`codex-auth.json` na raiz do volume (§5.4).** Remover agora que o login
-   novo está confirmado, ou manter e aceitar a exposição registrada.
+1. ~~**`codex-auth.json` na raiz do volume (§5.4).**~~ **RESOLVIDO** em §5.7:
+   removido com autorização, depois do login novo do Codex.
 2. ~~**Guarda do agy.**~~ **RESOLVIDO** em §5.3.1: corrigida test-first e
    confirmada por chamada real (`authenticated`, exit 0).
 3. **`publish_ports` fixas (§5.3.2).** Dois workspaces do mesmo projeto não
@@ -1359,12 +1385,44 @@ disruptiva, e não considerar espera sem resposta uma autorização.
 | workspace `t2-pilot-scratch` (porta 46823 desde §6.9) | repo descartável |
 | `/home/v/Data/Projects/t2-pilot-scratch` | criado para §5.3.2 |
 | `/home/v/Data/Projects/BlackICE.bk` | backup pedido pelo operador |
+| branch `backup/pre-reword-emenda-a` | cópia do histórico antes de reescrever dois commits da Emenda A |
 
 | Fase | Conteúdo | Exige |
 | :--- | :--- | :--- |
-| (a) | **Quase completa.** Falta só: observação de renovação real (depende de tempo; a spec permite marcar pendente, nunca simular) | — |
-| (b) | **CONCLUÍDA** (§6) | — |
-| (c) | Três boots: normal; rede atrasada 60 s; um workspace ativo e outro suspenso | Reboots reais |
+| (a) | **CONCLUÍDA** — renovação real do Claude observada (§6.9) | — |
+| (b) | **CONCLUÍDA** (§6); o rollback ensaiado deixou de ser critério com a Emenda A | — |
+| (c) | **CONCLUÍDA no runtime único** (§6.9–§6.11) | — |
 | (d) | Perda temporária de rede, sem apagar login e sem reset global | Interrupção de rede do desktop |
 
 Ao final, restaurar `BlackICE.bk` se necessário e remover o workspace-piloto.
+A fase (e), dois dias de uso real sem reparo manual (critério 8), depende só de
+tempo.
+
+### Fora do escopo desta emenda, registrado para T3
+
+Sem implementação aqui:
+
+- `docs/domains/sandbox/failure-modes.md` e `docs/domains/sandbox/README.md`
+  ainda recomendam `podman unshare --rootless-netns true` e descrevem o drop-in
+  do `podman-restart`; o código já não faz nem recomenda nada disso.
+- Menções a `adopt-runtime`, `rollback-runtime` e `--runtime` na documentação
+  do domain pack.
+
+### Defeitos menores achados durante a troca e os boots
+
+Nenhum bloqueia os critérios acima; todos ficam para correção posterior:
+
+- `tests/test-nested.sh` publica a porta fixa 18080 e falha com qualquer
+  workspace real que a publique (§6.8).
+- Suítes em shell deixam volume `asb-test-*-session` de forma intermitente
+  (§6.8).
+- O `up` não confere o estado das unidades depois de iniciar o target e, quando
+  o agente não sobe, só diz `nao foi possivel determinar a porta SSH` (§6.8).
+- Testes interrompidos deixam containers com política `always`, que voltam no
+  boot seguinte (§6.8).
+- `tests/test-auth.sh` roda `up` com o diretório de configuração real e remove o
+  drop-in de produção (`remove_project_dropin` só respeita `ASB_CONFIG_ROOT`).
+- O hook `post-checkout` do Graphify reconstrói o grafo mesmo com a pausa da
+  AGENTS.md §7.3, que só cobre o `post-commit`.
+- `remove_workspace_units` levanta erro com manifesto corrompido depois de
+  parar e desabilitar, deixando os arquivos de unidade no disco.

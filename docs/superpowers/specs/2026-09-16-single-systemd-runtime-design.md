@@ -1,7 +1,10 @@
 # Emenda A — runtime único systemd e espera única por rede
 
-Data: 2026-09-16. Status: desenho aprovado pelo operador em sessão, seção por
-seção; aguarda revisão da versão escrita. Implementação não iniciada.
+Data: 2026-09-16. Status: aprovada pelo operador e implementada pelo plano
+[`2026-09-16-single-systemd-runtime.md`](../plans/2026-09-16-single-systemd-runtime.md).
+Premissa da §8 confirmada nos três boots reais da §7.2 em 2026-09-17: o `pasta`
+nasceu depois da espera e o egresso funcionou em todos
+([relatório do piloto](../../validation/startup-auth-pilot.md), §6.8–§6.12).
 
 Emenda a: [Redesenho de inicialização e autenticação](2026-09-07-startup-auth-redesign-design.md).
 Onde esta emenda e a spec original divergirem, vale esta emenda.

@@ -1,7 +1,7 @@
 """tests/integration/test_workspace_supervision.py — Integration tests for managed lifecycle.
 
 Proves the complete managed lifecycle under systemd supervision:
-1. `asb-agent up --runtime systemd` creates containers with `--restart=no` and installs systemd units.
+1. `asb-agent up` creates containers with `--restart=no` and installs systemd units.
 2. Systemd target and units become active, and SSH handshake succeeds.
 3. Sentinel file is written to container writable layer.
 4. `asb-agent suspend` disables/stops target and ensures containers are stopped.
@@ -77,12 +77,11 @@ class TestWorkspaceSupervision(unittest.TestCase):
             mount_cleanup_dir = home / "asb-agent" / sandbox.worktree_dir.name / sandbox.workspace
             self.addCleanup(lambda: shutil.rmtree(mount_cleanup_dir, ignore_errors=True))
 
-            # 2. Execute `asb-agent up --runtime systemd`
+            # 2. Execute `asb-agent up`
             res_up = sandbox.cli(
                 "up",
                 "--workspace", sandbox.workspace,
                 "--repo", str(sandbox.worktree_dir),
-                "--runtime", "systemd",
             )
             self.assertEqual(
                 res_up.returncode,

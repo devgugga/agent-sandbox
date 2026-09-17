@@ -5,6 +5,7 @@ import asb_test_isolation  # noqa: F401  (guarda de isolamento da suite: nenhum 
 
 import io
 import json
+import os
 import sys
 import tempfile
 import unittest
@@ -54,7 +55,8 @@ class TestDoctor(unittest.TestCase):
         mock_home.return_value = self.fake_home
         mock_run.return_value = mock.Mock(stdout="enabled\n")
 
-        with mock.patch("asb.doctor.check_keyring_service", return_value=(True, "Secret Service (asb-keyring)", "")):
+        with mock.patch("asb.doctor.check_keyring_service", return_value=(True, "Secret Service (asb-keyring)", "")), \
+             mock.patch("asb.doctor.third_party_netns_producers", return_value=[]):
             out = io.StringIO()
             with mock.patch("sys.stdout", out):
                 code = doc_mod.doctor(self.fake_root)
@@ -67,7 +69,7 @@ class TestDoctor(unittest.TestCase):
         self.assertIn("imagem agent-sandbox:latest", output)
         self.assertIn("volume asb-credentials", output)
         self.assertIn("Secret Service (asb-keyring)", output)
-        self.assertIn("podman-restart.service habilitado", output)
+        self.assertIn("drop-in legado do podman-restart ausente", output)
         self.assertIn("guarda asb-claude aponta para este checkout", output)
 
     @mock.patch("asb.doctor.Path.home")
@@ -744,6 +746,7 @@ class TestDoctorSecretService(unittest.TestCase):
         with mock.patch("asb.doctor.check_keyring_service", return_value=(True, "Secret Service (asb-keyring)", "")), \
              mock.patch("asb.doctor.check_legacy_agent_container", return_value=(False, "")), \
              mock.patch("asb.doctor.check_workspace_egress", return_value=(True, "egresso ok", "")), \
+             mock.patch("asb.doctor.third_party_netns_producers", return_value=[]), \
              mock.patch("asb.podman.run") as mock_podman_run:
             out = io.StringIO()
             with mock.patch("sys.stdout", out):
@@ -757,3 +760,57 @@ class TestDoctorSecretService(unittest.TestCase):
             self.assertEqual(svc["state"], "process_running")
             self.assertNotEqual(svc["state"], "application_ready")
             mock_podman_run.assert_not_called()
+
+
+class TestEmendaAChecks(unittest.TestCase):
+    """Emenda A: o doctor aponta o drop-in legado, a espera de rede e produtores alheios."""
+
+    PROJECT_DROPIN = (
+        "# Managed by agent-sandbox: podman-restart netns initialization\n"
+        "[Service]\nExecStartPre=/usr/bin/podman unshare --rootless-netns /usr/bin/true\n"
+    )
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.config_root = Path(self._tmp.name)
+        self.dropin_dir = self.config_root / "systemd" / "user" / "podman-restart.service.d"
+        env = mock.patch.dict(os.environ, {"ASB_CONFIG_ROOT": str(self.config_root)})
+        env.start()
+        self.addCleanup(env.stop)
+
+    def test_absent_project_dropin_is_healthy(self):
+        check = doc_mod.check_project_dropin_absent()
+        self.assertEqual(check["name"], "project_dropin_absent")
+        self.assertTrue(check["healthy"])
+        self.assertEqual(check["remediation"], "")
+
+    def test_present_project_dropin_is_an_infrastructure_failure(self):
+        self.dropin_dir.mkdir(parents=True)
+        (self.dropin_dir / "agent-sandbox.conf").write_text(self.PROJECT_DROPIN)
+        check = doc_mod.check_project_dropin_absent()
+        self.assertFalse(check["healthy"])
+        self.assertIn("daemon-reload", check["remediation"])
+
+    def test_network_gate_state_is_reported_without_failing_health(self):
+        with mock.patch("asb.doctor.subprocess.run",
+                        return_value=mock.Mock(stdout="activating\n")):
+            check = doc_mod.check_network_gate()
+        self.assertEqual(check["name"], "network_gate")
+        self.assertTrue(check["healthy"])
+        self.assertIn("activating", check["label"])
+        self.assertIn("aguardando", check["remediation"])
+
+    def test_third_party_producers_exclude_asb_workspaces_and_networkless_containers(self):
+        self.dropin_dir.mkdir(parents=True)
+        (self.dropin_dir / "agent-sandbox.conf").write_text(self.PROJECT_DROPIN)
+        (self.dropin_dir / "other.conf").write_text("[Service]\nExecStartPre=/bin/true\n")
+        ps = mock.Mock(returncode=0, stderr="", stdout=(
+            "asb-demo-proxy|asb.workspace=demo|asb-demo\n"
+            "foreign-app|app=x|podman\n"
+            "networkless||\n"
+        ))
+        with mock.patch("asb.doctor.podman.run", return_value=ps) as run:
+            producers = doc_mod.third_party_netns_producers()
+        self.assertEqual(producers, ["dropin:other.conf", "container:foreign-app"])
+        self.assertEqual(run.call_args.args[:4], ("ps", "-a", "--filter", "should-start-on-boot=true"))

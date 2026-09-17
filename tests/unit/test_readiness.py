@@ -135,6 +135,7 @@ class TestProbeHost(unittest.TestCase):
         self.assertEqual(res.component, "host")
         self.assertEqual(res.state, "unreachable")
         self.assertEqual(res.code, "no_route")
+        self.assertNotIn("unshare", res.remediation)
 
     @mock.patch("socket.create_connection", side_effect=OSError(errno.ECONNREFUSED, "Connection refused"))
     def test_probe_host_connection_refused(self, mock_create_conn):

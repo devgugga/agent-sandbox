@@ -81,7 +81,7 @@ def probe_host(target: str = "github.com:443", timeout: float = 5.0) -> ProbeRes
     except OSError as exc:
         elapsed = int((monotonic() - started) * 1000)
         if exc.errno in (errno.ENETUNREACH, errno.EHOSTUNREACH):
-            return ProbeResult("host", "unreachable", "no_route", elapsed, "podman unshare --rootless-netns true")
+            return ProbeResult("host", "unreachable", "no_route", elapsed, "sem rota ate o destino; verifique a conexao de rede do host")
         elif exc.errno == errno.ECONNREFUSED:
             return ProbeResult("host", "failed", "connection_refused", elapsed, "conexao recusada pelo destino")
         else:

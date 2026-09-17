@@ -7,6 +7,7 @@ recuperavel sem adivinhacao.
 from __future__ import annotations
 
 import json
+import os
 import shlex
 import shutil
 import subprocess
@@ -15,7 +16,7 @@ from pathlib import Path
 
 from typing import Any
 
-from . import podman
+from . import install, podman
 from .lifecycle import (
     CREDENTIALS_VOLUME,
     TOOLCACHE_VOLUME,
@@ -24,6 +25,7 @@ from .lifecycle import (
     names,
 )
 from .profile import load_profile
+from .supervisor import network_unit_name
 
 
 def _line(ok: bool, label: str, fix: str = "") -> bool:
@@ -244,6 +246,86 @@ def check_legacy_agent_container(agent: str) -> tuple[bool, str]:
     return False, ""
 
 
+def check_project_dropin_absent() -> dict[str, Any]:
+    """Emenda A: o drop-in do projeto criava o namespace rootless cedo em todo boot."""
+    path = install.get_dropin_path()
+    try:
+        exists, ours, _, _ = install.read_project_dropin()
+        error = ""
+    except RuntimeError as exc:
+        exists, ours, error = True, True, str(exc)
+    healthy = not (exists and ours)
+    return {
+        "name": "project_dropin_absent",
+        "healthy": healthy,
+        "label": ("drop-in legado do podman-restart ausente" if healthy
+                  else f"drop-in legado do podman-restart presente ({path})"),
+        "remediation": "" if healthy else (
+            error or f"rm {shlex.quote(str(path))} && systemctl --user daemon-reload"),
+    }
+
+
+def check_network_gate() -> dict[str, Any]:
+    """Estado da espera unica por rede (informativo: inativa antes do 1o workspace e normal)."""
+    unit = network_unit_name()
+    state = subprocess.run(
+        ["systemctl", "--user", "is-active", unit],
+        capture_output=True, text=True).stdout.strip() or "desconhecido"
+    return {
+        "name": "network_gate",
+        "healthy": True,
+        "label": f"espera por rede {unit}: {state}",
+        "remediation": "aguardando conectividade real do host" if state == "activating" else "",
+    }
+
+
+def third_party_netns_producers() -> list[str]:
+    """Produtores do namespace rootless no boot que NAO sao do ASB.
+
+    Duas classes, as que falharam no piloto: drop-ins de `podman-restart`
+    alheios (o do projeto e checado por `check_project_dropin_absent`) e
+    containers alheios, em rede, que o `podman-restart` sobe no boot.
+    """
+    producers: list[str] = []
+    dropin = install.get_dropin_path()
+    try:
+        entries = sorted(os.listdir(dropin.parent))
+    except FileNotFoundError:
+        entries = []
+    except OSError as exc:
+        producers.append(f"desconhecido: {dropin.parent} ilegivel ({exc})")
+        entries = []
+    for entry in entries:
+        if entry == dropin.name:
+            try:
+                _, ours, _, _ = install.read_project_dropin()
+            except RuntimeError:
+                ours = True
+            if ours:
+                continue
+        producers.append(f"dropin:{entry}")
+
+    try:
+        res = podman.run("ps", "-a", "--filter", "should-start-on-boot=true",
+                         "--format", "{{.Names}}|{{.Labels}}|{{.Networks}}",
+                         check=False, capture=True)
+    except podman.PodmanError as exc:
+        producers.append(f"desconhecido: podman ps falhou ({exc})")
+        return producers
+    if res.returncode != 0:
+        producers.append(f"desconhecido: podman ps falhou ({(res.stderr or '').strip() or res.returncode})")
+        return producers
+    for line in res.stdout.splitlines():
+        if not line.strip():
+            continue
+        name, _, rest = line.partition("|")
+        labels, _, networks = rest.partition("|")
+        if "asb.workspace=" in labels or networks.strip() in ("", "none"):
+            continue
+        producers.append(f"container:{name}")
+    return producers
+
+
 def diagnose(root: Path) -> dict[str, Any]:
     """Coleta diagnóstico tipado com schemaVersion 1 e separação de infraestrutura e provedores."""
     checks: list[dict[str, Any]] = []
@@ -332,18 +414,20 @@ def diagnose(root: Path) -> dict[str, Any]:
     })
     infra_healthy &= keyring_ok
 
-    # 9. podman-restart.service
-    restart_res = subprocess.run(
-        ["systemctl", "--user", "is-enabled", "podman-restart.service"],
-        capture_output=True, text=True).stdout.strip()
-    restart_ok = (restart_res == "enabled")
+    # 9. Emenda A: drop-in legado ausente, espera por rede, produtores alheios
+    dropin_check = check_project_dropin_absent()
+    checks.append(dropin_check)
+    infra_healthy &= dropin_check["healthy"]
+    checks.append(check_network_gate())
+    producers = third_party_netns_producers()
     checks.append({
-        "name": "podman_restart_service",
-        "healthy": restart_ok,
-        "label": "podman-restart.service habilitado (restauracao no boot)",
-        "remediation": "" if restart_ok else "systemctl --user enable podman-restart.service",
+        "name": "netns_producers_third_party",
+        "healthy": True,
+        "label": ("nenhum produtor alheio do namespace rootless no boot" if not producers
+                  else "produtores alheios do namespace rootless: " + ", ".join(producers)),
+        "remediation": "" if not producers
+                       else "podem inicializar o namespace antes da rede; revise-os",
     })
-    infra_healthy &= restart_ok
 
     # 10. guards
     guards = Path.home() / ".local" / "bin"

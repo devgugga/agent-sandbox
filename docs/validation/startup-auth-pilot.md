@@ -1150,7 +1150,10 @@ volume. A causa do vazamento não foi investigada.
 
 - `test-nested.sh` usa porta fixa do host e falha com qualquer workspace real
   que publique 18080.
-- Volume de sessão vazado por testes em shell, de forma intermitente.
+- ~~Volume de sessão vazado por testes em shell.~~ **RESOLVIDO** na revisão
+  final da T3: as suítes limpavam com `down`, que preserva o volume; o
+  `trap` de cada uma passa a usar `purge --yes`. Rodada completa das onze
+  suítes medida depois, com resíduo zero.
 - O `up` não confere o estado das unidades depois de iniciar o target, e dá
   um erro enganoso quando o agente não sobe.
 - Testes interrompidos deixam containers com política `always`, que voltam no
@@ -1413,6 +1416,24 @@ Sem implementação aqui:
   do `podman-restart`; o código já não faz nem recomenda nada disso.
 - Menções a `adopt-runtime`, `rollback-runtime` e `--runtime` na documentação
   do domain pack.
+
+### Revisão final da T3 (2026-09-17)
+
+Revisão somente leitura do diff do branch, em dois eixos: formas de defeito já
+catalogadas e falso sucesso. Achados e correções, todos com teste antes:
+
+| Achado | Correção |
+| :--- | :--- |
+| `suspend` devolvia 0 com a unidade ainda ativa (systemctl silenciado, verificação pelo Podman) | falha do systemctl visível; pós-condição é `is-active` da unidade |
+| `doctor` reportava saudável quando não conseguia ler o perfil do projeto, e um serviço que levantava abortava o laço | perfil ilegível reprova; cada serviço é avaliado por si |
+| espera por rede em `failed` dada como saudável | reprova, com journal e `reset-failed` |
+| três orientações do keyring dirigindo o Podman por fora da unidade | todas pela unidade; guarda estática sobre os literais |
+| `ensure_keyring_service` removia o container com a unidade ativa | para a unidade antes |
+| `host_ports` sem sonda alguma | `probe_host_ports`, e o `up` só emite depois dela |
+| revisão `dev` compartilhada entre checkouts sem git | derivada do caminho do checkout |
+| `up` deixava a espera compartilhada reescrita após rollback | conteúdo anterior restaurado |
+| `down` removia o volume de containers aninhados | preservado até o `purge`, que passa a funcionar mesmo sem estado |
+| saída capturada da sonda interpolada na remediação | aponta os logs do proxy |
 
 ### Defeitos menores achados durante a troca e os boots
 

@@ -465,5 +465,34 @@ class TestNoRootlessNetnsAdvice(unittest.TestCase):
                 self.assertNotIn("--rootless-netns", (cli / name).read_text(encoding="utf-8"))
 
 
+class TestDomainPackDescribesTheSingleRuntime(unittest.TestCase):
+    """T3: o domain pack e o que agentes e operador leem antes de agir.
+
+    Ele descreveu o runtime removido (drop-in, `unless-stopped`, unshare,
+    `--runtime`) meses depois de o codigo mudar. `known-regressions.md` fica
+    fora: ali os termos antigos sao citados de proposito, como forma do defeito.
+    """
+
+    STALE = (
+        "unless-stopped",
+        "rootless-netns true",
+        "ensure_rootless_netns",
+        "adopt-runtime",
+        "rollback-runtime",
+        "--runtime",
+        "podman start asb-",
+    )
+
+    def test_domain_pack_carries_no_advice_from_the_removed_runtime(self):
+        pack = Path(__file__).resolve().parents[2] / "docs" / "domains" / "sandbox"
+        docs = sorted(d for d in pack.glob("*.md") if d.name != "known-regressions.md")
+        self.assertTrue(docs)
+        for doc in docs:
+            text = doc.read_text(encoding="utf-8")
+            for term in self.STALE:
+                with self.subTest(doc=doc.name, term=term):
+                    self.assertNotIn(term, text)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -142,64 +142,45 @@ Each entry records a real failure mode formatted as **Symptom**, **Cause**, and 
 
 ---
 
-## 18. Silent Rootless Podman Network Uplink Failure (`pasta` Failure)
+## 18. Silent Rootless Podman Network Uplink Failure (`pasta` Without Egress)
 
-- **Symptom**: Outbound network connections from within the sandbox freeze or fail across all containers while local bridges remain intact. Following a host reboot, containers restored by `podman-restart.service` remain marked as `running` while the shared rootless user network namespace lacks a functional `pasta` process (`container running + uplink rootless morto`). In this state, Squid accepts local connections from the agent on port 3128, but replies with `NONE_NONE/500` or `NONE_NONE/503` because it cannot reach external destinations. AI agents (Claude Code, OpenAI Codex, Google Antigravity) then exhibit timeout or connection abort symptoms that mimic authentication failures or upstream provider outages. In `podman pull`, small image layers complete while large blobs stall indefinitely (e.g. at 16 KiB) and restart in a loop. Direct socket probes inside the proxy container show routing tables intact (`default via 10.89.x.1 dev eth1`), but all outbound TCP/DNS requests fail with `Network is unreachable (os error 101)`.
-- **Cause**: The rootless Podman user-namespace network uplink helper (`pasta`) silently stops forwarding external traffic or its user session scope terminates upon host reboot or suspend. Because container-side interfaces and bridges remain up, Podman does not detect the broken uplink on its own and restores or leaves containers running without an active uplink.
-- **Fix**: The architecture provides automated recovery across the operational lifecycle and maintains explicit diagnostics:
-  1. **Automated Workspace Lifecycle (`up` & `resume`)**: Both `asb-agent up` and `asb-agent resume` explicitly invoke `podman.ensure_rootless_netns()` (`podman unshare --rootless-netns $(command -v true)`) before creating or starting the Squid proxy container, ensuring the user network namespace uplink is functional before any container dependent on external egress begins communicating.
-  2. **Automated User Login / Reboot Recovery (`systemd` drop-in)**: `install.podman_restart()` installs a systemd user drop-in at:
-     ```text
-     ~/.config/systemd/user/podman-restart.service.d/agent-sandbox.conf
-     ```
-     containing:
-     ```ini
-     [Service]
-     ExecStartPre=/usr/bin/podman unshare --rootless-netns /usr/bin/true
-     ```
-     followed by `systemctl --user daemon-reload` and enabling `podman-restart.service`. This drop-in forces systemd to initialize the rootless netns before Podman attempts to restart containers on user session login (or system boot if linger is enabled). The configuration adheres to §16 by referencing absolute host binary paths rather than repository checkout paths.
-  3. **Diagnostic & Manual Recovery (`asb-agent doctor`)**: `asb-agent doctor` probes active workspaces with live DNS and TCP checks to distinguish a blocked allowlist from a dead rootless uplink (`ws: uplink rootless morto`). For unmanaged sessions or manual intervention, reconnecting the rootless network namespace uplink on the host with:
-     ```bash
-     podman unshare --rootless-netns true
-     ```
-     instantly restarts the `pasta` network namespace uplink in place without requiring container restarts or recreation. Active workspaces can be validated at any time using `asb-agent doctor`.
+- **Symptom**: After a reboot, workspaces look healthy (`running`, SSH answers) but nothing leaves the sandbox. Squid accepts the agent's connection on port 3128 and answers `NONE_NONE/500` or `503`; agents show timeouts that mimic login or provider outages; `podman pull` stalls on large blobs. Inside the proxy the routing table is intact, yet outbound TCP/DNS fails with `Network is unreachable (os error 101)`. `asb-agent doctor` reports `uplink rootless morto`.
+- **Cause**: Podman's shared rootless network namespace was created **before** the host had working connectivity, and it keeps no egress while anything holds it open. In the pilot (`docs/validation/startup-auth-pilot.md` §6.2, §6.6) the producer was the project's own `podman-restart` drop-in, whose `ExecStartPre` ran `podman unshare --rootless-netns` at login on every boot; running that command again did not repair the namespace. This mechanism is a hypothesis confirmed by prediction on real boots, not proven at the kernel level.
+- **Fix** (Emenda A, [lifecycle.md](./lifecycle.md)):
+  1. Only systemd starts ASB containers; all are `--restart=no`, and the drop-in is removed by `up` and flagged by `doctor`.
+  2. Every workspace unit requires `asb-network.service`, which exits only after a real probe to `github.com:443`. The namespace is then born by the first proxy start, after connectivity: measured 105–318 ms after the wait on three real boots, including ~2 minutes without a cable.
+  3. If the state still happens (for example a third-party producer listed by `doctor`), with the host network up run `asb-agent suspend` then `asb-agent resume` for **every** workspace so the namespace is recreated with egress. See [R10](./known-regressions.md).
 
 ---
 
-## 19. Workspace Not Restored Immediately after Host Reboot (`Linger=no`)
+## 19. Workspace Not Started Immediately after Host Reboot (`Linger=no`)
 
-- **Symptom**: *"O workspace sumiu depois do reboot"* / Containers are not running immediately after host system boot when inspecting via headless connection or SSH before user login.
-- **Cause**: By default on systemd Linux installations, user account linger is disabled (`Linger=no`, checked via `loginctl show-user $USER --property=Linger`). Without linger, the user's `systemd --user` session manager — along with its enabled user services such as `podman-restart.service` — initializes **upon interactive login**, not at system kernel boot.
-  - **Desktop with graphical login** (standard interactive developer setup): The operator logs in via the display manager (GDM, SDDM, etc.), which immediately initializes the user's systemd manager and `default.target`, executing `podman-restart.service` and restoring all `unless-stopped` workspace containers before Orca or browser sessions connect.
-  - **Headless server / SSH-only remote workflow**: Containers remain inactive following a reboot until an interactive session is opened by the user.
+- **Symptom**: Right after boot, checked over SSH before anyone logs in, workspace containers are not running.
+- **Cause**: With `Linger=no` (the systemd default), the user manager and its units (`asb-network.service`, `asb-keyring.service`, `asb-<ws>.target`) start at **login**, not at kernel boot.
+  - **Desktop with graphical login**: the display manager login starts them; enabled workspaces come up once `asb-network.service` confirms connectivity.
+  - **Headless / SSH-only machine**: nothing starts until a session opens.
 - **Fix**:
-  - For standard desktop workstations: No action required. Logging into the desktop graphical session automatically restores all running workspaces.
-  - For headless/remote servers where workspaces must boot unattended before any user logs in: explicitly enable user session linger on the host:
-    ```bash
-    loginctl enable-linger $USER
-    ```
+  - Desktop: no action. After login, `asb-agent doctor` shows the state; suspended workspaces stay stopped until `asb-agent resume --workspace <id>`.
+  - Headless machines that must start unattended: `loginctl enable-linger $USER`.
   > [!IMPORTANT]
-  > **Do not enable linger by default.** Keeping user workspaces alive unattended on an unlogged system alters security posture by maintaining active services and published network ports without an operator present. Enabling linger must be an explicit, conscious operator decision.
-  - After login, verify restored workspace state with:
-    ```bash
-    asb-agent doctor
-    ```
-    or manually restart stopped workspaces with `asb-agent resume --workspace <id>`.
+  > **Do not enable linger by default.** It keeps services and published ports alive with no operator present; enable it only as an explicit decision.
 
 ---
 
 ## 20. Multi-Daemon Keyring Concurrency & Session Loss (False Green Login)
 
-- **Symptom**: `asb-agent login` passes successfully in its temporary container, but subsequent commands in workspace containers (`asb-claude`, `asb-agy`, or interactive sessions) prompt for authentication again or report missing credentials ("perdi a sessão"). Re-running login temporarily succeeds only to fail again in workspaces.
-- **Cause**: Prior to the singleton architecture, each container (the ephemeral login container and every workspace container) launched its own isolated `dbus-daemon` and `gnome-keyring-daemon` against the shared `keyrings/` storage on the `asb-credentials` volume. When `asb-agent login` wrote credentials, it verified them against its own in-container daemon before terminating. A newly launched workspace container started a separate daemon instance, which does not safely detect or reload encrypted records written by another daemon instance over shared files. Furthermore, concurrent workspaces running multiple daemons simultaneously risked race conditions and database corruption. (Codex was unaffected because it stores its token directly in `codex-auth.json`).
-- **Fix**: Centralized Secret Service ownership into a global singleton container (`asb-keyring`):
-  1. **Singleton Daemon & Data Volume Isolation**: Exactly one `asb-keyring` container runs with `--network none`, `--restart unless-stopped`, label `asb.keyring.schema=2`, and uid 1000. It has no workspace mounts and is the sole owner of the `asb-keyring-data` volume (`/run/asb-keyring-data`). Passphrase is mounted strictly read-only (`ro,Z`) and never exposed in environment variables. Existing data in `asb-credentials/keyrings` is automatically migrated on initialization into `asb-keyring-data/keyrings` using staging and a completion marker (`.migration_done`) without deleting or mutating source credentials.
-  2. **Shared D-Bus Session Socket & Client Isolation Mask**: `asb-keyring` publishes `/run/asb-keyring/bus` into the `asb-keyring-runtime` volume. All client containers (ephemeral login and workspace agents) mount `asb-keyring-runtime` as read-only (`:ro,z`) and connect using `DBUS_SESSION_BUS_ADDRESS=unix:path=/run/asb-keyring/bus`. Neither clients nor login containers mount `asb-keyring-data`. Furthermore, all clients mount a read-only tmpfs shadow mask over `/run/asb-credentials/keyrings` (`tmpfs-mode=000,notmpcopyup`), preventing any client process from reading or writing to legacy keyring files while keeping `claude.json` and `codex-auth.json` writable.
-  3. **Migrating Old Workspaces**: Containers created prior to the singleton architecture do not mount `asb-keyring-runtime`, lack the session bus address, retain `ASB_KEYRING_PASS`, or lack the keyring isolation tmpfs mask. `asb-agent doctor` proactively identifies legacy containers and instructs the non-destructive remediation with complete commands:
-     ```bash
-     # Crucial: pull local workspace changes first to protect unmerged work!
-     asb-agent pull --workspace <ws> && asb-agent down --workspace <ws> && asb-agent up --workspace <ws> --repo <repo>
-     ```
-  4. **Diagnostics, Auto-Upgrade, and Non-Circular Recovery**:
-     - `asb-agent doctor` checks container status, schema 2, valid mount contracts (read-only credentials and read-write data/runtime), socket readiness, and `org.freedesktop.secrets` responsiveness on the session bus.
-     - `ensure_keyring_service()` performs automatic transparent upgrade: when encountering schema 1 or legacy mounts, it recreates only the singleton container with schema 2 without touching volumes or passfiles. If an existing running container is unresponsive, it automatically restarts the service once and re-evaluates readiness; if still unhealthy, it instructs `podman rm -f asb-keyring && asb-agent login`.
+- **Symptom**: `asb-agent login` succeeds in its temporary container, but workspace containers ask for authentication again.
+- **Cause**: Before the singleton, every container (login and each workspace) ran its own `dbus-daemon` and `gnome-keyring-daemon` against shared `keyrings/` files. A daemon does not reload encrypted records written by another instance, and concurrent daemons risked corrupting the database. The same investigation later found that Claude Code does **not** use the Secret Service at all: it stores a plain file (`~/.claude/.credentials.json`), and it lost its login because of a symlinked credential path ([R2](./known-regressions.md)). Only Antigravity depends on the keyring.
+- **Fix**: one Secret Service owner, `asb-keyring`:
+  1. Runs with `--network none`, uid 1000, label `asb.keyring.schema=2`, no workspace mounts, `--restart=no`, supervised by `asb-keyring.service` with a readiness check. Sole owner of `asb-keyring-data`; the passphrase is mounted read-only and never passed as an environment variable. Existing `asb-credentials/keyrings` data is migrated once through staging and a `.migration_done` marker, without mutating the source.
+  2. Publishes `/run/asb-keyring/bus` in `asb-keyring-runtime`; clients mount it read-only and set `DBUS_SESSION_BUS_ADDRESS`. Clients never mount `asb-keyring-data`, and a mode-000 tmpfs masks the legacy `keyrings/` tree.
+  3. Containers created before the singleton lack these mounts and cannot gain them on `resume`. `doctor` flags them and prints `asb-agent pull … && asb-agent down … && asb-agent up …` — pull first, to keep unmerged work.
+  4. `doctor` checks container state, schema, mount contract, socket and `org.freedesktop.secrets`. A stopped keyring is restarted through its unit: `systemctl --user restart asb-keyring.service`. An outdated schema or mount contract is fixed by removing the container; the next workspace preparation recreates it without touching volumes or the passphrase.
+
+---
+
+## 21. Agent Fails Its First Start When Workspaces Start Together
+
+- **Symptom**: After a reboot, one agent unit shows `NRestarts=1`; its journal has `rm: cannot remove '/home/<user>/.claude/plugins.asb-staging.1/…': Directory not empty` and the container exited with status 1. The retry 5 s later succeeds.
+- **Cause**: the entrypoint materialized host configuration into the shared `~/.claude` volume through a temporary directory named with `$$`, which is 1 in every container. Workspaces now start together right after `asb-network.service`, so two agents raced on the same path. Each such failure also spends one of the three starts allowed by `StartLimitBurst`.
+- **Fix**: the swap of each destination is serialized across containers with `flock` on its parent directory (`image/entrypoint.sh`); rebuild the image and recreate workspaces to pick it up. See [R12](./known-regressions.md).

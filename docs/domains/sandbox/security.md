@@ -58,20 +58,22 @@ The agent container has **no external DNS resolution**. Name resolution occurs e
 
 ## 4. Credential Isolation & The Singleton Secret Service
 
-Agent model credentials are authenticated once per machine (`asb-agent login`) and managed through a combination of dedicated named volumes (`asb-credentials`, `asb-keyring-data`, `asb-keyring-runtime`) and the singleton service container (`asb-keyring`):
+Agent model credentials are authenticated once per machine (`asb-agent login`) and shared by every workspace. Full storage and login contract: [authentication.md](./authentication.md).
 
-| Agent | Storage Format | Protection Mechanism |
-| :--- | :--- | :--- |
-| Claude Code | Secret Service / `claude.json` fallback | Queried via D-Bus session bus; fallback linked into `$HOME/.claude/.credentials.json` |
-| OpenAI Codex | `codex-auth.json` | Plaintext token file linked into `$HOME/.codex/auth.json` on `asb-credentials` |
-| Google Antigravity | `keyrings/` | GNOME Keyring encrypted via Secret Service D-Bus API |
+| Agent | Storage | Encrypted at rest | Exposure |
+| :--- | :--- | :--- | :--- |
+| Claude Code | `~/.claude/.credentials.json`, a regular file in the `claude/` directory of `asb-credentials` | no | plaintext, readable by agent processes in **every** workspace |
+| OpenAI Codex | `~/.codex/auth.json`, a regular file in the `codex/` directory of `asb-credentials` | no | plaintext, readable by agent processes in every workspace |
+| Google Antigravity | GNOME Keyring entries in `asb-keyring-data`, owned by `asb-keyring` | yes (host `keyring.pass`) | files unreachable from clients; secrets usable by any client through the Secret Service bus |
+
+An agent that can run code in one workspace can therefore read the Claude and Codex credentials used by all workspaces. Session transcripts are isolated per workspace (`asb-<ws>-session`); credentials are not.
 
 ### Secret Service Daemon Isolation (`asb-keyring`)
 To eliminate multi-daemon concurrency race conditions and session drops, exactly one container (`asb-keyring`, labeled `asb.keyring.schema=2`) runs GNOME Keyring and D-Bus session bus:
 - **Zero Network (`--network none`)**: `asb-keyring` has no network interfaces beyond loopback. It has no external egress, no internal workspace bridge attachment, and cannot establish outbound connections.
 - **No Workspace Mounts**: `asb-keyring` has no access to workspace files, host directories, Docker sockets, or SSH keys.
-- **Single Owner of Keyring Files & Data Volume Separation**: Encrypted keyring files are separated into a dedicated volume `asb-keyring-data` mounted exclusively in `asb-keyring`. Workspace and login containers mount only `asb-credentials` (for `claude.json` and `codex-auth.json`) and the read-only D-Bus socket volume `asb-keyring-runtime`. Clients never mount `asb-keyring-data`.
-- **Legacy Keyring Shadow Mask**: Because existing keyring files remain preserved in `asb-credentials/keyrings` during non-destructive migration, client containers mount a secure read-only tmpfs shadow mask (`--mount type=tmpfs,destination=/run/asb-credentials/keyrings,ro,notmpcopyup,tmpfs-mode=000`). This completely prevents workspace or login client processes from reading, listing, or modifying legacy keyring files, while leaving `claude.json` and `codex-auth.json` fully writable.
+- **Single Owner of Keyring Files & Data Volume Separation**: Encrypted keyring files are separated into a dedicated volume `asb-keyring-data` mounted exclusively in `asb-keyring`. Workspace and login containers mount `asb-credentials` (the per-provider credential directories) and the read-only D-Bus socket volume `asb-keyring-runtime`. Clients never mount `asb-keyring-data`.
+- **Legacy Keyring Shadow Mask**: Because existing keyring files remain preserved in `asb-credentials/keyrings` during non-destructive migration, client containers mount a secure read-only tmpfs shadow mask (`--mount type=tmpfs,destination=/run/asb-credentials/keyrings,ro,notmpcopyup,tmpfs-mode=000`). This completely prevents workspace or login client processes from reading, listing, or modifying legacy keyring files, while the per-provider credential directories stay writable.
 - **Passphrase Protection**: The 32-byte cryptographically secure random passphrase (`~/.config/agent-sandbox/keyring.pass`, file mode `0600`) is mounted strictly read-only into `/run/asb-keyring-pass:ro,Z`.
   - The passphrase is **never baked into any container image**.
   - The passphrase is **never passed as an environment variable** (never visible in `podman inspect`).

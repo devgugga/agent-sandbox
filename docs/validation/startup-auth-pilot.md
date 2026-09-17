@@ -1387,6 +1387,7 @@ limpos.
 | :--- | :--- | :--- |
 | workspace `t2-pilot-blackice` | BlackICE | `purge` (containers, unidades, volume de sessão e clone) |
 | workspace `t2-pilot-scratch` | repo descartável | `purge` |
+| clone `~/asb-agent/BlackICE/t2-pilot-black2` | `up` do segundo workspace do mesmo projeto (§5.3.2), que falhou pela porta fixa | apagado: o rollback do `up` removeu containers e redes mas deixou o clone (limpo, HEAD `3bd3a1d`); notado só na conferência final |
 | `/home/v/Data/Projects/t2-pilot-scratch` | criado para §5.3.2 | apagado |
 | `/home/v/Data/Projects/BlackICE.bk` | backup pedido pelo operador | apagado sem restaurar: o `BlackICE` estava idêntico (HEAD `3bd3a1d`, nenhuma diferença de arquivos); o trabalho de teste vivia só no clone do piloto |
 | branch `backup/pre-reword-emenda-a` | histórico antes de reescrever dois commits da Emenda A | apagado (`d26b618`) |
@@ -1431,3 +1432,6 @@ Nenhum bloqueia os critérios acima; todos ficam para correção posterior:
   AGENTS.md §7.3, que só cobre o `post-commit`.
 - `remove_workspace_units` levanta erro com manifesto corrompido depois de
   parar e desabilitar, deixando os arquivos de unidade no disco.
+- Um `up` que falhou em 2026-09-16, ainda no runtime antigo, removeu containers
+  e redes no rollback mas deixou o clone do workspace no disco. Não verificado
+  no runtime único.

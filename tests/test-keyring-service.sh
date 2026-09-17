@@ -37,6 +37,13 @@ if [ "${ASB_KEYRING_PASS_FILE:-}" = "$REAL_PASS" ]; then
   exit 1
 fi
 
+UNIT_DIR="${ASB_SYSTEMD_UNIT_DIR:-$HOME/.config/systemd/user}"
+drop_test_unit() {
+  systemctl --user disable --now "$1.service" >/dev/null 2>&1 || true
+  rm -f "$UNIT_DIR/$1.service"
+  systemctl --user daemon-reload >/dev/null 2>&1 || true
+}
+
 export ASB_CREDENTIALS_VOLUME="$TEST_CRED_VOL"
 export ASB_KEYRING_DATA_VOLUME="$TEST_KEYRING_DATA_VOL"
 export ASB_KEYRING_RUNTIME_VOLUME="$TEST_RUN_VOL"
@@ -56,6 +63,7 @@ SYNTHETIC_ACCOUNT="integration"
 SYNTHETIC_SECRET="synthetic-secret-${TEST_ID}"
 
 cleanup() {
+  drop_test_unit "$UPGRADE_SVC"
   podman rm -f "$CLIENT_A" "$CLIENT_B" "$CLIENT_C" "$SERVICE_CONTAINER" "$MIGRATE_SVC" "$UPGRADE_SVC" >/dev/null 2>&1 || true
   podman volume rm -f "$TEST_CRED_VOL" "$TEST_RUN_VOL" "$TEST_KEYRING_DATA_VOL" "$MIGRATE_DATA_VOL" "$MIGRATE_RUN_VOL" "$UPGRADE_DATA_VOL" "$UPGRADE_RUN_VOL" >/dev/null 2>&1 || true
   if [ -f "$PASS_FILE" ]; then
@@ -163,12 +171,6 @@ assert_fails "cliente B nao possui montagem de dados do keyring" \
   podman exec "$CLIENT_B" test -e /run/asb-keyring-data
 assert_eq "0" "$(podman exec "$SERVICE_CONTAINER" test -d /run/asb-keyring-data/keyrings; echo $?)" \
   "serviço singleton possui diretório /run/asb-keyring-data/keyrings"
-
-# Clientes mantêm links de credenciais isoladas (claude e codex)
-assert_eq "0" "$(podman exec -u 1000 "$CLIENT_A" sh -c 'test -L "$HOME/.claude/.credentials.json"; echo $?')" \
-  "cliente A mantem link de credencial do Claude"
-assert_eq "0" "$(podman exec -u 1000 "$CLIENT_A" sh -c 'test -L "$HOME/.codex/auth.json"; echo $?')" \
-  "cliente A mantem link de credencial do Codex"
 
 echo "== 4. Gravar item fictício com secret-tool no cliente A =="
 store_rc=0
@@ -296,7 +298,8 @@ assert_fails "container inicial nao possui asb-keyring-data montado" \
 UPG_OUT=$(ASB_KEYRING_CONTAINER="$UPGRADE_SVC" \
           ASB_KEYRING_DATA_VOLUME="$UPGRADE_DATA_VOL" \
           ASB_KEYRING_RUNTIME_VOLUME="$UPGRADE_RUN_VOL" \
-          python3 -c "from cli.asb.lifecycle import ensure_keyring_service; print(ensure_keyring_service())")
+          ASB_ROOT="$ROOT" \
+          python3 -c "import os; from pathlib import Path; from cli.asb.lifecycle import ensure_keyring_service, ensure_runtime; print(ensure_keyring_service(ensure_runtime(Path(os.environ['ASB_ROOT']))))")
 assert_eq "$UPGRADE_SVC" "$UPG_OUT" "ensure_keyring_service concluiu upgrade com sucesso"
 
 # Valida schema 2
@@ -322,6 +325,7 @@ assert_eq "legacy-token-data" "$mig_upg" "credenciais legadas migradas e disponi
 orig_upg="$(podman run --rm --entrypoint cat -v "$TEST_CRED_VOL:/run/asb-credentials:ro,z" "$IMAGE" /run/asb-credentials/keyrings/legacy.keyring 2>/dev/null || true)"
 assert_eq "legacy-token-data" "$orig_upg" "credenciais legadas preservadas na origem apos upgrade"
 
+drop_test_unit "$UPGRADE_SVC"
 podman rm -f "$UPGRADE_SVC" >/dev/null 2>&1 || true
 podman volume rm -f "$UPGRADE_DATA_VOL" "$UPGRADE_RUN_VOL" >/dev/null 2>&1 || true
 

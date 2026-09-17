@@ -517,6 +517,18 @@ def render_keyring_unit(c_name: str, runtime_dir: Path) -> str:
     check = escape_systemd_arg(runtime_dir / "runtime_check.py")
     name_escaped = escape_systemd_arg(c_name)
     podman_escaped = escape_systemd_arg(shutil.which("podman") or "/usr/bin/podman")
+
+    env_lines = ""
+    for var in (
+        "ASB_CREDENTIALS_VOLUME",
+        "ASB_KEYRING_DATA_VOLUME",
+        "ASB_KEYRING_RUNTIME_VOLUME",
+        "ASB_KEYRING_PASS_FILE",
+    ):
+        val = os.environ.get(var)
+        if val:
+            env_lines += f"Environment={escape_systemd_arg(f'{var}={val}')}\n"
+
     return (
         "[Unit]\n"
         "Description=Agent Sandbox Secret Service keyring singleton\n"
@@ -524,6 +536,7 @@ def render_keyring_unit(c_name: str, runtime_dir: Path) -> str:
         "StartLimitBurst=3\n"
         "\n"
         "[Service]\n"
+        f"{env_lines}"
         "Type=exec\n"
         f"ExecStart={launcher} start --attach --sig-proxy=false {name_escaped}\n"
         f"ExecStartPost={check} --role keyring --container {name_escaped}\n"

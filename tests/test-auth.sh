@@ -37,6 +37,10 @@ export ASB_KEYRING_CONTAINER="$TEST_KEYRING_CONTAINER"
 export ASB_KEYRING_RUNTIME_VOLUME="$TEST_RUN_VOL"
 export ASB_KEYRING_DATA_VOLUME="$TEST_KEYRING_DATA_VOL"
 export ASB_KEYRING_PASS_FILE="$TEST_PASS_FILE"
+# Emenda A: `up` instala unidades systemd reais. Nome de teste para a espera
+# por rede; o keyring ja e isolado por ASB_KEYRING_CONTAINER.
+export ASB_NETWORK_UNIT="asb-test-network-${TEST_ID}.service"
+UNIT_DIR="${ASB_SYSTEMD_UNIT_DIR:-$HOME/.config/systemd/user}"
 IMAGE="${IMAGE:-agent-sandbox:latest}"
 
 REPO=$(mktemp -d)/proj
@@ -58,6 +62,11 @@ podman run --rm --user 1000 --userns keep-id:uid=1000,gid=1000 --entrypoint sh \
 cleanup() {
   "$ROOT/cli/asb-agent" down --workspace "$WS_A" >/dev/null 2>&1 || true
   "$ROOT/cli/asb-agent" down --workspace "$WS_B" >/dev/null 2>&1 || true
+  for unit in "${TEST_KEYRING_CONTAINER}.service" "$ASB_NETWORK_UNIT"; do
+    systemctl --user disable --now "$unit" >/dev/null 2>&1 || true
+    rm -f "$UNIT_DIR/$unit"
+  done
+  systemctl --user daemon-reload >/dev/null 2>&1 || true
   podman rm -f "asb-${WS_A}-agent" "asb-${WS_A}-proxy" "asb-${WS_B}-agent" "asb-${WS_B}-proxy" "$TEST_KEYRING_CONTAINER" "$TEST_LOGIN_CONTAINER" >/dev/null 2>&1 || true
   podman volume rm -f "$TEST_CRED_VOL" "$TEST_RUN_VOL" "$TEST_KEYRING_DATA_VOL" >/dev/null 2>&1 || true
   rm -f "$TEST_PASS_FILE"

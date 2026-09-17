@@ -584,6 +584,21 @@ _RUNTIME_CHECK_PY = (
     "    sys.exit(main())\n"
 )
 
+_NETWORK_GATE_PY = (
+    "#!/usr/bin/env python3\n"
+    "import sys\n"
+    "from pathlib import Path\n"
+    "\n"
+    "runtime_dir = Path(__file__).resolve().parent\n"
+    "if str(runtime_dir) not in sys.path:\n"
+    "    sys.path.insert(0, str(runtime_dir))\n"
+    "\n"
+    "from asb.network_gate import main\n"
+    "\n"
+    "if __name__ == \"__main__\":\n"
+    "    sys.exit(main())\n"
+)
+
 
 def runtime_payload(root: Path) -> dict[str, tuple[bytes, int]]:
     """Arquivos do runtime versionado derivados do checkout: caminho relativo -> (bytes, modo)."""
@@ -593,6 +608,7 @@ def runtime_payload(root: Path) -> dict[str, tuple[bytes, int]]:
     payload = {
         "launcher.sh": (_LAUNCHER_SH.encode("utf-8"), 0o755),
         "runtime_check.py": (_RUNTIME_CHECK_PY.encode("utf-8"), 0o755),
+        "network_gate.py": (_NETWORK_GATE_PY.encode("utf-8"), 0o755),
     }
     for path in sorted(src_asb.rglob("*")):
         rel = path.relative_to(src_asb)

@@ -1,5 +1,12 @@
 # Secret Service singleton para credenciais dos agentes
 
+> **Parcialmente substituído (2026-09-17).** O keyring singleton segue
+> valendo; seu ciclo de vida passou a `asb-keyring.service` pela
+> [Emenda A](2026-09-16-single-systemd-runtime-design.md), e o armazenamento e o login por fornecedor pelo
+> [redesenho de inicialização e autenticação](2026-09-07-startup-auth-redesign-design.md). Claude Code e Codex usam
+> arquivos em diretórios montados, não o Secret Service. Referência atual:
+> [`authentication.md`](../../domains/sandbox/authentication.md).
+
 ## Contexto
 
 O volume `asb-credentials` é compartilhado por todos os workspaces, mas cada

@@ -1,5 +1,12 @@
 # Recuperação do uplink rootless do Podman
 
+> **Substituído (2026-09-17)** pela [Emenda A](2026-09-16-single-systemd-runtime-design.md). O drop-in do
+> `podman-restart` com `unshare` e a recuperação por `unshare` descritos aqui
+> foram removidos: o piloto real mostrou que eles criavam o namespace sem
+> egresso e não o recuperavam
+> ([relatório](../../validation/startup-auth-pilot.md) §6.2, §6.6). Referência
+> atual: [`lifecycle.md`](../../domains/sandbox/lifecycle.md).
+
 ## Contexto
 
 Depois de reiniciar a máquina, containers restaurados pelo

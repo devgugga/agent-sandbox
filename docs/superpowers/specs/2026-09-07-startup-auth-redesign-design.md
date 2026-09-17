@@ -1,6 +1,8 @@
 # Redesenho de inicialização e autenticação
 
-Data: 2026-09-07. Status: proposta para revisão; implementação não iniciada.
+Data: 2026-09-07. Status: implementada, com a Emenda A abaixo; piloto real em
+[`startup-auth-pilot.md`](../../validation/startup-auth-pilot.md). O gate de
+aceite (§8) segue aberto: critérios 2 (dados de serviço), 4, 5 e 8 pendentes.
 
 > **Emendada em 2026-09-16** por
 > [Emenda A — runtime único systemd](2026-09-16-single-systemd-runtime-design.md).

@@ -7,6 +7,14 @@
 **Substitui:** `2026-09-03-agent-sandbox-design.md` e
 `2026-09-04-orca-reboot-persistence-design.md`.
 
+> **Parcialmente substituído (2026-09-17).** Os contratos de inicialização,
+> reinício após reboot e login foram substituídos pelo
+> [redesenho de inicialização e autenticação](2026-09-07-startup-auth-redesign-design.md), com a
+> [Emenda A](2026-09-16-single-systemd-runtime-design.md): containers com `--restart=no`, supervisionados pelo
+> systemd atrás da espera única por rede, e login seletivo por fornecedor.
+> Topologia de rede, proxy e isolamento seguem valendo. Referência atual:
+> [`docs/domains/sandbox/`](../../domains/sandbox/README.md).
+
 ---
 
 ## 1. Por que reconstruir

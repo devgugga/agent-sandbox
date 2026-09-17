@@ -61,6 +61,14 @@ if [ -f /run/asb-config/manifest.tsv ]; then
     # renames — na ordem de microssegundos — em que "$dst" nao existe. Um
     # leitor que ja tenha os arquivos abertos nao e afetado (o inode antigo
     # so e desligado no fim), e nenhum leitor jamais ve conteudo pela metade.
+    #
+    # Agentes que partem juntos (todo boot, depois da espera unica por rede)
+    # disputam o mesmo destino no volume compartilhado, e `$$` vale 1 em todo
+    # container: sem trava, um apagava a copia que o outro fazia (boot A1 do
+    # piloto, §6.9). A trava e `flock` no diretorio pai — lock do kernel no
+    # inode do volume, visivel entre containers, sem arquivo de lock.
+    exec {parent_lock}<"$(dirname "$dst")"
+    flock -w 120 "$parent_lock"
     staged="${dst}.asb-staging.$$"
     previous="${dst}.asb-previous.$$"
     rm -rf "$staged" "$previous"
@@ -71,6 +79,7 @@ if [ -f /run/asb-config/manifest.tsv ]; then
     fi
     mv "$staged" "$dst"
     rm -rf "$previous"
+    exec {parent_lock}<&-
   done < /run/asb-config/manifest.tsv
 fi
 

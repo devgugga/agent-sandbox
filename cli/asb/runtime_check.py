@@ -1,6 +1,6 @@
 """cli/asb/runtime_check.py — entry point para sondas de prontidão do systemd.
 
-Consome um manifesto validado e o papel do container ('proxy' ou 'agent').
+Consome um manifesto validado e o papel do container ('proxy', 'agent') ou, para 'keyring', o nome do container.
 Retorna 0 se o container estiver saudável e pronto, ou código de erro se falhar.
 """
 from __future__ import annotations
@@ -17,14 +17,32 @@ from .readiness import probe_host, probe_keyring, probe_proxy, probe_ssh, wait_u
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Runtime readiness check for systemd units")
     parser.add_argument("pos_manifest", nargs="?", default=None, help="Caminho do manifesto runtime.json")
-    parser.add_argument("pos_role", nargs="?", default=None, choices=["proxy", "agent"], help="Papel do container")
+    parser.add_argument("pos_role", nargs="?", default=None, choices=["proxy", "agent", "keyring"], help="Papel do container")
     parser.add_argument("--manifest", dest="manifest", default=None, help="Caminho do manifesto runtime.json")
-    parser.add_argument("--role", dest="role", default=None, choices=["proxy", "agent"], help="Papel do container")
+    parser.add_argument("--role", dest="role", default=None, choices=["proxy", "agent", "keyring"], help="Papel do container")
+    parser.add_argument("--container", dest="container", default=None, help="Container do keyring (papel keyring)")
 
     args = parser.parse_args(argv)
 
     manifest_path_str = args.manifest or args.pos_manifest
     role = args.role or args.pos_role
+
+    # Emenda A §5: o keyring singleton nao tem manifesto de workspace. A unidade
+    # so fica ativa depois que o Secret Service responde; sem isso, o
+    # `After=` do agente esperaria apenas o inicio do processo.
+    if role == "keyring":
+        if not args.container:
+            print("runtime_check [keyring]: --container e obrigatorio", file=sys.stderr)
+            return 2
+        keyring_res = wait_until(
+            lambda t: probe_keyring(container=args.container, timeout=t),
+            timeout=30.0,
+            interval=1.0,
+        )
+        if keyring_res.state != "healthy":
+            print(f"runtime_check [keyring]: keyring indisponivel: {keyring_res.code} -> {keyring_res.remediation}", file=sys.stderr)
+            return 1
+        return 0
 
     if not manifest_path_str or not role:
         print("runtime_check: manifesto e papel (--role proxy|agent) sao obrigatorios", file=sys.stderr)

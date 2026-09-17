@@ -2,6 +2,13 @@
 
 Data: 2026-09-07. Status: proposta para revisão; implementação não iniciada.
 
+> **Emendada em 2026-09-16** por
+> [Emenda A — runtime único systemd](2026-09-16-single-systemd-runtime-design.md).
+> O runtime `legacy` foi eliminado: a §7 (Migração e retorno) foi substituída,
+> o critério 7 da §8 (rollback) foi removido, e a restrição de preservar
+> containers e portas SSH passou a preservar dados e credenciais. Onde as duas
+> divergirem, vale a emenda.
+
 ## 1. Objetivo e limites
 
 Fazer os workspaces voltarem utilizáveis depois do login no desktop e manter

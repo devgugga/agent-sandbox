@@ -1266,6 +1266,56 @@ A reconexão veio 116 s depois do login, não 60 s; o cenário exercitado é
 | 6 | espera registrou a mudança de estado e concluiu sozinha | sim: `aguardando`, `ainda aguardando`, `conectividade real confirmada`, sem intervenção |
 | — | partidas | seis unidades `active`, nenhuma falha nem reinício; a corrida do entrypoint (§6.9) não se repetiu |
 
+## 6.11. Boot A3 (um ativo, outro suspenso, runtime único): APROVADO
+
+Preparo às 13:30:37: `asb-agent suspend --workspace t2-pilot-scratch`
+(rc 0): target `disabled`, unidades `inactive`, containers `Exited (0)`,
+`list` mostrando `parado`. Evidência pré-boot em `t2-evidence/pre-bootA3*`.
+Reboot às 13:32 (kernel 13:32:09), sessão às 13:32:38, sem comando antes da
+coleta. `boot_id` `9fd0d0ec…` → `39f09c19…`. Evidência pós-boot em
+`post-bootA3.txt` e `post-bootA3-*.json`.
+
+### Linha do tempo
+
+| Hora | Evento |
+| :--- | :--- |
+| 13:32:39.402 | `asb-network.service` começa a esperar; primeira sonda `dns_failed` |
+| 13:32:41 | `asb-keyring.service` ativo |
+| 13:32:45.145 | espera confirma conectividade após 2 tentativas e 5 s |
+| 13:32:45.157 | `asb-network.service` concluída |
+| ≈13:32:45.37 | `pasta` nasce |
+| 13:32:48.989 | target do BlackICE alcançado, agente pronto, `NRestarts=0` |
+
+**Medida decisiva:** `asb-network.service` ativa em 35 428 813 µs
+(monotônico), `pasta` nascido em 35 640 000 µs, **211 ms depois**.
+
+### Critérios do boot
+
+| # | Critério | Resultado |
+| :--- | :--- | :--- |
+| 1 | `boot_id` mudou | sim |
+| 2 | `pasta` nasceu depois da espera | sim, +211 ms |
+| 3 | egresso real no workspace ativo | BlackICE: github 200; example.com negado (403) |
+| 4 | porta, trabalho e credenciais preservados | porta 41837 igual; trabalho do BlackICE idêntico; credenciais com hash e mtime inalterados |
+| 5 | o suspenso permaneceu parado | sim: target `disabled`, unidades `inactive` sem `ActiveEnterTimestamp`, containers ainda `Exited (0)` do suspend; coletor `proxy_stopped` e `agent_not_running` |
+| — | partidas | nenhuma falha nem reinício no journal do usuário |
+
+### Incidente: commit do relatório cortado pelo reboot
+
+O reboot aconteceu às 13:31–13:32, enquanto o commit da §6.10 era gravado.
+O ref do branch ficou apontando para um commit cujo objeto, e os quatro
+objetos de árvore e blob dele, estavam **vazios** no disco (`fatal: bad object
+HEAD`). O reflog terminava íntegro no commit anterior, e o arquivo de trabalho
+tinha exatamente o conteúdo perdido (seu hash era o do blob vazio). Reparo,
+com cópia do `.git` antes: remover os cinco objetos vazios, voltar o ref para
+o último commit íntegro, reconstruir o índice (`git reset`), `git fsck --full`
+limpo e refazer o commit da §6.10. Os repositórios BlackICE (origem e clone
+do piloto) e o scratch passaram em `git fsck --full`.
+
+Isto não é defeito do agent-sandbox: é escrita sem `fsync` interrompida por
+reboot. O `/tmp` também é limpo no boot, e com ele sumiram os rascunhos de
+mensagem de commit e os logs das suítes de shell da §6.8.
+
 ---
 
 ## 7. Critérios de aceite (spec §8)

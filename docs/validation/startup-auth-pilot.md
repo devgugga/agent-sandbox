@@ -1377,15 +1377,21 @@ disruptiva, e não considerar espera sem resposta uma autorização.
    previsível que o desenvolvedor espera) ou se a limitação é aceita e
    documentada no runbook de T3.
 
-### Recursos criados por este piloto (a limpar ao final)
+### Recursos criados por este piloto
 
-| Recurso | Origem |
-| :--- | :--- |
-| workspace `t2-pilot-blackice` (porta 41837 desde §6.9) | BlackICE |
-| workspace `t2-pilot-scratch` (porta 46823 desde §6.9) | repo descartável |
-| `/home/v/Data/Projects/t2-pilot-scratch` | criado para §5.3.2 |
-| `/home/v/Data/Projects/BlackICE.bk` | backup pedido pelo operador |
-| branch `backup/pre-reword-emenda-a` | cópia do histórico antes de reescrever dois commits da Emenda A |
+Removidos em 2026-09-17 às 13:58, com autorização do operador
+(`t2-evidence/limpeza.log`). Workspaces novos, quando necessários, começam
+limpos.
+
+| Recurso | Origem | Destino |
+| :--- | :--- | :--- |
+| workspace `t2-pilot-blackice` | BlackICE | `purge` (containers, unidades, volume de sessão e clone) |
+| workspace `t2-pilot-scratch` | repo descartável | `purge` |
+| `/home/v/Data/Projects/t2-pilot-scratch` | criado para §5.3.2 | apagado |
+| `/home/v/Data/Projects/BlackICE.bk` | backup pedido pelo operador | apagado sem restaurar: o `BlackICE` estava idêntico (HEAD `3bd3a1d`, nenhuma diferença de arquivos); o trabalho de teste vivia só no clone do piloto |
+| branch `backup/pre-reword-emenda-a` | histórico antes de reescrever dois commits da Emenda A | apagado (`d26b618`) |
+
+O diretório de evidência `~/.local/state/agent-sandbox/t2-evidence/` fica.
 
 | Fase | Conteúdo | Exige |
 | :--- | :--- | :--- |
@@ -1394,7 +1400,6 @@ disruptiva, e não considerar espera sem resposta uma autorização.
 | (c) | **CONCLUÍDA no runtime único** (§6.9–§6.11) | — |
 | (d) | Perda temporária de rede, sem apagar login e sem reset global | Interrupção de rede do desktop |
 
-Ao final, restaurar `BlackICE.bk` se necessário e remover o workspace-piloto.
 A fase (e), dois dias de uso real sem reparo manual (critério 8), depende só de
 tempo.
 

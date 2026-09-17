@@ -1044,8 +1044,12 @@ def reload_allowlist(root: Path, ws: str) -> int:
                            root / "image" / "squid" / "allowlist-base.txt",
                            root / "image" / "squid" / "squid.conf.tmpl"))
     conf.chmod(0o644)
-    if podman.exists("container", n["proxy"]):
-        podman.run("restart", n["proxy"])
+    # Pela unidade, nunca `podman restart`: o proxy roda sob `start --attach`
+    # da unidade, e o ExecStopPost dela derrubaria o container recem-reiniciado.
+    # `try-restart` nao sobe o proxy de um workspace suspenso; o `resume` le o
+    # squid.conf novo.
+    subprocess.run(["systemctl", "--user", "try-restart", f"{n['proxy']}.service"],
+                   check=True)
     print(f"allowlist recarregada para {ws} (proxy reiniciado, agente preservado)")
     return 0
 

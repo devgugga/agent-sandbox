@@ -97,10 +97,18 @@ class TestReloadAllowlist(unittest.TestCase):
                  mock.patch("cli.asb.lifecycle.load_profile", return_value=fake_profile), \
                  mock.patch("cli.asb.lifecycle.render", return_value="acl allowlist ..."), \
                  mock.patch("cli.asb.podman.exists", return_value=True), \
-                 mock.patch("cli.asb.podman.run") as mock_podman_run:
+                 mock.patch("cli.asb.podman.run") as mock_podman_run, \
+                 mock.patch("cli.asb.lifecycle.subprocess.run") as mock_run:
                 rc = reload_allowlist(fake_root, "test-ws")
                 self.assertEqual(rc, 0)
-                mock_podman_run.assert_called_once_with("restart", "asb-test-ws-proxy")
+                # O proxy e supervisionado pelo systemd: `podman restart` mata o
+                # `start --attach` da unidade, e o ExecStopPost derruba o
+                # container recem-reiniciado. O reinicio passa pela unidade, e
+                # so se ela ja estava no ar (workspace suspenso segue suspenso).
+                mock_run.assert_called_once_with(
+                    ["systemctl", "--user", "try-restart", "asb-test-ws-proxy.service"],
+                    check=True)
+                mock_podman_run.assert_not_called()
                 conf_content = (fake_state / "squid.conf").read_text()
                 self.assertEqual(conf_content, "acl allowlist ...")
 
@@ -151,8 +159,7 @@ class TestReloadAllowlist(unittest.TestCase):
                  mock.patch("cli.asb.lifecycle.layout_for", return_value=layout), \
                  mock.patch("cli.asb.lifecycle.load_profile") as mock_load, \
                  mock.patch("cli.asb.lifecycle.render", return_value="acl x"), \
-                 mock.patch("cli.asb.podman.exists", return_value=True), \
-                 mock.patch("cli.asb.podman.run"):
+                 mock.patch("cli.asb.lifecycle.subprocess.run"):
                 reload_allowlist(base, "ws")
 
             mock_load.assert_called_once_with(origin)

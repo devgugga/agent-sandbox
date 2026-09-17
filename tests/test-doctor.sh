@@ -64,8 +64,10 @@ DOC_NEG=$("$ROOT/cli/asb-agent" doctor 2>&1); RC_NEG=$?
 assert_eq "1" "$RC_NEG" "doctor falha com codigo 1 quando o egresso cai"
 assert_contains "FALTA $WS_DOC: uplink rootless morto (Network is unreachable)" "$DOC_NEG" \
   "controle negativo: diagnostico identifica queda de uplink rootless"
-assert_contains "podman unshare --rootless-netns true" "$DOC_NEG" \
-  "controle negativo: diagnostico instrui comando exato de recuperacao do uplink"
+assert_contains "asb-agent suspend --workspace <id>; depois asb-agent resume --workspace <id>" "$DOC_NEG" \
+  "controle negativo: diagnostico instrui recriar os workspaces para recuperar o uplink"
+assert_not_contains "--rootless-netns" "$DOC_NEG" \
+  "controle negativo: diagnostico nao recomenda o unshare que o piloto reprovou"
 
 "$ROOT/cli/asb-agent" down --workspace "$WS_DOC" >/dev/null 2>&1 || true
 

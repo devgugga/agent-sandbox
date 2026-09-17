@@ -8,9 +8,6 @@ exige `IsolationError`.
 """
 from __future__ import annotations
 
-import importlib.machinery
-import importlib.util
-import inspect
 import os
 import subprocess
 import sys
@@ -29,17 +26,6 @@ sys.path.insert(0, str(REPO))
 from asb import install, supervisor  # noqa: E402
 from tests.integration.sandbox_fixture import IsolationError, SandboxFixture  # noqa: E402
 
-CLI_PATH = REPO / "cli" / "asb-agent"
-
-
-def _load_cli_module():
-    loader = importlib.machinery.SourceFileLoader("asb_agent_cli", str(CLI_PATH))
-    spec = importlib.util.spec_from_loader(loader.name, loader)
-    assert spec is not None
-    mod = importlib.util.module_from_spec(spec)
-    loader.exec_module(mod)
-    return mod
-
 
 class TestPathSeams(unittest.TestCase):
     def test_state_root_seam(self) -> None:
@@ -54,44 +40,6 @@ class TestPathSeams(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(os.environ, {"ASB_CONFIG_ROOT": tmp}):
             self.assertEqual(install.get_dropin_path(),
                              Path(tmp) / "systemd" / "user" / "podman-restart.service.d" / "agent-sandbox.conf")
-
-
-class TestPublicCli(unittest.TestCase):
-    def test_no_unit_name_or_bypass_flags(self) -> None:
-        parser = _load_cli_module().build_parser()
-        sub = next(a for a in parser._actions if type(a).__name__ == "_SubParsersAction")
-        for name in ("adopt-runtime", "rollback-runtime"):
-            opts = [o for act in sub.choices[name]._actions for o in act.option_strings]
-            for forbidden in ("--unit-name", "--unit", "--keyring-unit", "--bypass", "--target-dir", "--state-dir"):
-                self.assertNotIn(forbidden, opts)
-
-    def test_keyring_core_has_no_unit_name_parameter(self) -> None:
-        for fn in (supervisor.adopt_keyring, supervisor.rollback_keyring, supervisor.adopt_workspace):
-            params = inspect.signature(fn).parameters
-            self.assertNotIn("unit_name", params)
-            self.assertNotIn("keyring_unit", params)
-
-    def test_cli_forwards_only_apply(self) -> None:
-        cli = _load_cli_module()
-        for argv, expected in ((["--keyring", "--apply", "--json"], True), (["--keyring"], False)):
-            with self.subTest(argv=argv), mock.patch("asb.supervisor.adopt_keyring") as adopt, \
-                    mock.patch("sys.argv", ["asb-agent", "adopt-runtime", *argv]):
-                adopt.return_value = {"status": "applied", "component": "keyring", "phase": "readiness_verified"}
-                self.assertEqual(cli.main(), 0)
-                adopt.assert_called_once_with(apply=expected)
-
-    def test_cli_rollback_calls(self) -> None:
-        cli = _load_cli_module()
-        with mock.patch("asb.supervisor.rollback_keyring") as rb, \
-                mock.patch("sys.argv", ["asb-agent", "rollback-runtime", "--keyring", "--json"]):
-            rb.return_value = {"status": "rolled_back", "component": "keyring"}
-            self.assertEqual(cli.main(), 0)
-            rb.assert_called_once_with()
-        with mock.patch("asb.supervisor.rollback_workspace") as rb, \
-                mock.patch("sys.argv", ["asb-agent", "rollback-runtime", "--workspace", "ws-test"]):
-            rb.return_value = {"status": "rolled_back", "workspace": "ws-test"}
-            self.assertEqual(cli.main(), 0)
-            rb.assert_called_once_with("ws-test")
 
 
 class FixtureHost:
@@ -393,112 +341,9 @@ class TestAssertNoOrphans(_FixtureCase):
             self._check(all_registered=True)
 
 
-class TestI6CliGuards(unittest.TestCase):
-    """As guardas de autodefesa do runner do CLI isolado, exercitadas de proposito."""
-
-    def _settings(self, **over) -> Path:
-        import json
-        base = {"env": {"ASB_CONFIG_ROOT": "/tmp/nao-existe"}, "home": "/tmp/nao-existe/home",
-                "units": [], "containers": [], "crash_at": None, "host_target": None}
-        base.update(over)
-        path = Path(self.tmp) / f"settings-{len(list(Path(self.tmp).iterdir()))}.json"
-        path.write_text(json.dumps(base))
-        return path
-
-    def setUp(self) -> None:
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        self.tmp = tmp.name
-        from tests.integration.test_adoption import i6_cli
-        self.i6_cli = i6_cli
-
-    def test_environment_divergence_is_refused(self) -> None:
-        settings = self._settings(env={"ASB_CONFIG_ROOT": "/tmp/esperado-outro"})
-        with mock.patch.dict(os.environ, {"ASB_CONFIG_ROOT": "/tmp/valor-diferente"}), \
-                self.assertRaises(IsolationError) as cm:
-            self.i6_cli(settings, ["adopt-runtime", "--workspace", "x"])
-        self.assertIn("ambiente do CLI divergente", str(cm.exception))
-
-    def test_state_root_leak_is_refused(self) -> None:
-        env = {"ASB_CONFIG_ROOT": "/tmp/coerente"}
-        settings = self._settings(env=env)
-        with mock.patch.dict(os.environ, {**env, "ASB_STATE_ROOT": "/tmp/vazou"}), \
-                self.assertRaises(IsolationError) as cm:
-            self.i6_cli(settings, ["adopt-runtime", "--workspace", "x"])
-        self.assertIn("ASB_STATE_ROOT", str(cm.exception))
-
-
-class TestGuardCommand(unittest.TestCase):
-    """A guarda da integracao recusa sozinha o que foge da fixture, sem depender do fluxo de producao."""
-
-    UNITS = {"asb-test-g-1.target", "asb-test-g-1-agent.service"}
-    CONTAINERS = {"asb-test-g-1-agent"}
-    NAMES = {"cid-agent": "/asb-test-g-1-agent", "cid-other": "/asb-keyring"}
-
-    def setUp(self) -> None:
-        from tests.integration.test_adoption import guard_command
-        self.guard = guard_command
-        self.inspected: list[list[str]] = []
-
-    def real_run(self, argv, **kwargs):
-        """`podman inspect --format {{.Name}} <ref>` simulado: resolve IDs conhecidos, 125 para o resto."""
-        self.inspected.append(list(argv))
-        ref = argv[-1]
-        if ref in self.NAMES:
-            return subprocess.CompletedProcess(argv, 0, self.NAMES[ref] + "\n", "")
-        return subprocess.CompletedProcess(argv, 125, "", "Error: no such container")
-
-    def check(self, argv: list[str]) -> None:
-        self.guard(argv, self.UNITS, self.CONTAINERS, self.real_run)
-
-    def test_out_of_contract_commands_are_refused(self) -> None:
-        cases = (
-            ["systemctl", "start", "asb-test-g-1.target"],                       # sem --user
-            ["systemctl", "--user", "mask", "asb-test-g-1.target"],              # verbo fora do contrato
-            ["systemctl", "--user", "stop"],                                     # mutacao global
-            ["systemctl", "--user", "reset-failed"],                             # mutacao global
-            ["systemctl", "--user", "show", "--property=Environment"],           # consulta global
-            ["systemctl", "--user", "start", "asb-keyring.service"],             # unit do operador
-            ["systemctl", "--user", "stop", "asb-test-g-1.target", "asb-test-g-10.target"],  # irma
-            ["podman", "container", "rm", "asb-test-g-1-agent"],
-            ["podman", "volume", "rm", "asb-test-g-1-vol"],
-            ["podman", "exec", "-u", "root", "asb-keyring", "true"],
-            ["podman", "exec", "cid-other", "true"],                             # ID de container alheio
-            ["podman", "exec", "-u", "root"],                                    # sem container
-            ["podman", "update", "--restart=no"],                                # sem alvo
-            ["podman", "stop", "-t", "5", "asb-keyring"],
-            ["podman", "run", "--name", "asb-keyring", "img"],
-            ["podman", "create", "img"],
-            ["podman", "rm", "-f", "asb-test-g-1-agent"],                        # rm nunca, nem registrado
-            ["podman", "system", "reset"],
-        )
-        for argv in cases:
-            with self.subTest(argv=argv), self.assertRaises(IsolationError):
-                self.check(argv)
-
-    def test_contract_commands_are_allowed(self) -> None:
-        cases = (
-            ["systemctl", "--user", "daemon-reload"],
-            ["systemctl", "--user", "show", "--property=UnitPath", "--value"],
-            ["systemctl", "--user", "is-active", "asb-test-g-1.target"],
-            ["systemctl", "--user", "enable", "--runtime", "asb-test-g-1.target"],
-            ["podman", "container", "exists", "asb-keyring"],                    # leitura
-            ["podman", "inspect", "qualquer"],
-            ["podman", "exec", "-u", "root", "asb-test-g-1-agent", "true"],
-            ["podman", "update", "--restart=no", "cid-agent"],                   # ID resolvido por inspect
-            ["podman", "stop", "-t", "5", "asb-test-g-1-agent"],
-            ["podman", "run", "--name", "asb-test-g-1-agent", "img"],
-            ["ssh", "-p", "2222", "localhost"],                                  # nem systemctl nem podman
-        )
-        for argv in cases:
-            with self.subTest(argv=argv):
-                self.check(argv)
-        self.assertTrue(any(a[-1] == "cid-agent" and "inspect" in a for a in self.inspected))
-
-
 class TestResourceNames(unittest.TestCase):
     def test_sibling_prefix_extension_is_refused(self) -> None:
-        fx = SandboxFixture("adoptguard", auto_setup=False)
+        fx = SandboxFixture("isoguard", auto_setup=False)
         try:
             fx._validate_resource_name(f"{fx._prefix}-agent")
             fx._validate_resource_name(f"{fx._prefix}.target")

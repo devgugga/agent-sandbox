@@ -18,7 +18,6 @@ import json
 import os
 import shutil
 import subprocess
-import time
 from pathlib import Path
 
 from . import podman
@@ -214,17 +213,6 @@ def check_keyring_service(container: str | None = None, timeout: float | None = 
         return True, f"Secret Service ({name})", ""
     except Exception as exc:
         return False, f"Secret Service ({name}): {exc}", "asb-agent login"
-
-
-def _wait_for_keyring_readiness(container: str, timeout: float = 5.0) -> bool:
-    deadline = time.monotonic() + timeout
-    while time.monotonic() <= deadline:
-        remaining = max(0.1, deadline - time.monotonic())
-        ok, _, _ = check_keyring_service(container, timeout=min(1.0, remaining))
-        if ok:
-            return True
-        time.sleep(0.05)
-    return False
 
 
 def _restart_policy(container: str) -> str:

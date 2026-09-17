@@ -21,53 +21,7 @@ from pathlib import Path
 BROKER_SCRIPT = Path("/usr/local/lib/asb-docker-broker.py")
 BROKER_UNIT = Path("/etc/systemd/system/asb-docker-broker.service")
 DOCKER_SOCKETS = ("/var/run/docker.sock", "/run/docker.sock")
-PODMAN_RESTART_UNIT = Path("/usr/lib/systemd/user/podman-restart.service")
 PROJECT_DROPIN_HEADER = "# Managed by agent-sandbox: podman-restart netns initialization\n"
-
-
-def podman_restart(target_dir: Path | None = None) -> int:
-    """Habilita a unidade que o proprio podman ja instala.
-
-    `podman start --all --filter should-start-on-boot=true`, puxada por
-    default.target e ordenada apos network-online.target. Substitui inteiros o
-    restore-all do v1, a espera por rota/DNS do host, a unidade customizada e o
-    codigo de saida 2 para pods legados — e, por nao ser nossa, nao carrega
-    caminho nenhum deste checkout.
-
-    Sem linger de proposito: o Orca so roda apos o login, entao uma unidade que
-    parte no login e cedo o bastante.
-    """
-    if not PODMAN_RESTART_UNIT.is_file():
-        print("podman-restart.service nao encontrado; sem restauracao "
-              "automatica no boot. Use 'asb-agent resume' apos religar.",
-              file=sys.stderr)
-        return 1
-
-    podman_bin = shutil.which("podman")
-    if not podman_bin:
-        print("podman nao encontrado no PATH", file=sys.stderr)
-        return 1
-
-    true_bin = shutil.which("true")
-    if not true_bin:
-        print("true nao encontrado no PATH", file=sys.stderr)
-        return 1
-
-    base = target_dir or (Path.home() / ".config" / "systemd" / "user")
-    dropin = base / "podman-restart.service.d" / "agent-sandbox.conf"
-    dropin.parent.mkdir(parents=True, exist_ok=True)
-    dropin.write_text(
-        PROJECT_DROPIN_HEADER
-        + f"[Service]\nExecStartPre={podman_bin} unshare --rootless-netns {true_bin}\n",
-        encoding="utf-8",
-    )
-
-    subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
-    subprocess.run(["systemctl", "--user", "enable", "podman-restart.service"],
-                   check=True)
-    print("restauracao no boot habilitada (podman-restart.service)",
-          file=sys.stderr)
-    return 0
 
 
 def get_dropin_path(target_dir: Path | None = None) -> Path:
@@ -107,11 +61,7 @@ def _read_regular_at(dir_fd: int, name: str) -> tuple[os.stat_result, str] | Non
     symlink; num FIFO o `open(2)` para leitura BLOQUEIA no kernel enquanto nao
     houver escritor — antes de `fstat` e portanto antes do `S_ISREG` que
     rejeitaria a entrada. Medido: um FIFO no nome do drop-in travava esta
-    funcao indefinidamente. E como as duas chamadas de producao rodam dentro do
-    `_AdoptionLock`, que segura um `flock` exclusivo durante todo o `with`, o
-    travamento levaria o lock consigo e nenhuma adocao de keyring voltaria a
-    rodar no host — exatamente o que o invariante 3 do brief proibe ("sem
-    travar indefinidamente"). Com `O_NONBLOCK` o FIFO abre na hora e cai no
+    funcao indefinidamente. Com `O_NONBLOCK` o FIFO abre na hora e cai no
     `S_ISREG`; em arquivo regular a flag e inerte.
     """
     try:
@@ -336,139 +286,6 @@ def remove_project_dropin(
             parent.rmdir()
     except OSError:
         pass
-
-    if verify is not None:
-        verify()
-    subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
-    return True
-
-
-def _default_dropin_body() -> str:
-    """O drop-in que `podman_restart()` instala, sintetizado a partir do PATH."""
-    podman_bin = shutil.which("podman") or "/usr/bin/podman"
-    true_bin = shutil.which("true") or "/usr/bin/true"
-    return (
-        PROJECT_DROPIN_HEADER
-        + f"[Service]\nExecStartPre={podman_bin} unshare --rootless-netns {true_bin}\n"
-    )
-
-
-def _fchmod_regular_at(dir_fd: int, name: str, st: os.stat_result, mode: int) -> None:
-    """chmod do arquivo regular `name` sob `dir_fd`, pelo descritor.
-
-    Linux nao implementa `AT_SYMLINK_NOFOLLOW` em `fchmodat(2)`, entao
-    `os.chmod(..., follow_symlinks=False)` nao existe aqui: a unica forma de
-    nao seguir link e abrir com `O_NOFOLLOW` e mudar o modo do descritor. O
-    inode aberto ainda e conferido contra o que foi validado, porque entre o
-    stat e o open o nome pode ter sido reapontado.
-    """
-    # `O_NONBLOCK` pelo mesmo motivo de `_read_regular_at`: um FIFO plantado
-    # entre a validacao e este reopen bloquearia o open antes do `S_ISREG`.
-    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=dir_fd)
-    try:
-        cur = os.fstat(fd)
-        if not stat.S_ISREG(cur.st_mode) or (cur.st_dev, cur.st_ino) != (st.st_dev, st.st_ino):
-            raise RuntimeError(
-                f"{name} deixou de ser o arquivo validado antes do chmod; recusa fail-closed")
-        os.fchmod(fd, mode & 0o777)
-    finally:
-        os.close(fd)
-
-
-def restore_project_dropin(
-    target_dir: Path | None = None,
-    content: str | None = None,
-    mode: int | None = None,
-    verify: Callable[[], None] | None = None,
-) -> bool:
-    """Restaura o drop-in do projeto caso a adocao o tenha removido.
-
-    Toda decisao e toda mutacao acontecem sob um `dir_fd` do diretorio pai e
-    SEM seguir symlink. `is_file()`, `read_text()`, `stat()`, `chmod()` e
-    `write_text()` seguem link, e seguir link aqui e mudar arquivo alheio: um
-    symlink plantado no nome do drop-in fazia esta funcao medir e `chmod` o
-    ARQUIVO APONTADO, fora do `.d` do projeto, e um symlink pendurado a fazia
-    CRIAR o alvo — nos dois casos violando a preservacao de configuracao de
-    terceiros. Entrada existente que nao seja arquivo regular recusa fechado;
-    a criacao usa `O_CREAT|O_EXCL|O_NOFOLLOW`, que recusa inclusive o link
-    pendurado.
-
-    `verify` e o gancho de revalidacao de identidade do chamador, chamado
-    imediatamente antes de cada mutacao: a criacao do diretorio, a escrita do
-    arquivo, a correcao de modo e o daemon-reload. Uma unica validacao no
-    chamador nao cobre nenhuma delas — todas acontecem depois. Levantar dentro
-    do gancho aborta a restauracao antes da mutacao seguinte.
-    """
-    dropin = get_dropin_path(target_dir)
-    parent, name = dropin.parent, dropin.name
-
-    try:
-        dir_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY)
-    except FileNotFoundError:
-        dir_fd = None
-    except OSError as exc:
-        raise RuntimeError(f"diretorio do drop-in ilegivel ({parent}): {exc}") from exc
-
-    if dir_fd is not None:
-        try:
-            try:
-                st = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
-            except FileNotFoundError:
-                st = None
-            except OSError as exc:
-                raise RuntimeError(f"nome do drop-in ilegivel ({dropin}): {exc}") from exc
-
-            if st is not None:
-                if not stat.S_ISREG(st.st_mode):
-                    raise RuntimeError(
-                        f"{dropin} e symlink ou entrada nao-regular: restaurar ali mudaria um "
-                        "arquivo alheio em vez do drop-in do projeto; recusa fail-closed")
-                found = _read_regular_at(dir_fd, name)
-                if found is None:
-                    raise RuntimeError(
-                        f"{dropin} deixou de ser arquivo regular durante a restauracao; "
-                        "recusa fail-closed")
-                st, cur = found
-                if content is not None and cur != content:
-                    raise RuntimeError(
-                        "drop-in criado/modificado externamente durante supervisao; recusa fail-closed")
-                if mode is not None and (st.st_mode & 0o777) != (mode & 0o777):
-                    if verify is not None:
-                        verify()
-                    _fchmod_regular_at(dir_fd, name, st, mode)
-                return True
-        finally:
-            os.close(dir_fd)
-
-    if verify is not None:
-        verify()
-    parent.mkdir(parents=True, exist_ok=True)
-    payload = content if content is not None else _default_dropin_body()
-
-    dir_fd = os.open(parent, os.O_RDONLY | os.O_DIRECTORY)
-    try:
-        if verify is not None:
-            verify()
-        try:
-            # O_EXCL recusa qualquer entrada que ja ocupe o nome, symlink
-            # pendurado incluido — o caso em que `write_text` criava o alvo.
-            fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o666,
-                         dir_fd=dir_fd)
-        except FileExistsError as exc:
-            raise RuntimeError(
-                f"{dropin} apareceu entre a checagem e a criacao (symlink ou arquivo de "
-                f"terceiro): nao foi sobrescrito, recusa fail-closed ({exc})") from exc
-        try:
-            with open(fd, "wb", closefd=False) as fh:
-                fh.write(payload.encode("utf-8"))
-            if mode is not None:
-                if verify is not None:
-                    verify()
-                os.fchmod(fd, mode & 0o777)
-        finally:
-            os.close(fd)
-    finally:
-        os.close(dir_fd)
 
     if verify is not None:
         verify()

@@ -240,7 +240,6 @@ def pilot_cli(state: Path, args: list[str]) -> int:
     with contextlib.ExitStack() as stack:
         stack.enter_context(mock.patch.object(os.path, "expanduser", side_effect=lambda p: cfg["home"] if p == "~" else real_expanduser(p)))
         mock_host = stack.enter_context(mock.patch.object(readiness, "probe_host", side_effect=lambda **kw: real_host(cfg["host_target"], **kw)))
-        mock_netns = stack.enter_context(mock.patch.object(lifecycle.podman, "ensure_rootless_netns"))
         stack.enter_context(mock.patch.object(lifecycle, "ensure_keyring_service", side_effect=ensure_then_fault))
         stack.enter_context(mock.patch.object(auth, "_verify_command", side_effect=synthetic_verify))
         stack.enter_context(mock.patch.object(subprocess, "run", side_effect=traced))
@@ -250,7 +249,6 @@ def pilot_cli(state: Path, args: list[str]) -> int:
         sys.argv = [str(ROOT / "cli/asb-agent"), *args]
         rc = runpy.run_path(str(ROOT / "cli/asb-agent"))["main"]()
         if "resume" in args:
-            mock_netns.assert_called()
             mock_host.assert_called()
         return rc
 

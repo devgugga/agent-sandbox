@@ -22,7 +22,6 @@ from .keyring import (
     KEYRING_SCHEMA,
     _inspect_keyring_container,
     _keyring_mount_contract_issue,
-    _wait_for_keyring_readiness,
     check_keyring_service,
     ensure_keyring_data_volume,
     ensure_keyring_pass,
@@ -41,8 +40,8 @@ from .workspace import (
 )
 
 # CONFIG, SSH_KEY e as constantes/funcoes de keyring (KEYRING_*, ensure_keyring_*,
-# check_keyring_service, _inspect_keyring_container, _keyring_mount_contract_issue,
-# _wait_for_keyring_readiness) foram extraidas para cli/asb/keyring.py (Tarefa A2).
+# check_keyring_service, _inspect_keyring_container, _keyring_mount_contract_issue)
+# foram extraidas para cli/asb/keyring.py (Tarefa A2).
 # Os nomes acima sao reexports temporarios: mantem `lifecycle.X` funcionando para
 # quem ja importava daqui, sem duplicar a logica.
 IMAGE = "agent-sandbox:latest"

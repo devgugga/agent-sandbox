@@ -1080,6 +1080,84 @@ uma falha já conhecida.
 
 ---
 
+## 6.8. Troca para o runtime único (Emenda A, Task 13)
+
+Executada em 2026-09-17, 12:42–12:50, com autorização do operador. Estado
+anterior em `~/.local/state/agent-sandbox/t2-evidence/pre-troca.txt`; saída
+da troca em `troca.log`, `up-blackice.json` e `up-*.err` no mesmo diretório.
+
+### Resíduo de teste removido antes da troca
+
+A inspeção prévia achou recursos `asb-test-*` de execuções anteriores
+interrompidas: 4 containers, 2 redes e 34 volumes. O mais grave era
+`asb-test-fwdold-c4051f9c-fwd` (`tests/integration/test_forwarder.py:52`), com
+política `always` e rede `pasta`: subiria no boot pelo `podman-restart` e
+criaria o namespace rootless cedo, contaminando justamente a medição da Task
+14. Os dois outros containers vinham de `test_startup_auth.py`
+(`startupupexist`, `startupkeyring`). Tudo foi removido; depois disso só o
+`asb-keyring` estava marcado para subir no boot.
+
+### Medições
+
+| Verificação | Antes | Depois |
+| :--- | :--- | :--- |
+| `claude/.credentials.json` (sha256, 16 hex) | `c564e17795d34f2c` | `c564e17795d34f2c` |
+| `codex/auth.json` (sha256, 16 hex) | `9069867d64caaef6` | `9069867d64caaef6` |
+| `asb-keyring`: política / id | `unless-stopped` / `b7e8796615ea` | `no` / `71d444fe1081` (recriado 12:42:11) |
+| drop-in `podman-restart.service.d/agent-sandbox.conf` | ausente | ausente |
+| `asb-keyring.service`, `asb-network.service` | — | `active`, `active` |
+| proxy e agente dos dois pilotos | — | `active` (quatro unidades) |
+| `auth status` (BlackICE) | — | claude e codex `authenticated`; agy `unknown` (sem status local, como antes) |
+| egresso a partir do agente | — | github.com 200; example.com negado (`CONNECT tunnel failed, response 403`) |
+| trabalho não commitado do BlackICE | HEAD `3bd3a1d`, `M README.md`, `?? T2-PILOT-UNTRACKED.txt`, `2c1a0f4c5b73c5d7` / `e0190ec774262c94` | idêntico |
+| `asb-agent doctor` | — | rc 0; drop-in ausente, espera por rede ativa, nenhum produtor alheio do namespace no boot |
+
+O drop-in já estava ausente antes da troca (o `up` de `tests/test-auth.sh` o
+removera, ver a lacuna de isolamento registrada na verificação das Tasks 1–12),
+por isso o `up` não imprimiu a mensagem de remoção prevista no plano. As portas
+SSH mudaram com a recriação: `t2-pilot-blackice` 45115, `t2-pilot-scratch`
+42887.
+
+### Suítes em shell com o keyring de produção (Step 6)
+
+Primeira rodada: 8 de 11 com `falhou: 0` (agents-behind-proxy 9, lifecycle 7,
+network 13, provision 5, recipe 39, services 9, toolcache 22, transaction 13).
+Três falharam:
+
+- **`test-reload-allowlist.sh` (4/8) — defeito real do runtime único.**
+  `reload_allowlist` ainda usava `podman restart` no proxy. Sob o systemd o
+  proxy roda como `start --attach` da unidade; o restart mata esse processo e
+  o `ExecStopPost=podman stop` da unidade para o container recém-reiniciado
+  (journal: `podman stop` PID 1438898 logo após o `restart` das 12:45:02).
+  Corrigido em `777b00b` com `systemctl --user try-restart` da unidade do
+  proxy; nova rodada 8/8.
+- **`test-doctor.sh` (13/14) — teste desatualizado.** Ainda exigia a
+  orientação `podman unshare --rootless-netns`, removida em `14f51bf`. Passa a
+  exigir suspender e retomar, e a ausência do unshare; nova rodada 15/15.
+- **`test-nested.sh` (abortado) — colisão de ambiente, não defeito.** O teste
+  publica a porta fixa `127.0.0.1:18080`, que o workspace do BlackICE publica
+  pelo perfil do projeto (`rootlessport listen tcp 127.0.0.1:18080: bind:
+  address already in use`). Com a mesma suíte apontada para 18097, 8/8. O
+  `up` reportou só `nao foi possivel determinar a porta SSH`, sem dizer que a
+  unidade do agente falhou.
+
+Nenhuma unidade `asb-test-*` sobrou. A primeira rodada deixou 14 volumes
+`asb-test-*-session` (nenhum do nested); com as repetições, 17 foram
+removidos. As repetições finais de doctor, reload e nested não deixaram
+volume. A causa do vazamento não foi investigada.
+
+### Pendências abertas pela troca
+
+- `test-nested.sh` usa porta fixa do host e falha com qualquer workspace real
+  que publique 18080.
+- Volume de sessão vazado por testes em shell, de forma intermitente.
+- O `up` não confere o estado das unidades depois de iniciar o target, e dá
+  um erro enganoso quando o agente não sobe.
+- Testes interrompidos deixam containers com política `always`, que voltam no
+  boot seguinte.
+
+---
+
 ## 7. Critérios de aceite (spec §8)
 
 | # | Critério | Estado |
@@ -1117,8 +1195,8 @@ disruptiva, e não considerar espera sem resposta uma autorização.
 
 | Recurso | Origem |
 | :--- | :--- |
-| workspace `t2-pilot-blackice` (porta 45379) | BlackICE |
-| workspace `t2-pilot-scratch` (porta 34075) | repo descartável |
+| workspace `t2-pilot-blackice` (porta 45115 desde §6.8) | BlackICE |
+| workspace `t2-pilot-scratch` (porta 42887 desde §6.8) | repo descartável |
 | `/home/v/Data/Projects/t2-pilot-scratch` | criado para §5.3.2 |
 | `/home/v/Data/Projects/BlackICE.bk` | backup pedido pelo operador |
 

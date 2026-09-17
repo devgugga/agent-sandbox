@@ -1225,6 +1225,47 @@ unidades `active`, `doctor` rc 0. Portas SSH novas: `t2-pilot-blackice`
 41837, `t2-pilot-scratch` 46823. O `asb-keyring` não foi recriado e segue na
 imagem anterior; ele não materializa manifesto.
 
+## 6.10. Boot A2 (rede atrasada, runtime único): APROVADO
+
+O operador desconectou o cabo de `eno1` (único uplink da máquina, sem Wi-Fi),
+reiniciou, deixou o autologin entrar e reconectou o cabo depois de esperar.
+Nenhum comando antes da coleta. `boot_id` `a30edd68…` → `9fd0d0ec…`.
+Evidência em `t2-evidence/pre-bootA2-*`, `post-bootA2.txt` e
+`post-bootA2-*.json`.
+
+### Linha do tempo
+
+| Hora | Evento |
+| :--- | :--- |
+| 13:26:52 | boot do kernel |
+| 13:27:13.45 | sessão do usuário; `eno1` `unavailable` (sem cabo) |
+| 13:27:14.684 | `asb-network.service` começa a esperar |
+| 13:27:16 | `asb-keyring.service` ativo (não depende da espera) |
+| 13:27:24.839 | espera registra `aguardando conectividade real (github.com:443): dns_failed` |
+| 13:28:24.887 | espera registra `ainda aguardando ... dns_failed, 5 tentativa(s), 70s` |
+| 13:29:09.425 | cabo reconectado: `NIC Link is Up`, 116 s depois do login |
+| 13:29:15.009 | espera confirma conectividade após 9 tentativas e 120 s |
+| 13:29:15.016 | `asb-network.service` concluída; proxies começam |
+| ≈13:29:15.12 | `pasta` nasce |
+| 13:29:18 | os dois agentes prontos, `NRestarts=0` |
+
+**Medida decisiva:** `asb-network.service` ativa em 142 284 825 µs
+(monotônico), `pasta` nascido em 142 390 000 µs, **105 ms depois**.
+
+A reconexão veio 116 s depois do login, não 60 s; o cenário exercitado é
+"rede ausente por ~2 min no boot", mais longo que o previsto.
+
+### Critérios do boot
+
+| # | Critério | Resultado |
+| :--- | :--- | :--- |
+| 1 | `boot_id` mudou | sim |
+| 2 | `pasta` nasceu depois da espera | sim, +105 ms |
+| 3 | egresso real nos dois workspaces | github 200 nos dois; example.com negado (403) nos dois |
+| 4 | porta, trabalho e credenciais preservados | portas 41837 e 46823 iguais; trabalho do BlackICE idêntico; credenciais com hash e mtime inalterados; claude e codex `authenticated` nos dois |
+| 6 | espera registrou a mudança de estado e concluiu sozinha | sim: `aguardando`, `ainda aguardando`, `conectividade real confirmada`, sem intervenção |
+| — | partidas | seis unidades `active`, nenhuma falha nem reinício; a corrida do entrypoint (§6.9) não se repetiu |
+
 ---
 
 ## 7. Critérios de aceite (spec §8)

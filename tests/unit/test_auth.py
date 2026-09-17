@@ -454,7 +454,9 @@ class TestCheckKeyringService(unittest.TestCase):
             self.assertFalse(ok)
             self.assertEqual(label, "socket do Secret Service (asb-keyring)")
             self.assertNotIn("login", fix)
-            self.assertEqual(fix, "reinicie o servico: podman restart asb-keyring")
+            # Mesma regra do container parado: pela unidade, nunca por fora.
+            self.assertEqual(fix, "systemctl --user restart asb-keyring.service")
+            self.assertNotIn("podman restart", fix)
 
     def test_check_keyring_service_unresponsive(self):
         def fake_run(*args, **kwargs):
@@ -473,7 +475,9 @@ class TestCheckKeyringService(unittest.TestCase):
             self.assertFalse(ok)
             self.assertEqual(label, "Secret Service sem resposta (asb-keyring)")
             self.assertNotIn("login", fix)
-            self.assertEqual(fix, "reinicie o servico: podman restart asb-keyring")
+            # Mesma regra do container parado: pela unidade, nunca por fora.
+            self.assertEqual(fix, "systemctl --user restart asb-keyring.service")
+            self.assertNotIn("podman restart", fix)
 
     def test_check_keyring_service_healthy(self):
         def fake_run(*args, **kwargs):

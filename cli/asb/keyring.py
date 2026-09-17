@@ -191,7 +191,7 @@ def check_keyring_service(container: str | None = None, timeout: float | None = 
         sock_rc = getattr(sock_check, "returncode", 1) if sock_check is not None else 1
         if sock_rc != 0:
             return (False, f"socket do Secret Service ({name})",
-                    f"reinicie o servico: podman restart {name}")
+                    f"systemctl --user restart {name}.service")
 
         secrets_check = podman.run(
             "exec", "-u", "1000", name,
@@ -210,7 +210,7 @@ def check_keyring_service(container: str | None = None, timeout: float | None = 
             # Mesma classe de falha do socket ausente (servico dentro do
             # container nao responde): mesma remediacao de infraestrutura.
             return (False, f"Secret Service sem resposta ({name})",
-                    f"reinicie o servico: podman restart {name}")
+                    f"systemctl --user restart {name}.service")
 
         return True, f"Secret Service ({name})", ""
     except Exception as exc:

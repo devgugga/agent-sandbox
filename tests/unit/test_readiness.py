@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asb_test_isolation  # noqa: F401  (guarda de isolamento da suite: nenhum volume real)
 
+import ast
 import errno
 import json
 import socket
@@ -463,6 +464,29 @@ class TestNoRootlessNetnsAdvice(unittest.TestCase):
         for name in ("readiness.py", "doctor.py", "runtime_check.py", "lifecycle.py"):
             with self.subTest(module=name):
                 self.assertNotIn("--rootless-netns", (cli / name).read_text(encoding="utf-8"))
+
+
+class TestNoDirectPodmanLifecycleAdvice(unittest.TestCase):
+    """R11: orientacao que dirige container supervisionado por fora do systemd.
+
+    O keyring e os containers de workspace sao iniciados e reiniciados pelas
+    unidades; `podman restart`/`podman start` mata o processo anexado e o
+    `ExecStopPost` da unidade para o container de novo. Tres remediacoes do
+    keyring carregaram essa orientacao ate a revisao final da T3.
+    """
+
+    def test_diagnostic_modules_never_tell_the_operator_to_drive_podman(self):
+        # So o TEXTO que chega ao operador: comentario que diz "nunca
+        # `podman restart`" e exatamente o que se quer preservar.
+        cli = Path(__file__).resolve().parents[2] / "cli" / "asb"
+        for name in ("keyring.py", "doctor.py", "readiness.py", "auth.py", "lifecycle.py"):
+            tree = ast.parse((cli / name).read_text(encoding="utf-8"))
+            literals = [node.value for node in ast.walk(tree)
+                        if isinstance(node, ast.Constant) and isinstance(node.value, str)]
+            for forbidden in ("podman restart", "podman start "):
+                with self.subTest(module=name, advice=forbidden):
+                    self.assertEqual(
+                        [lit for lit in literals if forbidden in lit], [])
 
 
 class TestDomainPackDescribesTheSingleRuntime(unittest.TestCase):

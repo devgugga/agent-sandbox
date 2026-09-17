@@ -180,6 +180,8 @@ class TestLifecycleHostApi(unittest.TestCase):
             return orig_exists(p)
 
         with mock.patch("asb.lifecycle.load_profile", return_value=fake_profile), \
+             mock.patch("asb.install.remove_project_dropin", return_value=False), \
+             mock.patch("asb.readiness.wait_until", return_value=mock.MagicMock(state="healthy", code="ok")), \
              mock.patch("asb.podman.exists", side_effect=fake_exists), \
              mock.patch("asb.podman.run"), \
              mock.patch("asb.lifecycle.build_proxy"), \
@@ -209,26 +211,31 @@ class TestLifecycleHostApi(unittest.TestCase):
         def fake_run(*args, **kwargs):
             runs.append(args)
 
-        with mock.patch("asb.lifecycle.load_profile", return_value=fake_profile), \
-             mock.patch("asb.podman.exists", side_effect=fake_exists), \
-             mock.patch("asb.podman.run", side_effect=fake_run), \
-             mock.patch("asb.podman.out", return_value="127.0.0.1:2222\n"), \
-             mock.patch("asb.lifecycle.build_proxy"), \
-             mock.patch("asb.lifecycle.prepare_clone"), \
-             mock.patch("asb.lifecycle.layout_for") as mock_layout, \
-             mock.patch("asb.lifecycle.build_staging", return_value=0), \
-             mock.patch("asb.lifecycle.ensure_ssh_key"), \
-             mock.patch("asb.lifecycle.ensure_keyring_service"), \
-             mock.patch("asb.lifecycle.ensure_keyring_runtime_volume", return_value="asb-keyring-runtime"), \
-             mock.patch("asb.lifecycle.ensure_credentials_volume", return_value="asb-credentials"), \
-             mock.patch("asb.lifecycle.credential_mount_args", return_value=[]), \
-             mock.patch("asb.lifecycle.ensure_session_volume", return_value="asb-test-ws-session"), \
-             mock.patch("asb.readiness.wait_until", return_value=mock.MagicMock(state="healthy", code="ok")), \
-             mock.patch("asb.install.podman_restart"), \
-             mock.patch("pathlib.Path.exists", return_value=True), \
-             mock.patch("pathlib.Path.write_text"), \
-             mock.patch("pathlib.Path.read_text", return_value="ssh-ed25519 AAAA"), \
-             mock.patch("pathlib.Path.chmod"):
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch("asb.lifecycle.load_profile", return_value=fake_profile))
+            stack.enter_context(mock.patch("asb.podman.exists", side_effect=fake_exists))
+            stack.enter_context(mock.patch("asb.install.remove_project_dropin", return_value=False))
+            stack.enter_context(mock.patch("asb.lifecycle.ensure_runtime", return_value=Path("/tmp/dummy-runtime/rev1")))
+            stack.enter_context(mock.patch("asb.podman.run", side_effect=fake_run))
+            stack.enter_context(mock.patch("asb.podman.out", return_value="127.0.0.1:2222\n"))
+            stack.enter_context(mock.patch("asb.lifecycle.build_proxy"))
+            stack.enter_context(mock.patch("asb.lifecycle.prepare_clone"))
+            mock_layout = stack.enter_context(mock.patch("asb.lifecycle.layout_for"))
+            stack.enter_context(mock.patch("asb.lifecycle.build_staging", return_value=0))
+            stack.enter_context(mock.patch("asb.lifecycle.ensure_ssh_key"))
+            stack.enter_context(mock.patch("asb.lifecycle.ensure_keyring_service"))
+            stack.enter_context(mock.patch("asb.lifecycle.ensure_keyring_runtime_volume", return_value="asb-keyring-runtime"))
+            stack.enter_context(mock.patch("asb.lifecycle.ensure_credentials_volume", return_value="asb-credentials"))
+            stack.enter_context(mock.patch("asb.lifecycle.credential_mount_args", return_value=[]))
+            stack.enter_context(mock.patch("asb.lifecycle.ensure_session_volume", return_value="asb-test-ws-session"))
+            stack.enter_context(mock.patch("asb.readiness.wait_until", return_value=mock.MagicMock(state="healthy", code="ok")))
+            stack.enter_context(mock.patch("asb.lifecycle.supervisor.install_workspace", return_value=[]))
+            stack.enter_context(mock.patch("asb.lifecycle.supervisor.start_workspace"))
+            stack.enter_context(mock.patch("pathlib.Path.exists", return_value=True))
+            stack.enter_context(mock.patch("pathlib.Path.write_text"))
+            stack.enter_context(mock.patch("pathlib.Path.read_text", return_value="ssh-ed25519 AAAA"))
+            stack.enter_context(mock.patch("pathlib.Path.chmod"))
             mock_layout.return_value.state = Path("/tmp/dummy-asb-state")
             mock_layout.return_value.mount = Path("/tmp/dummy-asb-mount")
             mock_layout.return_value.project_root = Path("/tmp/dummy-asb-mount")

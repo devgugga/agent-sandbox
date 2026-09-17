@@ -135,9 +135,12 @@ def prepare_workspace_harness(ws: str):
         captured["home"] = home
         captured["mountpoint"] = mountpoint
 
+        runtime_dir = tmp / "runtime" / "rev1"
+        runtime_dir.mkdir(parents=True)
+
         def fake_run(*args, **kwargs):
             captured["run"].append(list(args))
-            if args and args[0] == "run" and "--name" in args:
+            if args and args[0] in ("run", "create") and "--name" in args:
                 if args[args.index("--name") + 1] == f"asb-{ws}-agent":
                     captured["agent_args"] = list(args)
             return _ok()
@@ -148,27 +151,25 @@ def prepare_workspace_harness(ws: str):
         profile = Profile(services=[], host_ports=[], publish_ports=[],
                           host_api="none", container_mode="standard", allow=[])
 
-        with mock.patch.object(lifecycle.podman, "exists", return_value=True), \
-                mock.patch.object(lifecycle.podman, "run", side_effect=fake_run), \
-                mock.patch.object(lifecycle.podman, "out",
-                                  return_value=str(mountpoint)), \
-                mock.patch.object(lifecycle.podman, "ensure_rootless_netns"), \
-                mock.patch.object(lifecycle, "load_profile", return_value=profile), \
-                mock.patch.object(lifecycle, "layout_for", return_value=layout), \
-                mock.patch.object(lifecycle, "prepare_clone"), \
-                mock.patch.object(lifecycle, "render", return_value="acl x"), \
-                mock.patch.object(lifecycle, "build_staging", return_value=0), \
-                mock.patch.object(lifecycle, "ensure_ssh_key", return_value=key), \
-                mock.patch.object(lifecycle, "ensure_keyring_service"), \
-                mock.patch.object(lifecycle, "ensure_keyring_runtime_volume",
-                                  return_value="asb-keyring-runtime"), \
-                mock.patch.object(lifecycle, "ensure_credentials_volume",
-                                  return_value=FAKE_CREDENTIALS_VOLUME), \
-                mock.patch.object(lifecycle, "ensure_toolcache_volume",
-                                  return_value="asb-test-toolcache"), \
-                mock.patch.object(lifecycle.os.path, "expanduser",
-                                  return_value=str(home)), \
-                redirect_stderr(io.StringIO()):
+        from contextlib import ExitStack
+        with ExitStack() as stack:
+            stack.enter_context(mock.patch.object(lifecycle.podman, "exists", return_value=True))
+            stack.enter_context(mock.patch.object(lifecycle, "ensure_runtime", return_value=runtime_dir))
+            stack.enter_context(mock.patch.object(lifecycle.supervisor, "install_workspace", return_value=[]))
+            stack.enter_context(mock.patch.object(lifecycle.podman, "run", side_effect=fake_run))
+            stack.enter_context(mock.patch.object(lifecycle.podman, "out", return_value=str(mountpoint)))
+            stack.enter_context(mock.patch.object(lifecycle, "load_profile", return_value=profile))
+            stack.enter_context(mock.patch.object(lifecycle, "layout_for", return_value=layout))
+            stack.enter_context(mock.patch.object(lifecycle, "prepare_clone"))
+            stack.enter_context(mock.patch.object(lifecycle, "render", return_value="acl x"))
+            stack.enter_context(mock.patch.object(lifecycle, "build_staging", return_value=0))
+            stack.enter_context(mock.patch.object(lifecycle, "ensure_ssh_key", return_value=key))
+            stack.enter_context(mock.patch.object(lifecycle, "ensure_keyring_service"))
+            stack.enter_context(mock.patch.object(lifecycle, "ensure_keyring_runtime_volume", return_value="asb-keyring-runtime"))
+            stack.enter_context(mock.patch.object(lifecycle, "ensure_credentials_volume", return_value=FAKE_CREDENTIALS_VOLUME))
+            stack.enter_context(mock.patch.object(lifecycle, "ensure_toolcache_volume", return_value="asb-test-toolcache"))
+            stack.enter_context(mock.patch.object(lifecycle.os.path, "expanduser", return_value=str(home)))
+            stack.enter_context(redirect_stderr(io.StringIO()))
             lifecycle.prepare_workspace(tmp / "root", ws, tmp / "origin")
         yield captured
 
@@ -801,7 +802,7 @@ class TestCredentialDirectoryMounts(unittest.TestCase):
         with prepare_workspace_harness("ws-mount-guard") as captured:
             pass
         self.assertTrue(captured["agent_args"])
-        self.assertEqual(captured["agent_args"][0], "run")
+        self.assertEqual(captured["agent_args"][0], "create")
         self.assertIn("asb-ws-mount-guard-agent", captured["agent_args"])
 
 

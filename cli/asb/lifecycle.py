@@ -441,8 +441,8 @@ def _sweep_containers(ws: str) -> None:
 def start_services(
     ws: str,
     profile: Profile,
-    cmd_action: str = "run",
-    restart: str = "unless-stopped",
+    cmd_action: str = "create",
+    restart: str = "no",
     tx: WorkspaceTransaction | None = None,
 ) -> dict[str, dict[str, str]]:
     n = names(ws)
@@ -472,8 +472,8 @@ def start_services(
 def start_forwarder(
     ws: str,
     profile: Profile,
-    cmd_action: str = "run",
-    restart: str = "unless-stopped",
+    cmd_action: str = "create",
+    restart: str = "no",
     tx: WorkspaceTransaction | None = None,
 ) -> str:
     """Encaminha SO as portas declaradas para o host."""
@@ -566,11 +566,20 @@ def _current_revision(root: Path) -> str:
     return "dev"
 
 
+def ensure_runtime(root: Path) -> Path:
+    """Instala o runtime versionado desta revisao e devolve o diretorio.
+
+    Emenda A: todo workspace e o keyring sao unidades systemd, e as unidades
+    executam `launcher.sh`, `runtime_check.py` e `network_gate.py` desse
+    diretorio, nunca do checkout.
+    """
+    return install_runtime(root, _current_revision(root))
+
+
 def prepare_workspace(
     root: Path,
     ws: str,
     repo: Path,
-    runtime: str = "legacy",
     tx: WorkspaceTransaction | None = None,
 ) -> None:
     """Prepara clone, redes, containers e manifesto sem restauracao global."""
@@ -578,7 +587,6 @@ def prepare_workspace(
         raise podman.PodmanError(
             f"imagem {IMAGE} ausente; execute 'asb-agent build'")
 
-    podman.ensure_rootless_netns()
     build_proxy(root)
     home = Path(os.path.expanduser("~"))
     profile = load_profile(repo)
@@ -604,9 +612,11 @@ def prepare_workspace(
         if tx:
             tx.record_network(n["out"])
 
-    cmd_action = "create" if runtime == "systemd" else "run"
-    cmd_flags = ["-d"] if cmd_action == "run" else []
-    restart_policy = "no" if runtime == "systemd" else "unless-stopped"
+    # Runtime unico (Emenda A): todo container ASB nasce parado e sem politica
+    # de reinicio do Podman; quem o inicia e reinicia e sempre o systemd.
+    cmd_action = "create"
+    cmd_flags: list[str] = []
+    restart_policy = "no"
 
     # 1. Proxy
     proxy_args = [
@@ -671,6 +681,7 @@ def prepare_workspace(
     for host_p, cont_p in profile.publish_ports:
         published.extend(["-p", f"127.0.0.1:{host_p}:{cont_p}"])
 
+    runtime_dir = ensure_runtime(root)
     ensure_keyring_service()
 
     agent_args = [
@@ -754,8 +765,8 @@ def prepare_workspace(
     manifest_data = {
         "schemaVersion": 1,
         "workspace": ws,
-        "runtime_type": runtime,
-        "runtime_backend": runtime,
+        "runtime_type": "systemd",
+        "runtime_backend": "systemd",
         "containers": manifest_containers,
     }
     for var in (
@@ -775,24 +786,19 @@ def prepare_workspace(
         manifest_data["keyring_container"] = os.environ["ASB_KEYRING_CONTAINER"]
     manifest_data["ssh_key"] = str(key)
 
-    if runtime == "systemd":
-        rev = _current_revision(root)
-        if (root / "cli" / "asb").is_dir():
-            install_runtime(root, rev)
-            manifest_data["revision"] = rev
+    manifest_data["revision"] = runtime_dir.name
 
     manifest_file = layout.state / "runtime.json"
     manifest_file.write_text(json.dumps(manifest_data, indent=2), encoding="utf-8")
 
-    # 7. Instalar unidades systemd se runtime gerenciado
-    if runtime == "systemd":
-        units = supervisor.install_workspace(ws, state_dir=layout.state)
-        if tx and isinstance(units, (list, tuple)):
-            for u in units:
-                tx.record_unit(u)
+    # 7. Instalar unidades systemd (runtime unico)
+    units = supervisor.install_workspace(ws, state_dir=layout.state)
+    if tx and isinstance(units, (list, tuple)):
+        for u in units:
+            tx.record_unit(u)
 
 
-def up(root: Path, ws: str, repo: Path, runtime: str = "legacy") -> int:
+def up(root: Path, ws: str, repo: Path) -> int:
     """Cria o workspace. Ou completa, ou nao deixa nada para tras.
 
     Falha em workspace existente NUNCA executa sweep destrutivo de containers preexistentes.
@@ -804,26 +810,28 @@ def up(root: Path, ws: str, repo: Path, runtime: str = "legacy") -> int:
         raise podman.PodmanError(
             f"workspace ja existe: {ws} (use 'resume', ou 'down' primeiro)")
 
+    # Emenda A §5: o drop-in legado do podman-restart criava o namespace
+    # rootless cedo em todo boot. Remocao idempotente e segura: so sai se o
+    # conteudo for exatamente o do projeto; drop-ins alheios ficam intactos.
+    if install.remove_project_dropin():
+        print("drop-in legado do podman-restart removido", file=sys.stderr)
+
+    # Emenda A §4: a espera de boot e sem limite, mas um `up` interativo sem
+    # rede ficaria preso em `systemctl start`. Falha antes de criar qualquer
+    # recurso, com sonda so do host: nao cria o namespace rootless.
+    host_res = readiness.wait_until(
+        lambda to: readiness.probe_host(timeout=to), timeout=30.0)
+    if host_res.state != "healthy":
+        raise podman.PodmanError(
+            f"sem conectividade real ({host_res.code}); conecte a rede e "
+            "rode 'asb-agent up' de novo")
+
     tx = WorkspaceTransaction(ws, is_existing=False)
     home = Path(os.path.expanduser("~"))
     layout = layout_for(repo, ws, home)
     try:
-        prepare_workspace(root, ws, repo, runtime=runtime, tx=tx)
-
-        if runtime == "systemd":
-            supervisor.start_workspace(ws, enable=True)
-        else:
-            # Apenas o ramo legacy usa --restart unless-stopped: a
-            # restauracao no boot e responsabilidade do
-            # podman-restart.service la. Em runtime systemd os containers
-            # sobem com --restart=no e quem reinicia recursos adotados e
-            # SEMPRE o systemd (constraint global). Fica fora de
-            # `prepare_workspace` de proposito: essa e uma acao global
-            # (politica de boot do host), e `prepare_workspace` existe para
-            # criar os recursos DESTE workspace sem restauracao global.
-            # Idempotente e barato; chamar aqui evita que o operador
-            # precise lembrar.
-            install.podman_restart()
+        prepare_workspace(root, ws, repo, tx=tx)
+        supervisor.start_workspace(ws, enable=True)
 
         # 1. Sonda de conectividade do proxy antes de operacoes que exigem rede (ex: mise install)
         proxy_res = readiness.wait_until(
@@ -866,8 +874,8 @@ def up(root: Path, ws: str, repo: Path, runtime: str = "legacy") -> int:
         raise
 
 
-def _up(root: Path, ws: str, repo: Path, runtime: str = "legacy") -> int:
-    return up(root, ws, repo, runtime=runtime)
+def _up(root: Path, ws: str, repo: Path) -> int:
+    return up(root, ws, repo)
 
 
 def emit(ws: str, layout: Layout, port: str | None = None) -> int:

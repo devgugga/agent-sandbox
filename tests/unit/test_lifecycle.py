@@ -69,6 +69,48 @@ class TestDiscoverMiseDirs(unittest.TestCase):
             self.assertEqual(dirs, [root, valid])
 
 
+class TestEmitDelegatesSerializationWithoutChangingTheContract(unittest.TestCase):
+    """Tarefa 3: `emit()` passou a delegar a serializacao a `ConnectionInfo`,
+    mas a linha que o recipe do Orca consome tem de continuar byte-a-byte a
+    mesma: as MESMAS quatro chaves, na MESMA ordem, com `port` como int, e
+    nenhum outro stdout no caminho."""
+
+    def test_emit_prints_the_exact_json_contract_and_nothing_else(self):
+        import contextlib
+        import getpass
+        import io
+        from cli.asb.lifecycle import emit
+        from cli.asb.workspace import Layout
+
+        fake_layout = Layout(ws="test-ws", project="proj",
+                             mount=Path("/tmp/fake-mount"),
+                             project_root=Path("/sandbox/repo"),
+                             state=Path("/tmp/fake-state"))
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            rc = emit("test-ws", fake_layout, port="2222")
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(
+            stdout.getvalue(),
+            '{"workspace": "test-ws", "port": 2222, "user": "'
+            f'{getpass.getuser()}", "project_root": "/sandbox/repo"}}\n')
+
+    def test_emit_never_makes_a_second_podman_port_call_when_port_is_supplied(self):
+        from unittest import mock
+        from cli.asb.lifecycle import emit
+        from cli.asb.workspace import Layout
+
+        fake_layout = Layout(ws="test-ws", project="proj",
+                             mount=Path("/tmp/fake-mount"),
+                             project_root=Path("/sandbox/repo"),
+                             state=Path("/tmp/fake-state"))
+        with mock.patch("cli.asb.lifecycle.podman.out") as mock_out:
+            rc = emit("test-ws", fake_layout, port="2222")
+        self.assertEqual(rc, 0)
+        mock_out.assert_not_called()
+
+
 class TestReloadAllowlist(unittest.TestCase):
     def test_reload_allowlist_renders_squid_and_restarts_proxy(self):
         from unittest import mock

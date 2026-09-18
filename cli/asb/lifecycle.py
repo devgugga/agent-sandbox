@@ -30,6 +30,7 @@ from .keyring import (
     ensure_keyring_service,
 )
 from .profile import Profile, load_profile
+from .runtime.connection import ConnectionInfo
 from .squid import render
 from .staging import build_staging
 from .workspace import (
@@ -904,9 +905,14 @@ def emit(ws: str, layout: Layout, port: str | None = None) -> int:
         resolved_port = mapping.splitlines()[0].rsplit(":", 1)[-1] if mapping else ""
     if not resolved_port:
         raise podman.PodmanError("nao foi possivel determinar a porta SSH")
-    print(json.dumps({"workspace": ws, "port": int(resolved_port), "user":
-                      getpass.getuser(),
-                      "project_root": str(layout.project_root)}))
+    # A serializacao e delegada a `ConnectionInfo` (Tarefa 3): mesmas quatro
+    # chaves, mesma ordem, mesmos tipos que o Orca ja consome. Um
+    # `staticmethod` em vez de construir um `ConnectionInfo` completo de
+    # proposito — este caminho nunca resolveu `host` nem `identity_file`
+    # (isso pediria uma nova chamada a `ensure_ssh_key`), e nao pode passar a
+    # resolver so para preencher um dataclass.
+    print(json.dumps(ConnectionInfo.lifecycle_payload(
+        ws, int(resolved_port), getpass.getuser(), layout.project_root)))
     return 0
 
 

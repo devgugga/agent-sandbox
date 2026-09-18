@@ -207,9 +207,22 @@ class ProjectRegistry:
         existente, intacto; senao cunha UM `CheckoutId` e o persiste junto
         com o nome de workspace deterministico do caminho. Nenhum chamador
         escolhe o workspace: ele vem de `workspace_id(path, {})` — nunca das
-        variaveis do Orca — e e validado antes de gravar."""
+        variaveis do Orca — e e validado antes de gravar.
+
+        Recusa, antes de qualquer escrita, um caminho de OUTRO repositorio:
+        o diretorio `.git` comum dele tem de ser o do projeto."""
         source_path = Path(source_path).resolve()
         workspace = _checkout_workspace(source_path)
+        project = self.get(project_id)
+        # Um registro antigo sem `gitCommonDir` e conferido contra o do
+        # primario, ao vivo: a checagem nunca e pulada.
+        expected = (project.git_common_dir
+                    or _git_common_dir(project.primary)).resolve()
+        actual = _git_common_dir(source_path).resolve()
+        if actual != expected:
+            raise ProjectRegistryError(
+                f"{source_path} belongs to another repository ({actual}), "
+                f"not to project {project_id} ({expected})")
 
         def mutate(entries: list[_ProjectEntry]) -> CheckoutBinding:
             for project, checkouts in entries:

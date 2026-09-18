@@ -25,6 +25,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TextIO
 
+from ..checkouts.git import BranchInfo, GitRepository
 from ..checkouts.model import CheckoutKind
 from ..projects.model import Project, ProjectId
 from ..runtime.sandbox import WorkspaceDiscovery, WorkspaceStatus
@@ -39,7 +40,6 @@ from .tui_model import (
 
 MIN_WIDTH = 40
 MIN_HEIGHT = 5
-GIT_TIMEOUT_SECONDS = 5.0
 _REASON_LIMIT = 120
 
 AGENTS = (AgentKind.CODEX, AgentKind.CLAUDE, AgentKind.ANTIGRAVITY)
@@ -54,40 +54,10 @@ HELP = ("j/k move  Enter open  n new  d stop  w worktree  f finish  "
 # -- leitura de branch (so chamada por refresh) --------------------------------
 
 
-@dataclass(frozen=True)
-class BranchInfo:
-    name: str
-    detached: bool
-
-
-def read_branch(path: Path, *,
-                run: Callable[..., subprocess.CompletedProcess] = subprocess.run
-                ) -> BranchInfo | None:
-    """Branch de `path`, ou o commit abreviado num HEAD destacado; `None`
-    em qualquer falha do Git (nunca levanta). Um Git que nem executa (sem
-    binario, timeout) nao ganha a segunda tentativa."""
-    def git(*args: str) -> subprocess.CompletedProcess | None:
-        try:
-            return run(["git", "-C", str(path), *args], shell=False,
-                       capture_output=True, text=True,
-                       timeout=GIT_TIMEOUT_SECONDS, check=False,
-                       stdin=subprocess.DEVNULL)
-        except (OSError, subprocess.SubprocessError):
-            return None
-
-    def value(result: subprocess.CompletedProcess | None) -> str | None:
-        if result is None or result.returncode != 0:
-            return None
-        return (result.stdout or "").strip() or None
-
-    result = git("symbolic-ref", "--short", "HEAD")
-    if result is None:
-        return None
-    name = value(result)
-    if name is not None:
-        return BranchInfo(name, False)
-    commit = value(git("rev-parse", "--short", "HEAD"))
-    return BranchInfo(commit, True) if commit is not None else None
+def read_branch(path: Path) -> BranchInfo | None:
+    """Branch de `path` pelo `GitRepository` (§C): a TUI nao monta argv de
+    Git. `None` em qualquer falha, nunca levanta."""
+    return GitRepository(path).branch()
 
 
 def run_child(argv: list[str]) -> int:

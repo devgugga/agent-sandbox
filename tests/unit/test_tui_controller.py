@@ -19,6 +19,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "cli"))
 
+from asb.checkouts.git import BranchInfo  # noqa: E402
 from asb.checkouts.model import CheckoutId  # noqa: E402
 from asb.interfaces import sessions, tui  # noqa: E402
 from asb.interfaces.tui_model import RowKind  # noqa: E402
@@ -166,7 +167,7 @@ class _Case(unittest.TestCase):
 
     def read_branch(self, path: Path):
         self.branch_reads.append(path)
-        return tui.BranchInfo(name=f"br-{path.name}", detached=False)
+        return BranchInfo(name=f"br-{path.name}", detached=False)
 
     def run_child(self, argv):
         self.events.append(("child", tuple(argv)))
@@ -587,50 +588,16 @@ class TestRunLoop(_Case):
 
 
 class TestReadBranch(unittest.TestCase):
-    def _run(self, *results):
-        calls = []
-        queue = list(results)
+    """O argv e as falhas moraram em `test_checkout_git.py` (§C); aqui so
+    a delegacao do default do controlador."""
 
-        def run(argv, **kwargs):
-            calls.append((argv, kwargs))
-            result = queue.pop(0)
-            if isinstance(result, BaseException):
-                raise result
-            return result
-
-        return calls, run
-
-    def test_reads_the_symbolic_ref_with_an_argv_and_a_timeout(self):
-        calls, run = self._run(subprocess.CompletedProcess([], 0, "main\n", ""))
-        self.assertEqual(tui.read_branch(Path("/r"), run=run),
-                         tui.BranchInfo("main", False))
-        argv, kwargs = calls[0]
-        self.assertEqual(argv, ["git", "-C", "/r", "symbolic-ref", "--short",
-                                "HEAD"])
-        self.assertIs(kwargs["shell"], False)
-        self.assertTrue(kwargs["capture_output"])
-        self.assertGreater(kwargs["timeout"], 0)
-
-    def test_a_detached_head_falls_back_to_the_short_commit(self):
-        calls, run = self._run(
-            subprocess.CompletedProcess([], 128, "", "not a symbolic ref"),
-            subprocess.CompletedProcess([], 0, "abc1234\n", ""))
-        self.assertEqual(tui.read_branch(Path("/r"), run=run),
-                         tui.BranchInfo("abc1234", True))
-        self.assertEqual(calls[1][0], ["git", "-C", "/r", "rev-parse",
-                                       "--short", "HEAD"])
-
-    def test_any_git_failure_is_an_unknown_branch(self):
-        for results in (
-                (subprocess.CompletedProcess([], 128, "", ""),
-                 subprocess.CompletedProcess([], 128, "", "")),
-                (FileNotFoundError("git"),),
-                (subprocess.TimeoutExpired("git", 5),),
-                (subprocess.CompletedProcess([], 0, "\n", ""),
-                 subprocess.CompletedProcess([], 0, "", ""))):
-            with self.subTest(results=results):
-                _, run = self._run(*results)
-                self.assertIsNone(tui.read_branch(Path("/r"), run=run))
+    def test_the_default_reads_through_the_git_repository(self):
+        info = BranchInfo("main", False)
+        with mock.patch.object(tui.GitRepository, "branch",
+                               autospec=True, return_value=info) as branch:
+            self.assertEqual(tui.read_branch(Path("/r")), info)
+        [call] = branch.call_args_list
+        self.assertEqual(call.args[0].path, Path("/r"))
 
 
 class TestCursesTerminal(unittest.TestCase):

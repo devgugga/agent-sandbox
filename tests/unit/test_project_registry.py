@@ -53,6 +53,12 @@ def _init_repo(path: Path) -> Path:
     return path
 
 
+def _linked_worktree(repo: Path, path: Path) -> Path:
+    """Um worktree vinculado REAL de `repo`, num branch novo."""
+    _run_git(["worktree", "add", "-q", "-b", path.name, str(path)], repo)
+    return path
+
+
 class ProjectRegistryTestCase(unittest.TestCase):
     def setUp(self) -> None:
         self._tempdir = tempfile.TemporaryDirectory()
@@ -338,7 +344,8 @@ class ConcurrencyAndIsolationTests(ProjectRegistryTestCase):
     def test_concurrent_registration_of_distinct_paths_loses_no_update(self):
         registry = self.registry()
         project = registry.add(self.repo, "main", self.worktree_root)
-        paths = [self.tmp / f"checkout-{i}" for i in range(20)]
+        paths = [_linked_worktree(self.repo, self.tmp / f"checkout-{i}")
+                 for i in range(20)]
 
         self._register_concurrently(project.id, paths)
 
@@ -423,7 +430,7 @@ class CheckoutBindingTests(ProjectRegistryTestCase):
     def test_two_paths_in_one_project_get_different_identities(self):
         registry = self.registry()
         project = registry.add(self.repo, "main", self.worktree_root)
-        other = self.tmp / "other-checkout"
+        other = _linked_worktree(self.repo, self.tmp / "other-checkout")
 
         first = registry.register_checkout(project.id, self.repo)
         second = registry.register_checkout(project.id, other)
@@ -449,10 +456,63 @@ class CheckoutBindingTests(ProjectRegistryTestCase):
     def test_checkout_looks_a_binding_up_by_its_stable_identity(self):
         registry = self.registry()
         project = registry.add(self.repo, "main", self.worktree_root)
-        registry.register_checkout(project.id, self.tmp / "first")
+        registry.register_checkout(
+            project.id, _linked_worktree(self.repo, self.tmp / "first"))
         wanted = registry.register_checkout(project.id, self.repo)
 
         self.assertEqual(registry.checkout(wanted.checkout_id), wanted)
+
+    def test_a_path_of_another_repository_is_refused_before_any_write(self):
+        registry = self.registry()
+        project = registry.add(self.repo, "main", self.worktree_root)
+        registry.register_checkout(project.id, self.repo)
+        before = self.registry_path.read_text(encoding="utf-8")
+        foreign = _init_repo(self.tmp / "foreign")
+
+        with self.assertRaises(ProjectRegistryError) as ctx:
+            registry.register_checkout(project.id, foreign)
+
+        self.assertIn("another repository", str(ctx.exception))
+        self.assertEqual(self.registry_path.read_text(encoding="utf-8"),
+                         before)
+
+    def test_a_path_that_is_not_a_checkout_is_refused_before_any_write(self):
+        registry = self.registry()
+        project = registry.add(self.repo, "main", self.worktree_root)
+        before = self.registry_path.read_text(encoding="utf-8")
+
+        for path in (self.tmp / "absent", self.tmp):
+            with self.subTest(path=path), \
+                    self.assertRaises(ProjectRegistryError):
+                registry.register_checkout(project.id, path)
+
+        self.assertEqual(self.registry_path.read_text(encoding="utf-8"),
+                         before)
+
+    def test_the_primary_and_a_linked_worktree_are_both_accepted(self):
+        registry = self.registry()
+        project = registry.add(self.repo, "main", self.worktree_root)
+        linked = _linked_worktree(self.repo, self.tmp / "linked")
+
+        primary = registry.register_checkout(project.id, self.repo)
+        worktree = registry.register_checkout(project.id, linked)
+
+        self.assertEqual(registry.bindings(project.id), [primary, worktree])
+        self.assertEqual(worktree.source_path, linked.resolve())
+
+    def test_a_record_without_common_dir_is_checked_against_the_primary(self):
+        registry = self.registry()
+        project = registry.add(self.repo, "main", self.worktree_root)
+        raw = json.loads(self.registry_path.read_text(encoding="utf-8"))
+        raw["projects"][0]["gitCommonDir"] = None
+        self.registry_path.write_text(json.dumps(raw), encoding="utf-8")
+        foreign = _init_repo(self.tmp / "foreign")
+
+        with self.assertRaises(ProjectRegistryError):
+            registry.register_checkout(project.id, foreign)
+        binding = registry.register_checkout(project.id, self.repo)
+
+        self.assertEqual(registry.bindings(project.id), [binding])
 
     def test_checkout_unknown_identity_raises(self):
         registry = self.registry()

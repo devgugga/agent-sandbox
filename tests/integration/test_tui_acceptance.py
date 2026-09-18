@@ -156,9 +156,10 @@ def _register_workspace(test: unittest.TestCase, sandbox: SandboxFixture,
     sandbox.register_volume(f"asb-{ws}-containers")
     home = Path(os.path.expanduser("~"))
     state_dir = home / ".local" / "state" / "agent-sandbox" / ws
-    test.addCleanup(shutil.rmtree, home / "asb-agent" / mount_name, True)
+    mount = home / "asb-agent" / mount_name
+    test.addCleanup(shutil.rmtree, mount, True)
     test.addCleanup(shutil.rmtree, state_dir, True)
-    return agent, state_dir
+    return agent, state_dir, mount
 
 
 def _row(controller: tui.TuiController, *, session_id: str | None = None,
@@ -199,8 +200,8 @@ class TestTuiAcceptance(unittest.TestCase):
             added = json.loads(out.getvalue())
             ws, checkout = added["workspace"], added["checkoutId"]
             self.assertTrue(ws.startswith(f"{sandbox.workspace}-"), ws)
-            agent, state_dir = _register_workspace(self, sandbox, ws,
-                                                   repo.name)
+            agent, state_dir, mount = _register_workspace(self, sandbox, ws,
+                                                          repo.name)
             self.assertFalse(sandbox._podman_exists("container", agent))
             user = getpass.getuser()
 
@@ -341,7 +342,14 @@ class TestTuiAcceptance(unittest.TestCase):
                 # Never relaunched: the dead pane is still the only one.
                 self.assertIs(terminal.probe(f"asb-{done}"), Liveness.DEAD)
 
-                # 6. Stop the rest.
+                # 6. A session renamed inside tmux (the operator's C-b $,
+                #    or the agent itself) is still found by its tag: it
+                #    probes ALIVE and stop reaches it.
+                _remote(connection, "tmux", "rename-session", "-t",
+                        f"=asb-{codex}", "renamed-by-operator")
+                self.assertIs(terminal.probe(f"asb-{codex}"), Liveness.ALIVE)
+
+                # 7. Stop the rest.
                 for sid in (codex, claude):
                     out = io.StringIO()
                     self.assertEqual(sessions.session_stop(
@@ -354,6 +362,9 @@ class TestTuiAcceptance(unittest.TestCase):
             self.assertEqual(res.returncode, 0, res.stderr)
             self.assertFalse(sandbox._podman_exists("container", agent))
             self.assertFalse(state_dir.exists())
+            # The purge itself removed the clone's mount directory, before
+            # the addCleanup safety net runs.
+            self.assertFalse(os.path.lexists(mount))
 
     def test_worktree_label_refusals_conflict_merge_and_cleanup(self) -> None:
         with SandboxFixture("tuiwt", auto_setup=False) as sandbox:
@@ -374,8 +385,8 @@ class TestTuiAcceptance(unittest.TestCase):
             binding = services.registry.checkout(checkout.id)
             ws = binding.workspace
             self.assertTrue(ws.startswith(f"{sandbox.workspace}-"), ws)
-            agent, state_dir = _register_workspace(self, sandbox, ws,
-                                                   worktree.name)
+            agent, state_dir, mount = _register_workspace(self, sandbox, ws,
+                                                          worktree.name)
             self.assertFalse(sandbox._podman_exists("container", agent))
             base = _git(primary, "rev-parse", "main")
 
@@ -517,6 +528,7 @@ class TestTuiAcceptance(unittest.TestCase):
                 self.assertNotIn(checkout.id,
                                  [r.checkout_id for r in controller.rows])
             self.assertFalse(state_dir.exists())
+            self.assertFalse(os.path.lexists(mount))
 
 
 if __name__ == "__main__":

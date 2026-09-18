@@ -499,6 +499,13 @@ class TestInspect(_Case):
         self.assertEqual(inspected.branch,
                          git(created.path, "rev-parse", "--short", "HEAD"))
 
+    def test_the_primary_kind_survives_an_unresolved_recorded_primary(self):
+        raw = json.loads(self.registry_text())
+        raw["projects"][0]["primary"] = str(self.repo / ".." / "repo")
+        self.registry.path.write_text(json.dumps(raw), encoding="utf-8")
+        self.assertEqual(self.manager().inspect(self.primary.checkout_id).kind,
+                         CheckoutKind.PRIMARY)
+
     def test_a_registered_path_git_does_not_list_is_an_error(self):
         sub = self.repo / "sub"
         sub.mkdir()

@@ -124,7 +124,8 @@ class CheckoutManager:
             state = CheckoutState.DETACHED
         return Checkout(
             id=binding.checkout_id, project_id=project.id, path=path,
-            kind=(CheckoutKind.PRIMARY if path == project.primary
+            kind=(CheckoutKind.PRIMARY
+                  if path.resolve() == project.primary.resolve()
                   else CheckoutKind.WORKTREE),
             branch=branch.name, state=state, workspace=binding.workspace)
 

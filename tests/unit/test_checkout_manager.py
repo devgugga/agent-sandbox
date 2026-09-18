@@ -11,6 +11,7 @@ from __future__ import annotations
 import asb_test_isolation  # noqa: F401  (guarda de isolamento da suite: nenhum volume real)
 
 import json
+import os
 import shutil
 import stat
 import subprocess
@@ -210,6 +211,36 @@ class TestRefusals(_Case):
         manager = CheckoutManager(self.registry, repository=self.repository,
                                   agent_root=self.tmp)
         self.assert_refused(self.request(), "agent-writable", manager)
+
+    def test_a_last_component_of_empty_or_dotdot_is_refused(self):
+        # `Path("/")` tem nome "" e `Path("<raiz>/..")` tem nome "..".
+        for path in (Path("/"), self.root / ".."):
+            with self.subTest(path=path):
+                self.assertIn(path.name, ("", ".."))
+                self.assert_refused(self.request(path=path),
+                                    "invalid worktree path")
+        self.assertFalse(self.root.exists())
+
+    def test_a_last_component_of_dot_cannot_be_constructed(self):
+        # Um "." final nunca chega a `_target`: o `Path` o descarta ao
+        # construir o caminho, seja por `/`, seja pela string.
+        for path in (self.root / ".", Path(f"{self.root}/."),
+                     Path(f"{self.root}/topic/.")):
+            with self.subTest(path=str(path)):
+                self.assertNotEqual(path.name, ".")
+
+    def test_a_target_inside_an_agent_mount_nested_in_the_root(self):
+        # A raiz NAO esta dentro do mount do agente, mas o mount esta
+        # dentro da raiz: o alvo passa pela checagem da raiz e cai na do
+        # mount.
+        agent_root = self.root / "agent"
+        manager = CheckoutManager(self.registry, repository=self.repository,
+                                  agent_root=agent_root)
+        target = agent_root / "topic"
+        self.assert_refused(self.request(path=target),
+                            f"{target} is inside the agent-writable mount",
+                            manager)
+        self.assertFalse(os.path.lexists(target))
 
     def test_a_project_record_of_another_repository(self):
         foreign = init_repo(self.tmp / "foreign")
@@ -447,6 +478,23 @@ class TestRollbackEdges(_Case):
         self.assertIn(f"left worktree {target}", str(ctx.exception))
         self.assertTrue(target.is_dir())
         self.assertIn("topic", self.branches())
+
+    def test_a_removal_git_refuses_keeps_the_branch_for_recovery(self):
+        # `git worktree remove` sai com codigo nao zero SEM levantar.
+        target = self.root / "topic"
+        self.faults[("worktree", "remove", str(target))] = (1, None)
+        with mock.patch.object(self.registry, "register_checkout",
+                               side_effect=ProjectRegistryError("disk full")), \
+                self.assertRaises(CheckoutError) as ctx:
+            self.manager().create(self.request())
+
+        message = str(ctx.exception)
+        self.assertIn("could not remove it", message)
+        self.assertIn(f"left worktree {target} and branch topic for manual "
+                      "recovery", message)
+        self.assertTrue(target.is_dir())
+        self.assertIn("topic", self.branches())
+        self.assertFalse(any(argv[3:4] == ["branch"] for argv in self.calls))
 
     def test_a_branch_deletion_git_refuses_is_reported(self):
         self.faults[("branch", "-D", "topic")] = (1, None)

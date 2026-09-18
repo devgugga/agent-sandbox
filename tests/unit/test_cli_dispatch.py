@@ -46,10 +46,24 @@ def _registered_commands(parser: argparse.ArgumentParser) -> set[str]:
     raise AssertionError("asb-agent nao expoe subcomandos")
 
 
-def _dispatched_commands(source: str) -> set[str]:
-    """Coleta os literais comparados contra `args.command`.
+def _nested_subcommands(
+        parser: argparse.ArgumentParser) -> dict[str, tuple[str, set[str]]]:
+    """{comando de topo: (dest do subparser aninhado, nomes registrados)}."""
+    nested: dict[str, tuple[str, set[str]]] = {}
+    for action in parser._actions:
+        if not isinstance(action, argparse._SubParsersAction):
+            continue
+        for name, sub in action.choices.items():
+            for inner in sub._actions:
+                if isinstance(inner, argparse._SubParsersAction):
+                    nested[name] = (inner.dest, set(inner.choices))
+    return nested
 
-    Restrito ao atributo `command`: `main()` tambem compara
+
+def _dispatched_commands(source: str, attr: str = "command") -> set[str]:
+    """Coleta os literais comparados contra `args.<attr>`.
+
+    Por padrao restrito ao atributo `command`: `main()` tambem compara
     `args.auth_command == "status"`, que e um subcomando aninhado do `auth`
     e nao um comando de topo.
     """
@@ -59,7 +73,7 @@ def _dispatched_commands(source: str) -> set[str]:
             continue
         left = node.left
         if not (isinstance(left, ast.Attribute)
-                and left.attr == "command"
+                and left.attr == attr
                 and isinstance(left.value, ast.Name)
                 and left.value.id == "args"):
             continue
@@ -105,6 +119,23 @@ class TestCliParserDispatchParity(unittest.TestCase):
         a intencao para quem le so este arquivo."""
         self.assertIn("connect", self.registered)
         self.assertIn("connect", self.dispatched)
+
+    def test_every_nested_command_is_registered_and_dispatched(self):
+        """Tarefa 9: a mesma paridade, nos dois sentidos, para cada
+        subcomando aninhado (`auth`, `project`, `session`): os nomes do
+        subparser contra os literais comparados com `args.<dest>`."""
+        nested = _nested_subcommands(self.module.build_parser())
+        self.assertEqual(set(nested), {"auth", "project", "session"})
+        for command, (dest, registered) in nested.items():
+            with self.subTest(command=command):
+                dispatched = _dispatched_commands(self.source, attr=dest)
+                self.assertTrue(dispatched, f"nenhum despacho de {dest}")
+                self.assertEqual(sorted(dispatched), sorted(registered))
+
+    def test_session_and_project_are_registered_and_dispatched(self):
+        for name in ("session", "project"):
+            self.assertIn(name, self.registered)
+            self.assertIn(name, self.dispatched)
 
     def test_login_is_registered_without_a_workspace_argument(self):
         """`lifecycle.login(ROOT)` nao recebe workspace: registrar `login`

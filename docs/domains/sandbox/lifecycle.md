@@ -127,3 +127,54 @@ keys are baked into the image once per build and shared by every
 workspace, and the published port is ephemeral and reused, so pinning a
 host key per `[127.0.0.1]:<port>` would hard-fail after a rebuild or a
 reused port. `connect` writes nothing to `~/.ssh/known_hosts`.
+
+---
+
+## 5. Persistent agent sessions
+
+An agent session is a provider process (`codex`, `claude`, `antigravity`)
+running in a tmux session inside a workspace, so it survives the operator
+closing the terminal. Control state lives in
+`~/.local/state/agent-sandbox/`: `projects.json` (projects and checkouts)
+and `sessions.json` (sessions). Both hold relationships only — never a
+prompt, model output or transcript.
+
+### Registering a checkout
+
+```bash
+asb-agent project add --repo <path> [--integration-branch <b>] [--worktree-root <dir>]
+```
+
+Registers the project and its primary checkout (the repository's primary
+working copy) and prints one schema-1 JSON line with `projectId`,
+`checkoutId`, `sourcePath` and `workspace`. The `checkoutId` is what the
+session commands take. Registering the same path again returns the same
+identity. Without `--integration-branch` the branch is discovered from
+`refs/remotes/origin/HEAD`, or the command fails. `--worktree-root`
+defaults to `<repo-name>-worktrees` next to the repository; worktree
+creation (Task 11 of the TUI plan) uses it. `project add` never creates a
+workspace.
+
+The workspace name is derived from the checkout path alone
+(`workspace_id(path, {})`), so a checkout always maps to the same
+workspace. A workspace created by Orca for the same repository carries a
+different name and is never adopted.
+
+### Session commands
+
+| Command | Effect | Touches a workspace |
+| :--- | :--- | :--- |
+| `session list [--checkout <id>] [--json]` | Reads `sessions.json` and prints one line per session (id, checkout id, agent, state, title), or `{"schemaVersion": 1, "sessions": [...]}` with the stored fields only | never — works offline; states are as last recorded |
+| `session start --checkout <id> --agent <codex\|claude\|antigravity> [--title <t>]` | Brings the checkout's workspace up if needed (`asb-agent up`, the same boundary Orca calls), then starts the agent in the sandbox checkout; prints `<session-id> <state>` | the only command that can start a workspace |
+| `session attach <session-id>` | Replaces the CLI process with `ssh` running `tmux attach-session -t =asb-<session-id>`; detach with `C-b d` and control returns to the calling shell. A session in `exited_resumable` is natively resumed first | live connection only |
+| `session stop <session-id>` | Ends the session (`completed`, never relaunched); prints `<session-id> <state>` | live connection only |
+| `session resume <session-id>` | Native resume of a dead but resumable session; prints `<session-id> <state>` | live connection only |
+
+`attach`, `stop` and `resume` resolve the live connection read-only, like
+`connect` (§4): a stopped workspace surfaces the same `PodmanError`, exit
+code 2, and the fix is `asb-agent resume --workspace <ws>`. `attach`
+refuses a session in `recovery_required`, `completed` or `failed` with a
+one-line message and exit code 2, without launching anything. `start`
+exits 2 when the terminal did not confirm a running session, and `resume`
+exits 2 when the session is not live afterwards. Registry, session-store
+and driver errors print one line on stderr and exit 2.

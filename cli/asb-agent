@@ -18,9 +18,14 @@ from asb.auth import login as auth_login  # noqa: E402
 from asb.auth import status as auth_status  # noqa: E402
 from asb.auth import verify as auth_verify  # noqa: E402
 from asb.doctor import doctor  # noqa: E402
+from asb.agents.base import ResumeUnsupported  # noqa: E402
 from asb.interfaces import cli  # noqa: E402
+from asb.interfaces import sessions as session_cli  # noqa: E402
 from asb.podman import PodmanError  # noqa: E402
 from asb.profile import ProfileError  # noqa: E402
+from asb.projects.registry import ProjectRegistryError  # noqa: E402
+from asb.sessions.model import AgentKind  # noqa: E402
+from asb.sessions.store import SessionStoreError  # noqa: E402
 from asb.workspace import WorkspaceError  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -86,6 +91,40 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("install-guards", help="instala asb-claude/codex/agy")
     sub.add_parser("install-broker", help="instala o broker do Docker (sudo)")
 
+    project_parser = sub.add_parser(
+        "project", help="registra projetos e checkouts (nunca cria workspace)")
+    project_sub = project_parser.add_subparsers(
+        dest="project_command", required=True)
+    project_add = project_sub.add_parser(
+        "add", help="registra o projeto e o checkout primario")
+    project_add.add_argument("--repo", required=True)
+    project_add.add_argument("--integration-branch")
+    project_add.add_argument(
+        "--worktree-root",
+        help="default: <repo>-worktrees ao lado do repositorio")
+
+    session_parser = sub.add_parser(
+        "session", help="sessoes persistentes de agente (tmux no workspace)")
+    session_sub = session_parser.add_subparsers(
+        dest="session_command", required=True)
+    session_list = session_sub.add_parser(
+        "list", help="lista as sessoes registradas (nao toca workspace)")
+    session_list.add_argument("--checkout")
+    session_list.add_argument(
+        "--json", action="store_true", dest="as_json",
+        help="emite a lista em formato JSON schema 1")
+    session_start = session_sub.add_parser(
+        "start", help="inicia uma sessao; sobe o workspace se preciso")
+    session_start.add_argument("--checkout", required=True)
+    session_start.add_argument(
+        "--agent", required=True, choices=[kind.value for kind in AgentKind])
+    session_start.add_argument("--title")
+    for name, help_text in (
+            ("attach", "anexa a sessao em tela cheia (desanexe com C-b d)"),
+            ("stop", "encerra a sessao"),
+            ("resume", "retoma a sessao nativamente")):
+        session_sub.add_parser(name, help=help_text).add_argument("session_id")
+
     return parser
 
 
@@ -131,6 +170,29 @@ def main() -> int:
             return install.guards(ROOT)
         if args.command == "install-broker":
             return install.broker(ROOT)
+        if args.command == "project":
+            services = session_cli.session_services(ROOT)
+            if args.project_command == "add":
+                return session_cli.project_add(
+                    args.repo, args.integration_branch, args.worktree_root,
+                    services=services)
+        if args.command == "session":
+            services = session_cli.session_services(ROOT)
+            if args.session_command == "list":
+                return session_cli.session_list(
+                    args.checkout, as_json=args.as_json, services=services)
+            if args.session_command == "start":
+                return session_cli.session_start(
+                    args.checkout, args.agent, args.title, services=services)
+            if args.session_command == "attach":
+                return session_cli.session_attach(
+                    args.session_id, services=services)
+            if args.session_command == "stop":
+                return session_cli.session_stop(
+                    args.session_id, services=services)
+            if args.session_command == "resume":
+                return session_cli.session_resume(
+                    args.session_id, services=services)
     except (ValueError, FileNotFoundError, RuntimeError) as error:
         print(f"asb-agent: {error}", file=sys.stderr)
         return 2
@@ -141,6 +203,12 @@ def main() -> int:
         # infraestrutura — podman ausente, volume que nao inspeciona, imagem
         # faltando —, e reporta-la como 1 mandava o operador procurar login
         # onde o problema era o podman.
+        print(f"asb-agent: {error}", file=sys.stderr)
+        return 2
+    except (ProjectRegistryError, SessionStoreError,
+            ResumeUnsupported) as error:
+        # Registro, store e driver de sessao: falha de estado local, nunca
+        # de conta — o mesmo 2 de infraestrutura.
         print(f"asb-agent: {error}", file=sys.stderr)
         return 2
     except (ProfileError, WorkspaceError) as error:

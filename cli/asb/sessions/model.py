@@ -83,6 +83,7 @@ class AgentSession:
     terminal_id: TerminalId | None
     provider_session_id: ProviderSessionId | None
     last_healthy_at: datetime | None
+    revision: int = 0
 
     @classmethod
     def new(cls, checkout_id: CheckoutId, agent: AgentKind, cwd: Path,

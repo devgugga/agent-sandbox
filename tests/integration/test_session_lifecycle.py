@@ -109,9 +109,14 @@ def _attach_in_pty(file: str, argv: list[str], captured: bytearray) -> int:
                 # teclas enviadas cedo demais caem no pane, nao no prefixo.
                 next_detach = time.monotonic() + 1.0
             if next_detach is not None and time.monotonic() >= next_detach:
-                os.write(master, b"\x02")
-                time.sleep(0.2)
-                os.write(master, b"d")
+                if proc.poll() is not None:
+                    break
+                try:
+                    os.write(master, b"\x02")
+                    time.sleep(0.2)
+                    os.write(master, b"d")
+                except OSError:  # EIO: o cliente ja saiu
+                    break
                 detached = True
                 next_detach = time.monotonic() + 3.0
         try:

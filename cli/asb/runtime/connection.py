@@ -97,8 +97,12 @@ def resolve_connection(workspace: str) -> "ConnectionInfo":
     mapping = podman.out("port", n["agent"], "22")
     raw_port = mapping.splitlines()[0].rsplit(":", 1)[-1] if mapping else ""
     if not raw_port:
+        # Um container parado (workspace suspenso) nao publica porta:
+        # `podman port` sai 0 sem saida, e o remedio e religa-lo.
         raise podman.PodmanError(
-            f"nao foi possivel determinar a porta SSH de {workspace}")
+            f"nao foi possivel determinar a porta SSH de {workspace}: o "
+            f"workspace pode estar suspenso; rode 'asb-agent resume "
+            f"--workspace {workspace}'")
     try:
         port = int(raw_port)
     except ValueError as exc:

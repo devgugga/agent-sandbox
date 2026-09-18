@@ -119,8 +119,9 @@ Any failure `resolve_connection` already raises for every other caller
 (container never created, origin lost, port unreadable, SSH key missing)
 surfaces unchanged as a `PodmanError`, exit code 2, same as the rest of
 this CLI. A workspace that was never created names `up` in that message; a
-missing SSH key names `resume`; a suspended (stopped) workspace surfaces
-the raw `podman port` failure — the fix is still `asb-agent resume`.
+missing SSH key names `resume`; a suspended (stopped) workspace publishes
+no port (`podman port` exits 0 with no output), and the message says the
+workspace may be suspended and names `asb-agent resume --workspace <ws>`.
 
 `connect` does not verify or record the host key, matching the policy
 `readiness.py` and `auth.py` already use for this same loopback SSH: host

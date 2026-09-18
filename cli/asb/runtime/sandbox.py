@@ -161,9 +161,10 @@ class SandboxRuntime:
         SSH ausente, origem perdida) significa workspace QUEBRADO, nao
         ausente, e tem de chegar ao chamador SEM disfarce — engoli-la e
         tentar `asb-agent up` so devolveria "workspace ja existe" e
-        esconderia o diagnostico real (achado de revisao, ronda 1). So
-        grava o vinculo no registro depois que `resolve_connection`
-        confirma a prontidao com evidencia ao vivo."""
+        esconderia o diagnostico real (achado de revisao, ronda 1). Nunca
+        escreve no registro: o vinculo checkout-workspace ja existe (criado
+        por `register_checkout`); a conexao so e devolvida depois que
+        `resolve_connection` confirma a prontidao com evidencia ao vivo."""
         from .. import lifecycle  # tardio: mesmo padrao de resolve_connection
 
         n = lifecycle.names(checkout.workspace)

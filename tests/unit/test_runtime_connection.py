@@ -207,9 +207,16 @@ class TestResolveConnectionFailureModes(unittest.TestCase):
                  mock.patch("asb.podman.out", return_value=""), \
                  mock.patch("asb.lifecycle.SSH_KEY", key):
                 with contextlib.redirect_stdout(stdout):
-                    with self.assertRaises(podman.PodmanError):
+                    with self.assertRaises(podman.PodmanError) as ctx:
                         resolve_connection("ws-1")
             self.assertEqual(stdout.getvalue(), "")
+            # M1: um container parado (suspenso) publica porta nenhuma e
+            # `podman port` sai 0 sem saida (medido); a mensagem nomeia o
+            # remedio.
+            self.assertIn("nao foi possivel determinar a porta SSH de ws-1",
+                          str(ctx.exception))
+            self.assertIn("rode 'asb-agent resume --workspace ws-1'",
+                          str(ctx.exception))
 
     def test_corrupt_port_raises(self):
         with tempfile.TemporaryDirectory() as tmp:

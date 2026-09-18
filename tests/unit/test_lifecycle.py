@@ -97,6 +97,8 @@ class TestEmitDelegatesSerializationWithoutChangingTheContract(unittest.TestCase
             f'{getpass.getuser()}", "project_root": "/sandbox/repo"}}\n')
 
     def test_emit_never_makes_a_second_podman_port_call_when_port_is_supplied(self):
+        import contextlib
+        import io
         from unittest import mock
         from cli.asb.lifecycle import emit
         from cli.asb.workspace import Layout
@@ -106,7 +108,8 @@ class TestEmitDelegatesSerializationWithoutChangingTheContract(unittest.TestCase
                              project_root=Path("/sandbox/repo"),
                              state=Path("/tmp/fake-state"))
         with mock.patch("cli.asb.lifecycle.podman.out") as mock_out:
-            rc = emit("test-ws", fake_layout, port="2222")
+            with contextlib.redirect_stdout(io.StringIO()):
+                rc = emit("test-ws", fake_layout, port="2222")
         self.assertEqual(rc, 0)
         mock_out.assert_not_called()
 

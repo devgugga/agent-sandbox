@@ -82,6 +82,17 @@ class TestConnectExecvpContract(unittest.TestCase):
         self.assertIn("sh -lc", remote)
         self.assertIn(
             "cd -- /sandbox/repo && exec ${SHELL:-/bin/bash} -l", remote)
+        # Achado de revisao (rodada 1, Important): as duas `assertIn` acima
+        # provam que as substrings certas aparecem em algum lugar, mas nao
+        # excluem conteudo extra de shell antes, depois ou entre elas — a
+        # unica prova de que "texto controlado nunca vira comando de shell"
+        # (spec #12) e igualdade exata da string INTEIRA que vira o ultimo
+        # argv. O literal abaixo foi confirmado a mao contra
+        # `shlex.join(("sh", "-lc", script))` antes de entrar no teste, nao
+        # recomputado com o mesmo `shlex` que a implementacao usa.
+        self.assertEqual(
+            remote,
+            "sh -lc 'cd -- /sandbox/repo && exec ${SHELL:-/bin/bash} -l'")
 
     def test_only_the_remote_path_is_shell_quoted(self):
         """Um `project_root` com espaco prova que so o caminho remoto passa
@@ -96,6 +107,20 @@ class TestConnectExecvpContract(unittest.TestCase):
 
         remote = calls[0][1][-1]
         self.assertIn("'/sandbox/repo with space'", remote)
+        # Achado de revisao (rodada 1, Important): igualdade exata da
+        # string inteira, escrita a mao (nao recomputada via `shlex.quote`/
+        # `shlex.join`, o mesmo caminho que a implementacao usa — isso nao
+        # provaria nada). `shlex.quote` envolve o caminho com espaco em
+        # aspas simples; como o `script` inteiro tambem tem aspas simples
+        # ao redor da instrucao `cd`, `shlex.join` escapa CADA aspa simples
+        # interna como `'"'"'` para produzir um unico argv valido de shell.
+        # Confirmado a mao rodando
+        # `shlex.join(("sh", "-lc", script))` fora do teste antes de
+        # colar aqui.
+        self.assertEqual(
+            remote,
+            "sh -lc 'cd -- '\"'\"'/sandbox/repo with space'\"'\"' && exec "
+            "${SHELL:-/bin/bash} -l'")
 
     def test_never_starts_a_local_shell_subprocess(self):
         """Guarda contra regressao: `connect` nunca chama `subprocess.*` nem

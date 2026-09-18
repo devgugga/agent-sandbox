@@ -68,8 +68,8 @@ with no operator present; enable it only as an explicit decision.
 | `suspend --workspace <id>` | Stops and **disables** the target: a suspended workspace stays stopped across reboots | everything |
 | `resume --workspace <id>` | Checks host connectivity (30 s), enables and starts the target, probes readiness, prints the same connection JSON | container IDs, SSH port, uncommitted work |
 | `reload-allowlist --workspace <id>` | Re-renders `squid.conf` from the operator's checkout and runs `systemctl --user try-restart` on the proxy unit; a suspended workspace picks it up on `resume` | agent container, SSH port |
-| `connect --workspace <id>` | Read-only: resolves the live connection and replaces the host process with `ssh` into a login shell (see §4) | everything |
 | `down --workspace <id>` | Removes units, containers, networks and the nested-containers volume | clone under `~/asb-agent/…`, git branches, the session volume |
+| `connect --workspace <id>` | Read-only: resolves the live connection and replaces the host process with `ssh` into a login shell (see §4) | everything |
 | `purge --workspace <id> --yes` | `down` plus the clone, workspace state and session volume | shared credentials |
 
 `up` and `resume` print JSON on stdout only after every probe passes; any

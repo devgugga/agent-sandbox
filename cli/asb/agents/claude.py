@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Iterable
 
 from asb.agents.base import AgentDriver, SessionEvidence
 from asb.sessions.model import AgentKind
@@ -34,9 +33,6 @@ class ClaudeDriver(AgentDriver):
         home = self._state_home if self._state_home is not None \
             else Path.home() / ".claude"
         return home / "projects" / _slugify(cwd)
-
-    def _list_paths(self, root: Path) -> Iterable[Path]:
-        return root.glob("*.jsonl")
 
     def discover_session_id(self, evidence: SessionEvidence) -> str | None:
         candidates = [p for p in evidence.new_paths if p.suffix == ".jsonl"]

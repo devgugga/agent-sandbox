@@ -58,10 +58,15 @@ class TestLaunchAndResumeArgv(unittest.TestCase):
             ClaudeDriver().resume(Path("/repo"), "abc").argv,
             ("claude", "--resume", "abc"))
 
-    def test_antigravity_resume_argv(self):
-        self.assertEqual(
-            AntigravityDriver().resume(Path("/repo"), "abc").argv,
-            ("agy", "--conversation", "abc"))
+    def test_antigravity_resume_raises_when_session_id_unprovable(self):
+        # session_id_provable=False e um fato ESTATICO da instalacao
+        # neste host (nenhum diretorio de estado local encontrado para
+        # `agy`): resume() recusa mesmo sem nunca ter sido probado, para
+        # nao prometer uma resumption que ninguem provou. O binario da
+        # imagem do container e o gate autoritativo real (ver
+        # docs/validation/2026-09-17-agent-session-contracts.md).
+        with self.assertRaises(ResumeUnsupported):
+            AntigravityDriver().resume(Path("/repo"), "abc")
 
     def test_claude_launch_argv(self):
         self.assertEqual(ClaudeDriver().launch(Path("/repo")).argv, ("claude",))
@@ -71,6 +76,23 @@ class TestLaunchAndResumeArgv(unittest.TestCase):
 
     def test_launch_returns_launch_command_type(self):
         self.assertIsInstance(CodexDriver().launch(Path("/repo")), LaunchCommand)
+
+
+class TestAntigravityResumeArgvOnceProvable(unittest.TestCase):
+    """A construcao do argv (`("agy", "--conversation", id)`) continua no
+    codigo, alcancavel assim que uma mudanca futura provar a fonte do
+    session-id do Antigravity e virar `session_id_provable` para `True`
+    (ver docs/validation/2026-09-17-agent-session-contracts.md). Esta
+    subclasse de teste e o que evita redescobrir esse argv depois do
+    checkpoint humano."""
+
+    def test_resume_argv_once_session_id_is_provable(self):
+        class _ProvenAntigravityDriver(AntigravityDriver):
+            session_id_provable = True
+
+        self.assertEqual(
+            _ProvenAntigravityDriver().resume(Path("/repo"), "abc").argv,
+            ("agy", "--conversation", "abc"))
 
 
 class TestResumeValidatesProviderSessionId(unittest.TestCase):
@@ -86,8 +108,12 @@ class TestResumeValidatesProviderSessionId(unittest.TestCase):
             ClaudeDriver().resume(Path("/repo"), "")
 
     def test_rejects_shell_metacharacters(self):
+        # Nao usa AntigravityDriver aqui: seu resume() recusa por
+        # ResumeUnsupported antes mesmo de validar o id (ver
+        # TestLaunchAndResumeArgv), entao a rama de ProviderSessionId
+        # invalido precisa de um driver com session_id_provable=True.
         with self.assertRaises(ValueError):
-            AntigravityDriver().resume(Path("/repo"), "abc;rm -rf")
+            ClaudeDriver().resume(Path("/repo"), "abc;rm -rf")
 
 
 class TestProbeMissingBinary(unittest.TestCase):

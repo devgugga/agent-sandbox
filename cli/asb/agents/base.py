@@ -118,6 +118,15 @@ class AgentDriver(ABC):
         return LaunchCommand(argv=(self.binary,))
 
     def resume(self, cwd: Path, session_id: str) -> LaunchCommand:
+        # session_id_provable e um fato ESTATICO do driver (nao depende de
+        # probe()): sem uma fonte de session-id comprovada, nao ha id
+        # confiavel para colocar neste argv, entao esta checagem roda em
+        # toda chamada, antes de qualquer outra coisa — mesmo num driver
+        # nunca probado.
+        if not self.session_id_provable:
+            raise ResumeUnsupported(
+                f"{self.kind}: fonte do session-id nao comprovada nesta "
+                f"instalacao")
         if not self._resume_confirmed:
             raise ResumeUnsupported(
                 f"{self.kind}: resume nao confirmado nesta instalacao")

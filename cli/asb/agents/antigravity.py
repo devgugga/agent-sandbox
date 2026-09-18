@@ -13,6 +13,7 @@ escopo desta tarefa).
 from __future__ import annotations
 
 import re
+from pathlib import Path
 
 from asb.agents.base import AgentDriver, SessionEvidence
 from asb.sessions.model import AgentKind
@@ -29,6 +30,12 @@ class AntigravityDriver(AgentDriver):
     # inexistentes). probe() nunca anuncia resume_supported=True aqui,
     # mesmo com a opcao presente no --help.
     session_id_provable = False
+
+    def _scan_root(self, cwd: Path) -> Path | None:
+        # Decisao explicita (ver docstring do modulo), nao apenas a
+        # heranca silenciosa do padrao da classe base: nenhum diretorio
+        # de estado local foi encontrado para `agy` neste host.
+        return None
 
     def discover_session_id(self, evidence: SessionEvidence) -> str | None:
         return None

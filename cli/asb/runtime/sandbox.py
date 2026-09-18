@@ -336,6 +336,11 @@ class SandboxRuntime:
                 problems.append(f"sandbox HEAD moved to {head[:12]} after "
                                 f"the export of {exported[:12]}")
             tips = [(head, "HEAD"), *sandbox.refs("refs/heads", "refs/stash")]
+            if any(ref == "refs/stash" for _, ref in tips):
+                # `for-each-ref` so ve a entrada mais nova do stash.
+                older = sandbox.reflog_commits("refs/stash")[1:]
+                tips += [(commit, f"stash@{{{index}}}")
+                         for index, commit in enumerate(older, start=1)]
             for commit, ref in tips:
                 if operator.commit(commit) is None:
                     problems.append(f"{ref} ({commit[:12]}) was never "

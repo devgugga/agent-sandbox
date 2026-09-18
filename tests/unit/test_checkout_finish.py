@@ -576,6 +576,25 @@ class TestCleanupAfterProof(_Case):
         git(self.sandbox, "stash", "push", "-q", "-m", "asb-test-stash")
         self._pending_on_guard(r"refs/stash \(\w+\) was never exported")
 
+    def test_an_older_stash_entry_is_not_purged(self):
+        # Duas entradas; a mais nova (a unica que `for-each-ref` ve) e
+        # levada ao `main`, entao so a mais antiga prova a perda.
+        for text in ("first", "second"):
+            (self.sandbox / "agent.txt").write_text(text, encoding="utf-8")
+            git(self.sandbox, "stash", "push", "-q", "-m", f"asb-test-{text}")
+        git(self.repo, "fetch", "-q", str(self.sandbox),
+            "refs/stash:refs/heads/stash-top")
+        git(self.repo, "merge", "-q", "--no-edit", "stash-top")
+        self._pending_on_guard(r"stash@\{1\} \(\w+\) was never exported")
+        self.assertNotRegex(self.finish(cleanup=True).message,
+                            r"refs/stash \(\w+\)")
+
+    def test_an_unreadable_stash_reflog_is_not_purged(self):
+        (self.sandbox / "agent.txt").write_text("edited", encoding="utf-8")
+        git(self.sandbox, "stash", "push", "-q", "-m", "asb-test-stash")
+        self.faults[("rev-list", "--walk-reflogs")] = 1
+        self._pending_on_guard("walk-reflogs failed")
+
     def test_sandbox_with_an_extra_worktree_is_not_purged(self):
         git(self.sandbox, "worktree", "add", "-q", "--detach",
             str(self.tmp / "sandbox" / "extra"))

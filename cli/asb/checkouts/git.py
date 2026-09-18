@@ -268,6 +268,17 @@ class GitRepository:
             found.append((commit, ref))
         return found
 
+    def reflog_commits(self, ref: str) -> list[str]:
+        """Commits do reflog de `ref`, do mais novo ao mais antigo. E como
+        se leem as entradas de `refs/stash` alem da primeira, que
+        `for-each-ref` nao lista. Levanta se nao da para ler."""
+        _refuse_option(ref)
+        result = self.run("rev-list", "--walk-reflogs", ref, "--")
+        if not result.ok:
+            raise GitError(f"git rev-list --walk-reflogs failed in "
+                           f"{self.path}: {result.reason()}")
+        return result.stdout.split()
+
     def unmerged_paths(self) -> list[str]:
         """Caminhos em conflito no indice (`ls-files -u`), sem repeticao."""
         result = self.run("ls-files", "-u", "-z")

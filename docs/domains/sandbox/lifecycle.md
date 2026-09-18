@@ -235,9 +235,9 @@ local branch (`git branch -d`, a refusal is reported), and remove the
 registry binding. Before the purge the sandbox must prove that nothing
 in it would be lost: a clean checkout (`git status` runs inside the
 sandbox, so an agent-set `core.fsmonitor` or filter never runs on the
-host), HEAD still equal to the export, every branch tip and `refs/stash`
-present in the operator repository and integrated, and no extra sandbox
-worktree. The purge runs `asb-agent purge --workspace <ws> --yes` and is
+host), HEAD still equal to the export, every branch tip and every stash
+entry (the whole `refs/stash` reflog) present in the operator repository
+and integrated, and no extra sandbox worktree. The purge runs `asb-agent purge --workspace <ws> --yes` and is
 accepted only when the sandbox is then absent.
 
 | Result | Meaning |

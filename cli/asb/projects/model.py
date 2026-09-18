@@ -28,3 +28,7 @@ class Project:
     primary: Path
     integration_branch: str
     worktree_root: Path
+    # Canonical `git rev-parse --git-common-dir` for `primary`. Optional so
+    # existing positional construction (id, primary, integration_branch,
+    # worktree_root) keeps working; the registry always fills it in.
+    git_common_dir: Path | None = None

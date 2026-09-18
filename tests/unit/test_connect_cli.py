@@ -138,6 +138,10 @@ class TestConnectParserRegistration(unittest.TestCase):
         stderr = io.StringIO()
         with self.assertRaises(SystemExit), contextlib.redirect_stderr(stderr):
             parser.parse_args(["connect"])
+        # Sem isto, este teste passaria mesmo se `--workspace` nunca
+        # tivesse sido exigido (por exemplo, se `connect` nem existisse no
+        # parser) — o mesmo padrao de `test_up_rejects_a_runtime_option`.
+        self.assertIn("--workspace", stderr.getvalue())
 
     def test_existing_commands_are_still_registered(self):
         """Guarda contra regressao: adicionar `connect` nao pode remover ou

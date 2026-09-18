@@ -17,7 +17,9 @@ autenticacao nesta etapa.
 """
 from __future__ import annotations
 
+import os
 import re
+import stat
 import subprocess
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -218,9 +220,31 @@ class AgentDriver(ABC):
         return None
 
     def _scan(self, root: Path | None) -> frozenset[Path]:
-        if root is None or not root.is_dir():
+        """So arquivos REGULARES, julgados por `lstat` (nunca seguindo
+        symlink). A raiz e gravavel pelo agente: um symlink, FIFO, socket
+        ou device ali nunca e candidato, e uma raiz (ou o `sessions_root`)
+        que virou symlink nao e varrida — o host leria outro diretorio."""
+        if root is None:
             return frozenset()
-        return frozenset(self._list_paths(root))
+        for directory in {root, self._sessions_root} - {None}:
+            if not _is_real_dir(directory):
+                return frozenset()
+        return frozenset(path for path in self._list_paths(root)
+                         if _is_regular_file(path))
 
     def _list_paths(self, root: Path) -> Iterable[Path]:
         return root.glob("*.jsonl")
+
+
+def _is_real_dir(path: Path) -> bool:
+    try:
+        return stat.S_ISDIR(os.lstat(path).st_mode)
+    except OSError:
+        return False
+
+
+def _is_regular_file(path: Path) -> bool:
+    try:
+        return stat.S_ISREG(os.lstat(path).st_mode)
+    except OSError:
+        return False

@@ -13,6 +13,11 @@ Codex viva no mesmo workspace pode aparecer durante a descoberta. Por isso
 so conta como candidato o arquivo cujo `payload.cwd` (string, caminho
 absoluto sem barra final) e o checkout de execucao desta sessao.
 
+O volume tambem e gravavel pelo AGENTE: a leitura abre sem seguir symlink
+(`O_NOFOLLOW`), sem bloquear num FIFO (`O_NONBLOCK`), exige arquivo
+regular (`fstat`) e le no maximo `_FIRST_LINE_LIMIT` bytes; uma primeira
+linha que nao cabe nisso nao da id.
+
 Dentro do sandbox, `$HOME/.codex/sessions` e o subpath `codex-sessions` do
 volume de sessao do workspace; o driver o le PELO HOST, pelo mountpoint do
 volume, via `sessions_root`. Sem `sessions_root` nao ha varredura: o
@@ -21,12 +26,17 @@ volume, via `sessions_root`. Sem `sessions_root` nao ha varredura: o
 from __future__ import annotations
 
 import json
+import os
 import re
+import stat
 from pathlib import Path, PurePosixPath
 from typing import Iterable
 
 from asb.agents.base import AgentDriver, SessionEvidence
 from asb.sessions.model import AgentKind
+
+# Teto da leitura da primeira linha (o `session_meta` medido tem ~1 KiB).
+_FIRST_LINE_LIMIT = 64 * 1024
 
 
 class CodexDriver(AgentDriver):
@@ -55,10 +65,8 @@ class CodexDriver(AgentDriver):
 def _session_id_for(path: Path, cwd: Path) -> str | None:
     """`payload.id` do `session_meta` na primeira linha de `path`, somente
     se `payload.cwd` e o checkout `cwd`; senao `None`."""
-    try:
-        with path.open("r", encoding="utf-8") as handle:
-            first_line = handle.readline()
-    except OSError:
+    first_line = _read_first_line(path)
+    if first_line is None:
         return None
     try:
         record = json.loads(first_line)
@@ -79,3 +87,26 @@ def _session_id_for(path: Path, cwd: Path) -> str | None:
     if isinstance(session_id, str) and session_id:
         return session_id
     return None
+
+
+def _read_first_line(path: Path) -> str | None:
+    """Primeira linha de um arquivo REGULAR, sem seguir symlink, sem
+    bloquear e lendo no maximo `_FIRST_LINE_LIMIT` bytes; `None` se o
+    caminho nao e arquivo regular, nao abre, ou a linha nao termina dentro
+    do teto."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except OSError:
+        return None
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None
+        data = os.read(fd, _FIRST_LINE_LIMIT)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+    line, newline, _rest = data.partition(b"\n")
+    if not newline:
+        return None
+    return line.decode("utf-8", errors="replace")

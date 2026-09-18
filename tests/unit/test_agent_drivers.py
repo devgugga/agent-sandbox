@@ -603,5 +603,152 @@ class TestNoHostDefaultScanRoot(unittest.TestCase):
             self.assertEqual(after.new_paths, frozenset())
             self.assertIsNone(driver.discover_session_id(after))
 
+
+class TestHostileSessionVolume(unittest.TestCase):
+    """O volume de sessao e gravavel pelo agente: um symlink, um FIFO ou uma
+    primeira linha gigante nunca viram candidato nem id, voltam logo e nao
+    levantam. Nenhum teste le `/dev/zero`; o FIFO so e aberto numa thread
+    daemon com prazo, destravada pelo proprio teste."""
+
+    META = {"type": "session_meta", "payload": {"cwd": "/repo", "id": "evil"}}
+
+    def _codex(self, tmp: str) -> tuple[Path, Path, CodexDriver]:
+        root = Path(tmp) / "codex-sessions"
+        outside = Path(tmp) / "outside"
+        root.mkdir()
+        outside.mkdir()
+        return root, outside, CodexDriver(sessions_root=root)
+
+    def _bounded(self, fn, unblock: Path | None = None):
+        """Roda `fn` numa thread daemon com prazo de 5 s. Se ela ficar presa
+        num FIFO, abre o lado de escrita para solta-la e falha o teste."""
+        import threading
+        box: dict[str, object] = {}
+
+        def target():
+            try:
+                box["value"] = fn()
+            except BaseException as exc:  # noqa: BLE001 - relatado abaixo
+                box["error"] = exc
+
+        thread = threading.Thread(target=target, daemon=True)
+        thread.start()
+        thread.join(5)
+        if thread.is_alive():
+            if unblock is not None:
+                import os
+                fd = os.open(unblock, os.O_WRONLY | os.O_NONBLOCK)
+                os.close(fd)
+            thread.join(5)
+            self.fail("discovery blocked on a FIFO in the session volume")
+        if "error" in box:
+            raise box["error"]
+        return box.get("value")
+
+    def test_codex_symlink_to_a_file_outside_the_root_is_not_a_candidate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, outside, driver = self._codex(tmp)
+            target = outside / "real.jsonl"
+            target.write_text(json.dumps(self.META) + "\n")
+            baseline = driver.capture_before(Path("/repo"))
+            (root / "evil.jsonl").symlink_to(target)
+            after = driver.capture_after(baseline)
+            self.assertEqual(after.new_paths, frozenset())
+            self.assertIsNone(driver.discover_session_id(after))
+
+    def test_codex_symlink_to_endless_content_is_not_read(self):
+        # Um arquivo regular grande, sem quebra de linha, FORA da raiz,
+        # faz o papel de `/dev/zero` sem nunca le-lo.
+        with tempfile.TemporaryDirectory() as tmp:
+            root, outside, driver = self._codex(tmp)
+            big = outside / "zero"
+            with big.open("wb") as handle:
+                handle.truncate(64 * 1024 * 1024)
+            baseline = driver.capture_before(Path("/repo"))
+            (root / "evil.jsonl").symlink_to(big)
+            after = driver.capture_after(baseline)
+            self.assertEqual(after.new_paths, frozenset())
+            evidence = SessionEvidence(scan_root=root,
+                                       new_paths=frozenset({root / "evil.jsonl"}),
+                                       cwd=Path("/repo"))
+            # Mesmo entregue direto a descoberta, o symlink nao e seguido.
+            self.assertIsNone(driver.discover_session_id(evidence))
+
+    def test_codex_fifo_is_not_a_candidate_and_never_blocks(self):
+        import os
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _outside, driver = self._codex(tmp)
+            baseline = driver.capture_before(Path("/repo"))
+            fifo = root / "evil.jsonl"
+            os.mkfifo(fifo)
+            after = driver.capture_after(baseline)
+            self.assertEqual(after.new_paths, frozenset())
+            evidence = SessionEvidence(scan_root=root,
+                                       new_paths=frozenset({fifo}),
+                                       cwd=Path("/repo"))
+            # Mesmo entregue direto a descoberta, o FIFO nao trava.
+            self.assertIsNone(self._bounded(
+                lambda: driver.discover_session_id(evidence), unblock=fifo))
+
+    def test_codex_oversized_first_line_yields_no_id(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root, _outside, driver = self._codex(tmp)
+            baseline = driver.capture_before(Path("/repo"))
+            record = {"type": "session_meta",
+                      "payload": {"cwd": "/repo", "id": "evil",
+                                  "pad": "x" * (128 * 1024)}}
+            (root / "big.jsonl").write_text(json.dumps(record) + "\n")
+            after = driver.capture_after(baseline)
+            self.assertIsNone(driver.discover_session_id(after))
+
+    def test_codex_scan_root_that_is_a_symlink_is_not_scanned(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            outside = Path(tmp) / "outside"
+            outside.mkdir()
+            root = Path(tmp) / "codex-sessions"
+            root.symlink_to(outside)
+            driver = CodexDriver(sessions_root=root)
+            baseline = driver.capture_before(Path("/repo"))
+            (outside / "host.jsonl").write_text(json.dumps(self.META) + "\n")
+            after = driver.capture_after(baseline)
+            self.assertEqual(after.new_paths, frozenset())
+            self.assertIsNone(driver.discover_session_id(after))
+
+    def test_claude_fifo_or_symlink_named_like_a_session_is_not_a_candidate(self):
+        import os
+        with tempfile.TemporaryDirectory() as tmp:
+            outside = Path(tmp) / "outside"
+            outside.mkdir()
+            (outside / "x.jsonl").write_text("{}\n")
+            driver = ClaudeDriver(sessions_root=Path(tmp) / "claude-projects")
+            for make in (lambda p: os.mkfifo(p),
+                         lambda p: p.symlink_to(outside / "x.jsonl")):
+                with self.subTest(make=make):
+                    baseline = driver.capture_before(Path("/repo"))
+                    baseline.scan_root.mkdir(parents=True, exist_ok=True)
+                    baseline = driver.capture_before(Path("/repo"))
+                    evil = (baseline.scan_root
+                            / "00000000-0000-4000-8000-00000000000e.jsonl")
+                    make(evil)
+                    after = driver.capture_after(baseline)
+                    self.assertEqual(after.new_paths, frozenset())
+                    self.assertIsNone(driver.discover_session_id(after))
+                    evil.unlink()
+
+    def test_claude_project_dir_that_is_a_symlink_is_not_scanned(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            outside = Path(tmp) / "outside"
+            outside.mkdir()
+            sessions_root = Path(tmp) / "claude-projects"
+            sessions_root.mkdir()
+            driver = ClaudeDriver(sessions_root=sessions_root)
+            baseline = driver.capture_before(Path("/repo"))
+            baseline.scan_root.symlink_to(outside)
+            (outside / "00000000-0000-4000-8000-00000000000f.jsonl"
+             ).write_text("{}\n")
+            after = driver.capture_after(baseline)
+            self.assertEqual(after.new_paths, frozenset())
+            self.assertIsNone(driver.discover_session_id(after))
+
 if __name__ == "__main__":
     unittest.main()

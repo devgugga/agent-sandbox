@@ -41,10 +41,14 @@ class CheckoutError(Exception):
 
 @dataclass(frozen=True)
 class CreateCheckout:
+    """`base_commit` e o commit que a previa mostrou e o operador
+    confirmou; `create` recusa se a base nao aponta mais para ele."""
+
     project_id: ProjectId
     branch: str
     base: str
     path: Path
+    base_commit: str | None = None
 
 
 @dataclass(frozen=True)
@@ -70,6 +74,13 @@ class ListedCheckout:
     binding: CheckoutBinding | None
     worktree: Worktree | None
     missing: bool
+
+
+def checkout_kind(project: Project, path: Path) -> CheckoutKind:
+    """`PRIMARY` quando `path` e o checkout primario, comparando caminhos
+    RESOLVIDOS: a TUI e `inspect` usam esta mesma regra."""
+    return (CheckoutKind.PRIMARY if path.resolve() == project.primary.resolve()
+            else CheckoutKind.WORKTREE)
 
 
 class CheckoutManager:
@@ -124,9 +135,7 @@ class CheckoutManager:
             state = CheckoutState.DETACHED
         return Checkout(
             id=binding.checkout_id, project_id=project.id, path=path,
-            kind=(CheckoutKind.PRIMARY
-                  if path.resolve() == project.primary.resolve()
-                  else CheckoutKind.WORKTREE),
+            kind=checkout_kind(project, path),
             branch=branch.name, state=state, workspace=binding.workspace)
 
     # -- criacao ------------------------------------------------------------------
@@ -209,6 +218,15 @@ class CheckoutManager:
                 raise CheckoutError(
                     f"branch {branch} or path {target} appeared before "
                     "creation; nothing was created")
+            # A base resolvida de novo, logo antes do comando, tem de ser o
+            # commit que o operador confirmou na previa.
+            confirmed = request.base_commit or preview.base_commit
+            current = git.commit(preview.base)
+            if current != confirmed:
+                raise CheckoutError(
+                    f"base {preview.base} moved from {confirmed} to "
+                    f"{current} since the preview; nothing was created, "
+                    "preview again")
             result = git.worktree_add(branch, target, preview.base)
         except GitError as exc:
             raise CheckoutError(str(exc)) from exc

@@ -22,7 +22,8 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "cli"))
 
 from asb.checkouts.git import (  # noqa: E402
-    BranchInfo, GitError, GitRepository, Worktree, parse_worktrees,
+    BranchInfo, GitError, GitRepository, GitResult, Worktree,
+    parse_worktrees,
 )
 from asb.checkouts.model import CheckoutState  # noqa: E402
 
@@ -210,6 +211,34 @@ class TestBranchRunner(unittest.TestCase):
         _, run = self._runner(FileNotFoundError("git"))
         with self.assertRaises(GitError):
             GitRepository(Path("/r"), runner=run).run("status")
+
+
+class TestFailureReason(unittest.TestCase):
+    """Rodada 1: o motivo de uma falha e a causa, nunca o progresso."""
+
+    def test_the_progress_line_alone_is_never_the_reason(self):
+        result = GitResult(128, "", "Preparing worktree (new branch 'x')\n")
+        self.assertEqual(result.reason(), "git exited with code 128")
+
+    def test_fatal_and_error_lines_come_first_then_other_output(self):
+        result = GitResult(3, "", "Preparing worktree (new branch 'x')\n"
+                                  "hook: lint failed\n"
+                                  "fatal: boom\n"
+                                  "error: bang\n")
+        self.assertEqual(result.reason(),
+                         "fatal: boom; error: bang; hook: lint failed")
+
+    def test_the_reason_is_bounded_and_has_no_control_characters(self):
+        result = GitResult(1, "", "fatal: \x1b[2J" + "x" * 1000 + "\n")
+        reason = result.reason()
+        self.assertLessEqual(len(reason), 300)
+        self.assertTrue(reason.startswith("fatal: ?[2Jx"))
+        self.assertFalse(any(ord(ch) < 32 or 127 <= ord(ch) < 160
+                             for ch in reason))
+
+    def test_an_empty_stderr_is_the_exit_code(self):
+        self.assertEqual(GitResult(1, "", "\n").reason(),
+                         "git exited with code 1")
 
 
 class TestStatus(_RepoCase):

@@ -32,8 +32,9 @@ from pathlib import Path
 from typing import TextIO
 
 from ..checkouts.git import BranchInfo, GitRepository
-from ..checkouts.manager import CheckoutManager, CreateCheckout, CreatePreview
-from ..checkouts.model import CheckoutKind
+from ..checkouts.manager import (
+    CheckoutManager, CreateCheckout, CreatePreview, checkout_kind,
+)
 from ..projects.model import Project, ProjectId
 from ..runtime.sandbox import WorkspaceDiscovery, WorkspaceStatus
 from ..sessions.model import AgentKind, AgentSession, SessionState
@@ -270,8 +271,7 @@ class TuiController:
         view = CheckoutView(
             checkout_id=binding.checkout_id, project_id=project.id,
             source_path=binding.source_path, workspace=binding.workspace,
-            kind=(CheckoutKind.PRIMARY if binding.source_path == project.primary
-                  else CheckoutKind.WORKTREE),
+            kind=checkout_kind(project, binding.source_path),
             status=found.status,
             branch=branch.name if branch is not None else None,
             detached=branch.detached if branch is not None else False,
@@ -457,7 +457,9 @@ class TuiController:
             return
         self.prompt = Prompt(
             "create this worktree? y create  (other key cancels)",
-            {"y": lambda: self._worktree_create(request)},
+            # O create fica preso ao commit que o operador viu.
+            {"y": lambda: self._worktree_create(
+                replace(request, base_commit=preview.base_commit))},
             detail=_preview_lines(preview))
 
     def _worktree_create(self, request: CreateCheckout) -> None:

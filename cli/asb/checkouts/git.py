@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,6 +26,13 @@ from .model import CheckoutState
 GIT_TIMEOUT_SECONDS = 10.0
 _HEADS = "refs/heads/"
 _ORIGIN = "refs/remotes/origin/"
+# Progresso que o Git escreve no stderr mesmo quando o comando falha
+# (`worktree add` sempre abre com "Preparing worktree (...)").
+_PROGRESS = ("Preparing worktree", "Updating files:", "HEAD is now at")
+_REASON_LIMIT = 300
+# Mesmas categorias de `interfaces.tui_model.sanitize`: C0/C1/DEL,
+# formatacao invisivel, separadores de linha/paragrafo, surrogates.
+_UNSAFE_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp", "Cs"})
 
 
 class GitError(Exception):
@@ -42,11 +50,20 @@ class GitResult:
         return self.returncode == 0
 
     def reason(self) -> str:
-        """Primeira linha nao vazia do stderr, ou o codigo de saida."""
-        for line in self.stderr.splitlines():
-            if line.strip():
-                return line.strip()
-        return f"git exited with code {self.returncode}"
+        """A causa de uma falha: as linhas `fatal:`/`error:` do stderr
+        primeiro, depois qualquer outra (a saida de um hook), nunca uma
+        linha de progresso como `Preparing worktree` sozinha. Limitada e
+        sem caracteres de controle; sem causa, o codigo de saida."""
+        lines = [line.strip() for line in self.stderr.splitlines()]
+        lines = [line for line in lines
+                 if line and not line.startswith(_PROGRESS)]
+        causes = [line for line in lines
+                  if line.startswith(("fatal:", "error:"))]
+        others = [line for line in lines if line not in causes]
+        text = "; ".join(causes + others)
+        if not text:
+            return f"git exited with code {self.returncode}"
+        return _printable(text)[:_REASON_LIMIT]
 
 
 @dataclass(frozen=True)
@@ -243,6 +260,11 @@ def _decode(data: bytes | str | None) -> str:
     if data is None:
         return ""
     return data if isinstance(data, str) else os.fsdecode(data)
+
+
+def _printable(text: str) -> str:
+    return "".join("?" if unicodedata.category(ch) in _UNSAFE_CATEGORIES
+                   else ch for ch in text)
 
 
 def _refuse_option(value: str) -> None:

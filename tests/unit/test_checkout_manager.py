@@ -260,6 +260,56 @@ class TestTransaction(_Case):
         self.assertIn("removed branch topic", str(ctx.exception))
         self.assert_nothing_registered(before)
 
+    def test_the_real_git_cause_reaches_the_operator(self):
+        # Rodada 1: `worktree add` imprime "Preparing worktree" primeiro;
+        # a causa e a linha `fatal:` que vem depois.
+        self.root.mkdir(mode=0o700)
+        (self.root / "file").write_text("x", encoding="utf-8")
+        with self.assertRaises(CheckoutError) as ctx:
+            self.manager().create(
+                self.request(path=self.root / "file" / "topic"))
+        message = str(ctx.exception)
+        self.assertIn("fatal: could not create leading directories", message)
+        self.assertNotIn("Preparing worktree", message)
+
+    def test_a_failing_hook_message_reaches_the_operator(self):
+        hook = self.repo / ".git" / "hooks" / "post-checkout"
+        hook.write_text("#!/bin/sh\necho 'hook: lint failed' >&2\nexit 3\n",
+                        encoding="utf-8")
+        hook.chmod(0o755)
+        with self.assertRaises(CheckoutError) as ctx:
+            self.manager().create(self.request())
+        message = str(ctx.exception)
+        self.assertIn("hook: lint failed", message)
+        self.assertNotIn("Preparing worktree", message)
+        self.assertIn(f"left {self.root / 'topic'}", message)
+
+    def test_a_base_that_moved_after_the_preview_is_refused(self):
+        manager = self.manager()
+        preview = manager.preview(self.request())
+        self.commit_on(self.repo, "moved.txt")  # main anda depois da previa
+        before = self.registry_text()
+
+        with self.assertRaises(CheckoutError) as ctx:
+            manager.create(replace(self.request(),
+                                   base_commit=preview.base_commit))
+
+        self.assertIn("moved", str(ctx.exception))
+        self.assertIn(preview.base_commit, str(ctx.exception))
+        self.assertFalse((self.root / "topic").exists())
+        self.assertNotIn("topic", self.branches())
+        self.assertFalse(any(argv[3:5] == ["worktree", "add"]
+                             for argv in self.calls))
+        self.assert_nothing_registered(before)
+
+    def test_the_confirmed_base_commit_is_used_when_it_still_matches(self):
+        manager = self.manager()
+        preview = manager.preview(self.request())
+        checkout = manager.create(replace(self.request(),
+                                          base_commit=preview.base_commit))
+        self.assertEqual(git(checkout.path, "rev-parse", "HEAD"),
+                         preview.base_commit)
+
     def test_a_branch_not_at_the_base_is_not_proven_ours_and_is_kept(self):
         other = self.commit_on(self.repo, "moved.txt")
         git(self.repo, "reset", "-q", "--hard", self.base_commit)

@@ -14,6 +14,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from unittest import mock
 
@@ -228,6 +229,21 @@ class TestRefresh(_Case):
         self.assertIn("br-topic (host)", rows["c:c-wt"].text)
         self.assertIn("[primary]", rows["c:c-pri"].text)
         self.assertIn("[worktree]", rows["c:c-wt"].text)
+
+    def test_a_primary_reached_through_a_symlink_is_still_primary(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        real = Path(tmp.name).resolve() / "alpha"
+        real.mkdir()
+        link = Path(tmp.name).resolve() / "alpha-link"
+        link.symlink_to(real)
+        self.projects[0] = replace(self.projects[0], primary=link)
+        self.bindings[C_PRI] = CheckoutBinding(C_PRI, PROJECT, real, "ws-pri")
+        self.discovered[PROJECT] = [WorkspaceDiscovery(
+            self.bindings[C_PRI], WorkspaceStatus.ABSENT)]
+        ctl = self.controller()
+        rows = {row.key: row for row in ctl.rows}
+        self.assertIn("[primary]", rows["c:c-pri"].text)
 
     def test_reconciles_only_ready_checkouts_that_have_sessions(self):
         pri = self.stored(C_PRI)
@@ -608,7 +624,9 @@ class TestNewWorktree(_Case):
 
         tui.handle_key(ctl, ord("y"))
 
-        self.checkouts.create.assert_called_once_with(request)
+        # Rodada 1: o create carrega o commit que o operador confirmou.
+        self.checkouts.create.assert_called_once_with(
+            replace(request, base_commit=BASE_COMMIT))
         self.runtime.discover.assert_called_once()  # refresh depois
         self.runtime.ensure.assert_not_called()  # runtime continua preguicoso
         self.assertIsNone(ctl.prompt)

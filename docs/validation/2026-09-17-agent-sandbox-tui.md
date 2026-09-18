@@ -174,6 +174,26 @@ the workspace for diagnosis.
 | 5 | External merge enables cleanup. | **pending — to be filled by the operator** |
 | 6 | Dirty state and an active session each block cleanup. | **pending — to be filled by the operator** |
 | 7 | Existing Orca create/resume hooks still connect. | **pending — to be filled by the operator** |
+| 8 | Provider session ID and native resume with a real Codex (steps below). | **pending — to be filled by the operator** |
+
+Observation 8, step by step, on the disposable workspace:
+
+1. `asb-agent session start --checkout <id> --agent codex`, then
+   `asb-agent session attach <session-id>`.
+2. Send one short prompt that needs no tool use, then detach with `C-b d`.
+3. `asb-agent session list --json`: record whether the session has a
+   `providerSessionId`.
+4. End the process without `session stop`: stop the workspace container
+   (`asb-agent suspend --workspace <ws>` then `asb-agent resume
+   --workspace <ws>`) or kill the pane from inside tmux.
+5. Refresh the TUI (`r`): record whether the row becomes
+   `exited_resumable`.
+6. Press Enter on it: record whether Codex resumes the SAME conversation
+   (the earlier prompt is in its history).
+
+If step 3 shows no ID, the provider creates its session file lazily and
+the discovery bounded to the first five seconds after launch never sees
+it (see §5); record that as the finding rather than a pass.
 
 Items the pilot is also the only evidence for (carried from Tasks 4, 8 and
 10): the real curses suspend/restore around an attach, a real provider's
@@ -184,7 +204,9 @@ with a real terminal.
 
 ## 5. Known limitations and deferred items
 
-Drawn from the controller's ledger; none is fixed by this task.
+Drawn from the controller's ledger; none is fixed by this task. The
+final review's fix wave (after this report was first written) fixed some
+items that were listed here; they are marked **fixed in the fix wave**.
 
 **Spec divergence to ratify: external-merge detection (spec §10.4)**
 
@@ -200,8 +222,12 @@ full finish, which exports and merges (a no-op merge) before cleaning up.
 Task 12 chose this on purpose: when the work lives only in the sandbox,
 the operator worktree's `HEAD` is still the base commit and is always
 contained in `main`, so a `HEAD`-only check would label every untouched
-worktree as merged. The controller should ratify this divergence or
-change the spec.
+worktree as merged. The controller ratified this divergence. **Fixed in
+the fix wave:** one exception, when the sandbox is positively absent
+(never created, or purged by hand) there is no sandbox work to lose, so a
+clean worktree whose own HEAD is in the integration branch is labelled
+and cleaned without an export ref, and `f` offers cleanup instead of
+finish.
 
 **Security (needs a human decision)**
 
@@ -227,9 +253,13 @@ change the spec.
 
 - The `merged / cleanup available` label and its direct cleanup always
   target the integration branch.
-- A provider that creates its session file only after the first prompt
-  leaves the session with no provider ID; after a restart it becomes
-  `recovery_required`, not natively resumed.
+- Provider-ID discovery runs only during the first five seconds after
+  launch, which always ends before the operator's first prompt. If a
+  provider creates its session file only when the first message is sent,
+  today's code stores no provider ID for that session, and native resume
+  will not happen: after its process ends the session becomes
+  `recovery_required`, never `exited_resumable`. Pilot observation 8
+  decides whether a lazy discovery is needed; none is built yet.
 - A split pane or extra tmux window keeps a session at `recovery_required`
   until the extra pane is gone (scenario 4).
 - After a workspace container is recreated (not merely restarted), the
@@ -243,17 +273,27 @@ change the spec.
   local branch (its name is not stored).
 - Antigravity has no proven session-ID source: it never resumes natively.
 - `session start` blocks the TUI while the workspace comes up.
-- `cli/asb-agent` imports the TUI, and so `curses`, at top level: every
-  command, including the `up`/`resume` calls Orca makes, would fail on a
-  Python built without `_curses`.
+- **Fixed in the fix wave:** `cli/asb-agent` imported the TUI, and so
+  `curses`, at top level; it now imports it only for `tui`, which exits 2
+  with a clear message on a Python without `_curses`.
+
+**Deliberate v1 limits**
+
+- `suspend` has no CLI or TUI session action; `session stop` and `d`
+  end a session.
+- `session resume` is CLI-only; in the TUI, Enter resumes an
+  `exited_resumable` session.
+- Adding a project is CLI-only (`asb-agent project add`).
+- After a container restart, native resume is operator-triggered (Enter
+  or `session resume`), not automatic: a divergence from spec §11.2
+  ratified by the controller.
 
 **Documentation and minor code items deferred by earlier reviews**
 
-- `lifecycle.md` §4 still says a suspended workspace surfaces the raw
-  `podman port` failure, and the suspended-workspace message names no
-  remedy.
-- `ensure()`'s docstring still says it writes the registry;
-  `codex.py`/`claude.py` module docstrings overstate the session-ID proof.
+- **Fixed in the fix wave:** the suspended-workspace message now names
+  `asb-agent resume --workspace <ws>`, and `lifecycle.md` §4 describes it;
+  `ensure()`'s docstring no longer says it writes the registry.
+- `codex.py`/`claude.py` module docstrings overstate the session-ID proof.
 - `remote_run` can raise `ValueError` for an out-of-range port; `--title`
   is unvalidated on the CLI (the TUI neutralizes control characters).
 - Registry/store: `remove()` on an unknown id creates an empty file;

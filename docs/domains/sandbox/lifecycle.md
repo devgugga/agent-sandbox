@@ -203,9 +203,31 @@ session:
 
 A refresh (TUI or `reconcile`) never launches a process, skips
 `suspended` and `starting` records, and writes only real transitions.
+A stop confirmed by a DEAD probe is recorded `completed` even if a
+concurrent refresh rewrote the record in between; a concurrent relaunch
+(`starting`/`running`) is never marked completed.
 The provider session id is discovered once after launch (five polls, one
 second apart) from the workspace's session volume; zero or several
-candidates store no id, so such a session cannot be resumed natively.
+candidates store no id, so such a session cannot be resumed natively. A
+provider that creates its session file only when the first message is
+sent therefore gets no id, and native resume does not happen for it;
+pilot observation 8 decides whether a lazier discovery is needed.
+Discovery reads only regular files, never follows a symlink, never
+blocks on a FIFO and reads at most 64 KiB of a Codex file: the session
+volume is agent-writable.
+
+### Deliberate v1 limits
+
+- `suspend` (`SessionManager.suspend`) has no CLI or TUI action yet;
+  a session is ended with `session stop` or `d` in the TUI.
+- `session resume` is CLI-only; in the TUI, Enter on an
+  `exited_resumable` session resumes it natively and attaches.
+- Adding a project is CLI-only (`asb-agent project add`).
+- After a workspace container restarts, native resume is
+  operator-triggered (Enter in the TUI, `session attach` or
+  `session resume`), never automatic. Spec §11.2 describes an automatic
+  resume; this divergence is deliberate and was ratified by the
+  controller.
 
 ---
 
@@ -284,6 +306,22 @@ sandbox ref (`refs/asb/<workspace>/...`, at least one) are ancestors of
 the integration branch, for example after a manual `asb-agent pull` and
 `git merge`. `f` on such a row offers the cleanup directly.
 
+A worktree whose sandbox is positively absent (never created, because
+no session was ever started, or purged by hand: no agent container, no
+workspace volumes, no origin marker, no clone directory) has no sandbox
+work to lose. Its row is labelled when the worktree is clean and its own
+HEAD is an ancestor of the integration branch, with no export ref, and
+`f` offers the cleanup instead of a finish; the cleanup proves ancestry
+again, is `blocked` without it, and skips the purge. If absence is not
+positively proven, the rules above apply unchanged.
+
+Every confirmation that can purge (finish, cleanup, missing row) lists
+the checkout's `suspended`, `exited_resumable` and `detached` sessions
+whose tmux probes DEAD: the purge deletes their provider history, so
+they can no longer be resumed. After a successful cleanup every
+remaining non-final session record of the checkout is written
+`completed`.
+
 A `missing` worktree row (Git already removed it, for example when a
 cleanup was interrupted before the registry update) shows
 `merged / cleanup pending` when its export refs prove integration. `f`
@@ -312,12 +350,16 @@ integration again and is `blocked` without that proof.
 
    The fetched ref must equal the commit resolved before the fetch.
    `asb-agent pull` is not used.
-5. `git merge --no-edit <ref>` in the target checkout. A conflict keeps
+5. The worktree's own HEAD must already be an ancestor of the exported
+   sandbox commit or of the target; otherwise the finish is `blocked`
+   ("the operator branch has commits the sandbox branch does not
+   contain") before anything is merged.
+6. `git merge --no-edit <ref>` in the target checkout. A conflict keeps
    Git's conflict state and reports the paths and the recovery
    (`git -C <target> merge --abort`, or resolve and commit). A merge
    interrupted by its timeout is `blocked` with the same recovery:
    inspect `git -C <target> status` and abort a merge in progress.
-6. Both the exported sandbox commit and the worktree's own HEAD must be
+7. Both the exported sandbox commit and the worktree's own HEAD must be
    ancestors of the new target HEAD; otherwise the result is
    `cleanup_pending` ("integration is not proven").
 

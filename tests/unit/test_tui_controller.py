@@ -343,6 +343,17 @@ class TestAttach(_Case):
             self.assertEqual(tui.run_child(list(ATTACH_ARGV)), 3)
         run.assert_called_once_with(list(ATTACH_ARGV), check=False)
 
+    def test_an_exited_resumable_session_goes_to_attach(self):
+        """Contexto §E: o `manager.attach` da Tarefa 8 retoma nativamente
+        um `exited_resumable`; a TUI nao o barra."""
+        record = self.stored(C_WT, state=SessionState.EXITED_RESUMABLE)
+        ctl = self.controller()
+        self.select(ctl, f"s:{record.id}")
+        ctl.activate()
+        self.manager.attach.assert_called_once_with(record.id)
+        self.assertEqual(self.events,
+                         ["suspend", ("child", ATTACH_ARGV), "restore"])
+
     def test_a_final_or_uncertain_session_shows_a_message(self):
         for state in (SessionState.RECOVERY_REQUIRED, SessionState.COMPLETED,
                       SessionState.FAILED):
@@ -545,6 +556,15 @@ class TestRunLoop(_Case):
         self.assertIn((12, 60), screen.renders)
         self.assertEqual(screen.renders[0], (24, 100))
         self.runtime.discover.assert_called()  # refresh inicial
+
+    def test_a_resize_keeps_an_open_prompt(self):
+        ctl = self.controller()
+        self.select(ctl, "c:c-pri")
+        tui.handle_key(ctl, ord("n"))
+        prompt = ctl.prompt
+        tui.handle_key(ctl, curses.KEY_RESIZE)
+        self.assertIs(ctl.prompt, prompt)
+        self.assertNotIn("cancelled", ctl.message)
 
     def test_run_tui_refuses_without_a_terminal(self):
         err = mock.Mock()

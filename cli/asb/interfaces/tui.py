@@ -395,7 +395,10 @@ def _with_error(view: CheckoutView, error: str) -> CheckoutView:
 
 def handle_key(controller: TuiController, key: int) -> None:
     """Mapeia uma tecla para uma acao do controlador. `KEY_RESIZE` nao faz
-    nada aqui: o laco redesenha com o tamanho novo."""
+    nada aqui: o laco redesenha com o tamanho novo — nem cancela um prompt
+    aberto."""
+    if key == curses.KEY_RESIZE:
+        return
     if controller.prompt is not None:
         controller.answer(chr(key) if 0 <= key < 0x110000 else "")
         return

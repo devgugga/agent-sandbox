@@ -5,7 +5,7 @@ Single Source of Truth (SSoT) for the `agent-sandbox` (v2) runtime environment a
 ## Documentation Index
 
 - [Configuration Reference](./configuration.md): Complete `.agent-sandbox.toml` schema and worked examples (hexmed-stack and BlackICE).
-- [Workspace Lifecycle](./lifecycle.md): Single systemd runtime, boot ordering behind the network wait, command semantics, and recovery by category.
+- [Workspace Lifecycle](./lifecycle.md): Single systemd runtime, boot ordering behind the network wait, command semantics, recovery by category, persistent agent sessions, the TUI, worktree creation, and finish/cleanup.
 - [Provider Authentication](./authentication.md): Account vs. network vs. infrastructure diagnosis, where each credential lives, and login.
 - [Security Boundaries](./security.md): Explicit boundary declarations, invariants, and what the sandbox does not protect.
 - [Failure Modes & Forensics](./failure-modes.md): Consolidated forensic record from production edge cases, symptoms, causes, and fixes.
@@ -64,13 +64,18 @@ The CLI entrypoint is `cli/asb-agent` (symlinked as `asb`):
 | `suspend` | para o workspace e o tira do inicio automatico |
 | `resume` | religa pelo systemd; automatico no login para workspaces nao suspensos |
 | `pull` | traz o branch do workspace para o checkout primario |
+| `connect` | abre um shell SSH num workspace ja rodando; nunca o inicia |
 | `down` | remove containers e rede; **preserva seus arquivos** |
 | `purge` | remove tambem os arquivos; exige `--yes` |
 | `doctor` | diz o que falta e o comando exato para corrigir |
+| `project add` | registra um projeto e seu checkout primario; nunca cria workspace |
+| `session list\|start\|attach\|stop\|resume` | sessoes de agente persistentes em tmux dentro do workspace |
+| `tui` | arvore de projetos, checkouts e sessoes; cria worktrees e os finaliza |
 
 Authentication, credential storage and login are described in
 [authentication.md](./authentication.md); start, stop, reboot and recovery in
-[lifecycle.md](./lifecycle.md).
+[lifecycle.md](./lifecycle.md), which also covers `connect` (§4), agent
+sessions (§5), the TUI and worktree creation (§6), and finish/cleanup (§7).
 
 Additional utility commands:
 - `asb-agent list`: lists active and stopped workspaces and their backing repositories.
@@ -97,6 +102,7 @@ host                                          container
 - **Primary checkout on host (`~/Data/Projects/<proj>`)**: **Never mounted**. The sandbox interacts only with its hardlink clone under `~/asb-agent/<proj>/<ws>/`.
 - **Workspace mount (`~/asb-agent/<proj>/<ws>/`)**: Mount path is identical inside and outside the container.
 - **Workspace state (`~/.local/state/agent-sandbox/<ws>/`)**: Kept outside the mounted directory so the agent cannot edit its own allowlist. Holds `squid.conf`, `origin`, and `staging/`.
+- **TUI control state (`~/.local/state/agent-sandbox/projects.json`, `sessions.json`)**: Projects, checkout-to-workspace bindings and agent sessions, relationships only (files `0600`, directory `0700`). Never a credential, prompt, model output or transcript; Podman, systemd, tmux and the repositories stay authoritative. Details in [lifecycle.md §5](./lifecycle.md#5-persistent-agent-sessions).
 - **Agent credentials volume (`asb-credentials`)**: Named Podman volume holding one directory per provider (`claude/`, `codex/`), mounted as the directories `~/.claude` and `~/.codex` in agent and login containers. Per-workspace session state (`asb-<ws>-session`) is mounted over the transcript subdirectories. The volume may still hold a legacy `keyrings/` tree, masked in clients by a read-only mode-000 tmpfs; the singleton mounts the volume read-only for migration. Details in [authentication.md](./authentication.md).
 - **Keyring data volume (`asb-keyring-data`)**: Named Podman volume mounted read/write only in `asb-keyring` at `/run/asb-keyring-data:z`. Holds the active encrypted GNOME Keyring database and is never mounted in login or workspace containers.
 - **Keyring runtime volume (`asb-keyring-runtime`)**: Named Podman volume mounted at `/run/asb-keyring:z` in `asb-keyring` and `/run/asb-keyring:ro,z` in client containers. Holds the active D-Bus session bus Unix socket (`/run/asb-keyring/bus`).

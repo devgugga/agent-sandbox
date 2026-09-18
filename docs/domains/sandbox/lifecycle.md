@@ -1,6 +1,7 @@
 # Workspace Lifecycle & Supervision
 
-How a workspace starts, stops, survives a reboot and recovers. The model is
+How a workspace starts, stops, survives a reboot and recovers, and how the
+TUI runs agent sessions and worktrees on top of it (§5–§7). The model is
 Emenda A's **single systemd runtime**
 ([spec](../../superpowers/specs/2026-09-16-single-systemd-runtime-design.md)),
 validated on real boots in
@@ -152,8 +153,7 @@ session commands take. Registering the same path again returns the same
 identity. Without `--integration-branch` the branch is discovered from
 `refs/remotes/origin/HEAD`, or the command fails. `--worktree-root`
 defaults to `<repo-name>-worktrees` next to the repository; worktree
-creation (Task 11 of the TUI plan) uses it. `project add` never creates a
-workspace.
+creation (§6) uses it. `project add` never creates a workspace.
 
 The workspace name is derived from the checkout path alone
 (`workspace_id(path, {})`), so a checkout always maps to the same
@@ -179,9 +179,77 @@ exits 2 when the terminal did not confirm a running session, and `resume`
 exits 2 when the session is not live afterwards. Registry, session-store
 and driver errors print one line on stderr and exit 2.
 
+### Session states and recovery
+
+tmux is the source of truth; a stored terminal id is never evidence that
+a process is alive. A probe lists every pane of the session:
+
+| tmux evidence | Recorded state | What happens |
+| :--- | :--- | :--- |
+| session exists, pane alive | `detached` (`running` right after its own launch) | attach rejoins the same process |
+| pane dead with exit status 0 | `completed` | never relaunched |
+| pane dead otherwise, provider id known and resume confirmed by the sandbox binary | `exited_resumable` | native resume on `attach` or `resume` |
+| pane dead otherwise, no resumable conversation | `recovery_required` | nothing is launched |
+| anything else (more than one pane, deleted socket, SSH failure) | `recovery_required` | nothing is launched or attached |
+
+A refresh (TUI or `reconcile`) never launches a process, skips
+`suspended` and `starting` records, and writes only real transitions.
+The provider session id is discovered once after launch (five polls, one
+second apart) from the workspace's session volume; zero or several
+candidates store no id, so such a session cannot be resumed natively.
+
 ---
 
-## 6. Finishing a worktree
+## 6. The TUI
+
+`asb-agent tui` needs an interactive terminal (exit 2 otherwise) and shows
+one tree: projects, then each project's primary checkout and worktrees,
+then each checkout's sessions (`agent  state  title`). Worktrees that Git
+lists but the registry does not know appear as `unregistered`; a
+registered worktree whose path is gone is marked `missing`.
+
+A checkout row shows its workspace status (`ready`, `absent`,
+`unavailable: <reason>`) and a branch. When the workspace is `ready` the
+branch is read from the sandbox checkout, where the agent works, so an
+agent's `git switch` shows on the next refresh; otherwise it is the
+operator checkout's branch, marked `(host)`. The tree is read only at
+start, on `r` and after an action, never in the background.
+
+| Key | Action |
+| :--- | :--- |
+| `j`/`k`, arrows | move |
+| Enter | fold a project or checkout; on a session, attach (see below) |
+| `n` | start a session on the selected checkout (choose the agent); an unregistered worktree is registered first |
+| `d` | session menu: `s` stops the selected session after an explicit `y` |
+| `w` | create a worktree (below) |
+| `f` | finish or clean up a worktree (§7) |
+| `r` | refresh |
+| `q` | quit; never stops, suspends or kills a session or workspace |
+
+Attach runs the same `ssh … tmux attach-session` as `session attach`, as a
+child process: curses is suspended, `C-b d` detaches, and the tree
+returns. A session in `recovery_required`, `completed` or `failed` is not
+attached. Titles, branches and paths are shown with control characters
+replaced by `?`.
+
+### Creating a worktree (`w`)
+
+`w` asks for a new branch name, then the base (the project's integration
+branch; the selected checkout's branch only as an explicit second
+choice), then the path (default `<worktree-root>/<branch with / as ->`).
+A preview shows the project, base and commit, branch and path; only `y`
+creates. The path must be absolute, new, inside the worktree root and
+outside `~/asb-agent/`; a missing root is created with mode `0700`.
+Creation refuses if the base no longer resolves to the commit the preview
+showed, runs `git worktree add -b <branch> <path> <base>`, and registers the checkout only after Git succeeds and the new worktree is
+found on the new branch at that commit. A failure removes only what this
+creation made (never with `--force`, and the branch only while it still
+points at the base) and reports anything left. No workspace is created
+until the first session starts.
+
+---
+
+## 7. Finishing a worktree
 
 `f` in the TUI (`asb-agent tui`) on a worktree row integrates its work and,
 only with positive evidence, cleans it up. The primary checkout is never

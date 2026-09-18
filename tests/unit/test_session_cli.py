@@ -409,7 +409,9 @@ class _AliveRun:
 
     def __call__(self, argv, **kwargs):
         self.calls.append(list(argv))
-        return subprocess.CompletedProcess(argv, 0, stdout="0 \n", stderr="")
+        # `list-panes -a -f <tag ou nome>`: uma sessao, $5, pane vivo.
+        return subprocess.CompletedProcess(argv, 0, stdout="$5 0 \n",
+                                           stderr="")
 
 
 class TestSessionAttach(_Case):
@@ -435,9 +437,9 @@ class TestSessionAttach(_Case):
         file, argv = executed[0]
         self.assertEqual(file, "ssh")
         self.assertEqual(argv[:-1], info.ssh_argv())
-        # Um unico alvo, exato ("=" desliga o casamento por prefixo do tmux),
+        # Um unico alvo, exato: o id tmux ($5) da sessao que carrega a tag,
         # escrito a mao e nao recomputado com shlex.
-        self.assertEqual(argv[-1], f"tmux attach-session -t =asb-{record.id}")
+        self.assertEqual(argv[-1], "tmux attach-session -t '$5'")
         self.assertEqual(self.store.get(record.id).state,
                          SessionState.DETACHED)
 

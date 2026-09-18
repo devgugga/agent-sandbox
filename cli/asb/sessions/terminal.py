@@ -18,11 +18,28 @@ container descartavel, ver relatorio da Tarefa 7):
 - socket APAGADO com o servidor vivo: "error connecting to <socket> (No
   such file or directory)", exit 1 — NAO prova ausencia (qualquer coisa no
   workspace pode apagar o arquivo), entao e incerteza;
-- `list-panes -t =<nome>:` sem `-s` so lista a janela CORRENTE; com `-s`
-  lista todas. `-s -t =<nome>` SEM ":" casa por prefixo; por isso sempre
-  `-s -t =<nome>:`;
 - com `remain-on-exit on`, `#{pane_dead}` e "1" e `#{pane_dead_status}` e o
   exit status do comando (vazio se morto por sinal).
+
+Uma sessao e achada pela TAG, nao pelo nome (fix wave 2, pinado no tmux
+3.3a da imagem num container descartavel com socket `-L` privado): o
+operador (`C-b $`) ou o proprio agente podem renomea-la, e um nome que nao
+casa mais lia DEAD e abria um SEGUNDO processo na mesma conversa. `start`
+grava a opcao de usuario `@asb_session <nome>` na mesma chamada que liga
+`remain-on-exit`. `probe`, `capture_exit_status`, `stop` e `attach_argv`
+usam `list-panes -a -f <filtro>` com o filtro "tag == nome OU nome ==
+nome" (sessao antiga sem tag) e a saida `#{session_id} #{pane_dead}
+#{pane_dead_status}`; o `session_id` ($N) vira o alvo de `kill-session` e
+`attach-session`. O que o tmux reporta:
+
+- filtro sem casamento com o servidor vivo: exit 0, saida vazia — o tmux
+  listou TODAS as sessoes e nenhuma e esta: prova ausencia;
+- "no server running on <socket>", exit 1: prova ausencia;
+- "error connecting to <socket> (No such file or directory)", exit 1 — o
+  socket foi apagado com o servidor vivo, ou nunca existiu: incerteza;
+- duas sessoes distintas casando (uma tag forjada, ou uma antiga com o
+  nome e outra renomeada com a tag): incerteza, nunca escolhemos uma;
+- alvo `$N` que sumiu entre a busca e o kill: "can't find session: $N".
 """
 from __future__ import annotations
 
@@ -40,9 +57,17 @@ from asb.sessions.model import TerminalId
 # (`ConnectTimeout=10`), isto cobre um servidor que conectou e travou.
 _TIMEOUT_SECONDS = 30.0
 
-_PANE_FORMAT = "#{pane_dead} #{pane_dead_status}"
-_PANE_LINE = re.compile(r"^([01]) ([0-9]*)$")
+_TAG = "@asb_session"
+_PANE_FORMAT = "#{session_id} #{pane_dead} #{pane_dead_status}"
+_PANE_LINE = re.compile(r"^(\$[0-9]+) ([01]) ([0-9]*)$", re.ASCII)
 _NO_SERVER = re.compile(r"^no server running on \S+$")
+
+
+def _filter(name: TerminalId) -> str:
+    """Formato de filtro do tmux: a tag OU o nome exato. `TerminalId` so
+    tem `[a-z0-9_-]`, entao nada no nome e sintaxe de formato."""
+    return (f"#{{||:#{{==:#{{{_TAG}}},{name}}},"
+            f"#{{==:#{{session_name}},{name}}}}}")
 
 
 class Liveness(StrEnum):
@@ -92,6 +117,7 @@ class TmuxTerminal:
             "-c", _tmux_arg(cwd.replace("#", "##")),
             "--", *(_tmux_arg(a) for a in command),
             ";", "set-option", "-t", f"={name}:", "remain-on-exit", "on",
+            ";", "set-option", "-t", f"={name}:", _TAG, name,
         )
         result = self._call(remote)
         if result is None or result.returncode != 0:
@@ -99,54 +125,81 @@ class TmuxTerminal:
                                 f"{_detail(result)}")
 
     def probe(self, terminal_id: str) -> Liveness:
-        """ALIVE: sessao existe e pane vivo. DEAD: tmux diz que a sessao
-        nao existe ou que o pane morreu. Todo o resto e UNKNOWN."""
-        name = TerminalId(terminal_id)
-        result = self._pane_state(name)
-        if result is None:
-            return Liveness.UNKNOWN
-        if result.returncode == 0:
-            match = _PANE_LINE.fullmatch(result.stdout.rstrip("\n"))
-            if match is None:
-                return Liveness.UNKNOWN
-            return Liveness.DEAD if match.group(1) == "1" else Liveness.ALIVE
-        if _session_missing(result, name):
+        """ALIVE: a sessao (pela tag ou pelo nome) existe e seu pane vive.
+        DEAD: o tmux prova que nenhuma sessao e esta, ou o pane morreu.
+        Todo o resto e UNKNOWN."""
+        found = self._locate(TerminalId(terminal_id))
+        if found is _ABSENT:
             return Liveness.DEAD
-        return Liveness.UNKNOWN
+        if found is None or len(found[1]) != 1:
+            # Mais de um pane: nao sabemos qual e o agente.
+            return Liveness.UNKNOWN
+        dead, _status = found[1][0]
+        return Liveness.DEAD if dead else Liveness.ALIVE
 
     def capture_exit_status(self, terminal_id: str) -> int | None:
         """Exit status do pane morto, como o tmux o reporta; `None` se a
         sessao sumiu, o pane vive ou a saida nao e classificavel."""
-        name = TerminalId(terminal_id)
-        result = self._pane_state(name)
-        if result is None or result.returncode != 0:
+        found = self._locate(TerminalId(terminal_id))
+        if found is _ABSENT or found is None or len(found[1]) != 1:
             return None
-        match = _PANE_LINE.fullmatch(result.stdout.rstrip("\n"))
-        if match is None or match.group(1) != "1" or not match.group(2):
+        dead, status = found[1][0]
+        if not dead or not status:
             return None
-        return int(match.group(2))
+        return int(status)
 
     def stop(self, terminal_id: str) -> None:
-        """Mata a sessao. Sessao ja ausente nao e erro."""
+        """Mata a sessao achada pela tag ou pelo nome. Sessao ja ausente
+        nao e erro; uma busca incerta levanta sem matar nada."""
         name = TerminalId(terminal_id)
-        result = self._call(("tmux", "kill-session", "-t", f"={name}"))
+        found = self._locate(name)
+        if found is _ABSENT:
+            return
+        if found is None:
+            raise TerminalError(f"falha ao localizar o terminal {name} para "
+                                "encerra-lo")
+        session_id = found[0]
+        result = self._call(("tmux", "kill-session", "-t", session_id))
         if result is not None and (result.returncode == 0
-                                   or _session_missing(result, name)):
+                                   or _session_missing(result, session_id)):
             return
         raise TerminalError(f"falha ao encerrar o terminal {name}: "
                             f"{_detail(result)}")
 
     def attach_argv(self, terminal_id: str) -> list[str]:
-        """argv interativo (com TTY) que anexa exatamente a esta sessao."""
+        """argv interativo (com TTY) que anexa exatamente a esta sessao:
+        pelo `session_id` quando a tag ou o nome a localizam (um rename nao
+        a perde), senao pelo nome exato, que no pior caso nao acha nada."""
         name = TerminalId(terminal_id)
+        found = self._locate(name)
+        target = (found[0] if found is not None and found is not _ABSENT
+                  else f"={name}")
         return self._connection.ssh_argv(
-            ("tmux", "attach-session", "-t", f"={name}"), interactive=True)
+            ("tmux", "attach-session", "-t", target), interactive=True)
 
-    def _pane_state(self, name: TerminalId):
-        # `-s`: todos os panes da sessao; mais de um pane vira mais de
-        # uma linha e, portanto, UNKNOWN/None — nunca a janela errada.
-        return self._call(("tmux", "list-panes", "-s", "-t", f"={name}:",
-                           "-F", _PANE_FORMAT))
+    def _locate(self, name: TerminalId):
+        """`(session_id, [(pane_dead, status), ...])` da UNICA sessao que
+        carrega a tag ou o nome; `_ABSENT` com prova do tmux; `None` na
+        duvida (inclusive duas sessoes casando)."""
+        result = self._call(("tmux", "list-panes", "-a", "-f", _filter(name),
+                             "-F", _PANE_FORMAT))
+        if result is None:
+            return None
+        if result.returncode != 0:
+            return _ABSENT if _no_server(result) else None
+        lines = result.stdout.splitlines()
+        if not lines:
+            return _ABSENT
+        panes = []
+        for line in lines:
+            match = _PANE_LINE.fullmatch(line)
+            if match is None:
+                return None
+            panes.append(match.groups())
+        if len({session for session, _dead, _status in panes}) != 1:
+            return None
+        return panes[0][0], [(dead == "1", status)
+                             for _session, dead, status in panes]
 
     def _call(self, remote: tuple[str, ...]):
         """Roda `remote` via SSH nao interativo; `None` em timeout ou falha
@@ -160,16 +213,25 @@ class TmuxTerminal:
         except (subprocess.TimeoutExpired, OSError):
             return None
 
+_ABSENT = object()
+
+
+def _no_server(result: subprocess.CompletedProcess) -> bool:
+    """Exit 1 do tmux com "no server running on <socket>" (pinado)."""
+    return result.returncode == 1 and any(
+        _NO_SERVER.fullmatch(line.strip())
+        for line in (result.stderr or "").splitlines())
+
 
 def _session_missing(result: subprocess.CompletedProcess,
-                     name: TerminalId) -> bool:
+                     target: str) -> bool:
     """So o exit 1 do tmux com mensagem pinada prova ausencia; o 255 do
     SSH ou qualquer outra saida nao prova nada."""
     if result.returncode != 1:
         return False
     for line in (result.stderr or "").splitlines():
         line = line.strip()
-        if line == f"can't find session: {name}":
+        if line == f"can't find session: {target}":
             return True
         if _NO_SERVER.fullmatch(line):
             return True

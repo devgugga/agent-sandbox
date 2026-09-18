@@ -167,7 +167,7 @@ different name and is never adopted.
 | :--- | :--- | :--- |
 | `session list [--checkout <id>] [--json]` | Reads `sessions.json` and prints one line per session (id, checkout id, agent, state, title), or `{"schemaVersion": 1, "sessions": [...]}` with the stored fields only | never — works offline; states are as last recorded |
 | `session start --checkout <id> --agent <codex\|claude\|antigravity> [--title <t>]` | Brings the checkout's workspace up if needed (`asb-agent up`, the same boundary Orca calls), then starts the agent in the sandbox checkout; prints `<session-id> <state>` | the only command that can start a workspace |
-| `session attach <session-id>` | Replaces the CLI process with `ssh` running `tmux attach-session -t =asb-<session-id>`; detach with `C-b d` and control returns to the calling shell. A session in `exited_resumable` is natively resumed first | live connection only |
+| `session attach <session-id>` | Replaces the CLI process with `ssh` running `tmux attach-session -t <target>` (the session's tmux id `$N`, found by its tag, or `=asb-<session-id>` when it cannot be located); detach with `C-b d` and control returns to the calling shell. A session in `exited_resumable` is natively resumed first | live connection only |
 | `session stop <session-id>` | Ends the session (`completed`, never relaunched); prints `<session-id> <state>` | live connection only |
 | `session resume <session-id>` | Native resume of a dead but resumable session; prints `<session-id> <state>` | live connection only |
 
@@ -183,7 +183,15 @@ and driver errors print one line on stderr and exit 2.
 ### Session states and recovery
 
 tmux is the source of truth; a stored terminal id is never evidence that
-a process is alive. A probe lists every pane of the session:
+a process is alive. `start` tags the tmux session with the user option
+`@asb_session asb-<session-id>`, so a session renamed by the operator
+(`C-b $`) or by the agent itself is still found: probe, stop and attach
+list every pane whose session carries that tag or that exact name, and
+target the session by its tmux id. No such session is DEAD only when tmux
+positively says so (the server lists nothing matching, or no server
+runs); two matching sessions are uncertainty. A session that is both
+renamed and untagged is not found. A probe lists every pane of the
+session:
 
 | tmux evidence | Recorded state | What happens |
 | :--- | :--- | :--- |
@@ -191,7 +199,7 @@ a process is alive. A probe lists every pane of the session:
 | pane dead with exit status 0 | `completed` | never relaunched |
 | pane dead otherwise, provider id known and resume confirmed by the sandbox binary | `exited_resumable` | native resume on `attach` or `resume` |
 | pane dead otherwise, no resumable conversation | `recovery_required` | nothing is launched |
-| anything else (more than one pane, deleted socket, SSH failure) | `recovery_required` | nothing is launched or attached |
+| anything else (more than one pane, two matching sessions, deleted socket, SSH failure) | `recovery_required` | nothing is launched or attached |
 
 A refresh (TUI or `reconcile`) never launches a process, skips
 `suspended` and `starting` records, and writes only real transitions.

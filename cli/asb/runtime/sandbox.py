@@ -12,9 +12,11 @@ qualquer workspace existir.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
+from enum import StrEnum
 from pathlib import Path
 
 from .. import podman
@@ -28,6 +30,36 @@ Runner = Callable[[Sequence[str]], "subprocess.CompletedProcess[str]"]
 
 def _default_runner(argv: Sequence[str]) -> "subprocess.CompletedProcess[str]":
     return subprocess.run(list(argv), capture_output=True, text=True, check=False)
+
+
+class WorkspaceStatus(StrEnum):
+    """Estado de um workspace visto por `discover`, sem muta-lo."""
+
+    READY = "ready"              # container existe e a conexao resolve
+    ABSENT = "absent"            # nenhum container de agente
+    UNAVAILABLE = "unavailable"  # existe (ou nao da para saber) mas nao resolve
+
+
+@dataclass(frozen=True)
+class WorkspaceDiscovery:
+    """Um binding e o status do seu workspace. `connection` so em READY;
+    `reason` (uma linha curta, sem caracteres de controle) so em
+    UNAVAILABLE."""
+
+    binding: CheckoutBinding
+    status: WorkspaceStatus
+    connection: ConnectionInfo | None = None
+    reason: str | None = None
+
+
+_REASON_LIMIT = 120
+_CONTROL = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+
+def _short_reason(error: BaseException) -> str:
+    """Primeira linha da mensagem, controles trocados por `?`, truncada."""
+    lines = str(error).splitlines() or [type(error).__name__]
+    return _CONTROL.sub("?", lines[0].strip())[:_REASON_LIMIT]
 
 
 def session_volume_mountpoint(workspace: str) -> Path:
@@ -56,19 +88,34 @@ class SandboxRuntime:
 
     # -- leitura, nunca muta estado de runtime -----------------------------
 
-    def discover(self, project: Project) -> list[tuple[CheckoutBinding, ConnectionInfo]]:
-        """Vincula cada `CheckoutBinding` do projeto ao seu estado de
-        workspace ao vivo, quando ele existe. Read-only: nunca inicia,
-        religa ou remove um container. Um binding cujo workspace nao
-        resolve (down, purgado, etc.) e simplesmente omitido — isso nao e
-        erro, e o normal de um workspace que o operador parou."""
-        found: list[tuple[CheckoutBinding, ConnectionInfo]] = []
+    def discover(self, project: Project) -> list[WorkspaceDiscovery]:
+        """Status explicito do workspace de CADA binding do projeto, na
+        ordem do registro; nenhum binding e omitido. Read-only: nunca
+        inicia, religa ou remove um container. A checagem segue a mesma
+        ordem de `ensure()`: sem container de agente e ABSENT; com
+        container, uma falha de `resolve_connection` (suspenso, porta
+        corrompida, chave ausente, origem perdida) e UNAVAILABLE com o
+        motivo. Uma falha da propria checagem de existencia (podman
+        ausente) tambem e UNAVAILABLE: nao se sabe se o container falta."""
+        from .. import lifecycle  # tardio: mesmo padrao de resolve_connection
+
+        found: list[WorkspaceDiscovery] = []
         for binding in self.registry.bindings(project.id):
+            agent = lifecycle.names(binding.workspace)["agent"]
             try:
+                if not podman.exists("container", agent):
+                    found.append(WorkspaceDiscovery(
+                        binding, WorkspaceStatus.ABSENT))
+                    continue
                 info = resolve_connection(binding.workspace)
-            except podman.PodmanError:
+            except (podman.PodmanError, OSError,
+                    subprocess.SubprocessError) as exc:
+                found.append(WorkspaceDiscovery(
+                    binding, WorkspaceStatus.UNAVAILABLE,
+                    reason=_short_reason(exc)))
                 continue
-            found.append((binding, info))
+            found.append(WorkspaceDiscovery(
+                binding, WorkspaceStatus.READY, connection=info))
         return found
 
     def binding_for(self, checkout: Checkout) -> CheckoutBinding | None:

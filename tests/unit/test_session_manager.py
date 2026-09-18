@@ -642,6 +642,47 @@ class TestReconcile(ManagerCase):
         self.assertEqual(terminal.calls, [])
         self.assertEqual(self.store.get(other.id), other)
 
+    def test_reconcile_persists_nothing_when_the_state_would_not_change(self):
+        """Tarefa 10: um refresh da TUI nao pode subir a revisao de cada
+        sessao a cada tecla `r` e colidir com um CLI concorrente."""
+        cases = (
+            (SessionState.DETACHED, Liveness.ALIVE, None, PROVIDER_ID),
+            (SessionState.RECOVERY_REQUIRED, Liveness.UNKNOWN, None,
+             PROVIDER_ID),
+            (SessionState.EXITED_RESUMABLE, Liveness.DEAD, 1, PROVIDER_ID),
+            (SessionState.RECOVERY_REQUIRED, Liveness.DEAD, 1, None),
+        )
+        for state, liveness, status, provider_id in cases:
+            with self.subTest(state=state, liveness=liveness):
+                record = self.seed(state, provider_id=provider_id,
+                                   checkout=CheckoutId(
+                                       f"c-same-{state}-{liveness}"))
+                terminal = self.terminal(probes=[liveness],
+                                         exit_status=status)
+                [result] = self.make(terminal).reconcile(record.checkout_id)
+                self.assertEqual(result, record)
+                self.assertEqual(self.store.get(record.id), record)
+                self.assertEqual(terminal.names("probe"),
+                                 [("probe", record.terminal_id)])
+
+    def test_reconcile_still_writes_a_real_transition(self):
+        record = self.seed(SessionState.RUNNING)
+        terminal = self.terminal(probes=[Liveness.ALIVE])
+        [result] = self.make(terminal).reconcile(CHECKOUT)
+        self.assertEqual(result.state, SessionState.DETACHED)
+        self.assertEqual(result.revision, record.revision + 1)
+        self.assertEqual(self.store.get(record.id), result)
+
+    def test_reconcile_skips_a_starting_session_of_another_process(self):
+        """Um `starting` pertence a um start em voo noutro processo: nem
+        sonda nem grava. `attach`/`resume` ainda o recuperam (`_recover`)."""
+        record = self.seed(SessionState.STARTING)
+        terminal = self.terminal(probes=[Liveness.DEAD], exit_status=0)
+        [result] = self.make(terminal).reconcile(CHECKOUT)
+        self.assertEqual(result, record)
+        self.assertEqual(terminal.calls, [])
+        self.assertEqual(self.store.get(record.id), record)
+
 
 class TestStopAndSuspend(ManagerCase):
     def test_stop_is_recorded_only_after_a_dead_probe(self):

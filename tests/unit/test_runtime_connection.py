@@ -36,7 +36,8 @@ from asb.projects.model import Project, ProjectId  # noqa: E402
 from asb.projects.registry import CheckoutBinding, ProjectRegistry  # noqa: E402
 from asb.runtime.connection import ConnectionInfo, resolve_connection  # noqa: E402
 from asb.runtime.sandbox import (  # noqa: E402
-    SandboxRuntime, session_volume_mountpoint,
+    SandboxRuntime, WorkspaceDiscovery, WorkspaceStatus,
+    session_volume_mountpoint,
 )
 from asb.workspace import Layout  # noqa: E402
 
@@ -546,33 +547,95 @@ class TestSandboxRuntimeBindingFor(unittest.TestCase):
 
 
 class TestSandboxRuntimeDiscover(unittest.TestCase):
-    def test_pairs_live_connections_with_their_bindings_and_skips_dead_ones(self):
+    """Tarefa 10: cada binding aparece UMA vez, com um status explicito —
+    um workspace quebrado nunca some como um que nunca existiu."""
+
+    def _bindings(self, tmp: Path, project: Project) -> dict[str, CheckoutBinding]:
+        return {
+            ws: CheckoutBinding(
+                checkout_id=CheckoutId(f"c-{ws}"), project_id=project.id,
+                source_path=tmp / ws, workspace=ws)
+            for ws in ("ws-ready", "ws-absent", "ws-broken")
+        }
+
+    def _discover(self, tmp: Path, project: Project, bindings, *,
+                  exists, resolve):
+        registry = mock.MagicMock(spec=ProjectRegistry)
+        registry.bindings.return_value = list(bindings)
+        runner = mock.Mock(side_effect=AssertionError("discover nunca sobe"))
+        with mock.patch("asb.podman.exists", side_effect=exists) as exists_mock, \
+             mock.patch("asb.runtime.sandbox.resolve_connection",
+                        side_effect=resolve) as resolve_mock:
+            runtime = SandboxRuntime(root=tmp, registry=registry, runner=runner)
+            found = runtime.discover(project)
+        runner.assert_not_called()
+        return found, exists_mock, resolve_mock
+
+    def test_reports_ready_absent_and_unavailable_without_dropping_any(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
             project, _ = _project_and_checkout(tmp)
-            alive = CheckoutBinding(
-                checkout_id=CheckoutId("c-alivebnd001"), project_id=project.id,
-                source_path=tmp / "a", workspace="ws-alive")
-            dead = CheckoutBinding(
-                checkout_id=CheckoutId("c-deadbnd0001"), project_id=project.id,
-                source_path=tmp / "b", workspace="ws-dead")
-            registry = mock.MagicMock(spec=ProjectRegistry)
-            registry.bindings.return_value = [alive, dead]
-            live_info = _info(workspace="ws-alive")
+            b = self._bindings(tmp, project)
+            live = _info(workspace="ws-ready")
 
-            def fake_resolve(ws):
-                if ws == "ws-alive":
-                    return live_info
-                raise podman.PodmanError("parado")
+            def exists(kind, name, *args, **kwargs):
+                self.assertEqual(kind, "container")
+                return name != "asb-ws-absent-agent"
 
-            with mock.patch("asb.runtime.sandbox.resolve_connection",
-                            side_effect=fake_resolve):
-                runtime = SandboxRuntime(root=tmp, registry=registry,
-                                         runner=mock.Mock())
-                found = runtime.discover(project)
+            def resolve(ws):
+                if ws == "ws-ready":
+                    return live
+                raise podman.PodmanError("container parado")
 
-            self.assertEqual(found, [(alive, live_info)])
+            found, exists_mock, resolve_mock = self._discover(
+                tmp, project, b.values(), exists=exists, resolve=resolve)
 
+        self.assertEqual(found, [
+            WorkspaceDiscovery(b["ws-ready"], WorkspaceStatus.READY, live, None),
+            WorkspaceDiscovery(b["ws-absent"], WorkspaceStatus.ABSENT,
+                               None, None),
+            WorkspaceDiscovery(b["ws-broken"], WorkspaceStatus.UNAVAILABLE,
+                               None, "container parado"),
+        ])
+        self.assertEqual(
+            [c.args[1] for c in exists_mock.call_args_list],
+            ["asb-ws-ready-agent", "asb-ws-absent-agent",
+             "asb-ws-broken-agent"])
+        # Ausente nao chega a resolver: mesma ordem de checagem de ensure().
+        self.assertEqual([c.args[0] for c in resolve_mock.call_args_list],
+                         ["ws-ready", "ws-broken"])
+
+    def test_a_failing_existence_check_is_unavailable_not_absent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            project, _ = _project_and_checkout(tmp)
+            b = self._bindings(tmp, project)
+            found, _, resolve_mock = self._discover(
+                tmp, project, [b["ws-ready"]],
+                exists=podman.PodmanError("podman ausente"),
+                resolve=AssertionError("nao resolve sem saber se existe"))
+
+        self.assertEqual(found, [WorkspaceDiscovery(
+            b["ws-ready"], WorkspaceStatus.UNAVAILABLE, None,
+            "podman ausente")])
+        resolve_mock.assert_not_called()
+
+    def test_the_unavailable_reason_is_one_short_line_without_control_chars(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            project, _ = _project_and_checkout(tmp)
+            b = self._bindings(tmp, project)
+            noisy = "porta \x1b[31mcorrompida\t" + "x" * 300 + "\nsegunda linha"
+            [found], _, _ = self._discover(
+                tmp, project, [b["ws-broken"]], exists=lambda *a, **k: True,
+                resolve=podman.PodmanError(noisy))
+
+        self.assertEqual(found.status, WorkspaceStatus.UNAVAILABLE)
+        self.assertNotIn("segunda linha", found.reason)
+        self.assertLessEqual(len(found.reason), 120)
+        self.assertTrue(found.reason.startswith("porta ?[31mcorrompida?x"))
+        self.assertFalse(any(ord(ch) < 32 or 127 <= ord(ch) < 160
+                             for ch in found.reason))
 
 
 class TestSessionVolumeMountpoint(unittest.TestCase):

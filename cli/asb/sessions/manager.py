@@ -21,6 +21,7 @@ Regras que cada ramo abaixo respeita:
 """
 from __future__ import annotations
 
+import functools
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -44,6 +45,10 @@ _DISCOVERY_INTERVAL_SECONDS = 1.0
 
 # Estados finais: nunca sondados, nunca relancados.
 _FINAL = frozenset({SessionState.COMPLETED, SessionState.FAILED})
+
+# Estados que `reconcile` nao sonda: suspenso de proposito, ou em voo noutro
+# processo.
+_NOT_RECONCILED = frozenset({SessionState.SUSPENDED, SessionState.STARTING})
 
 
 class SessionManagerError(RuntimeError):
@@ -160,10 +165,13 @@ class SessionManager:
     def reconcile(self, checkout_id: CheckoutId) -> list[AgentSession]:
         """Alinha o registro ao tmux para as sessoes de `checkout_id`, sem
         NUNCA lancar processo. `suspended` fica como esta: o terminal morto
-        e o esperado ali."""
+        e o esperado ali. `starting` tambem: pertence a um start ou resume
+        em voo noutro processo (`attach`/`resume` recuperam um `starting`
+        deixado por um processo que caiu). So transicoes reais sao
+        gravadas: um refresh repetido nao sobe revisoes."""
         results = []
         for record in self.list(checkout_id):
-            if record.state is not SessionState.SUSPENDED:
+            if record.state not in _NOT_RECONCILED:
                 record, _ = self._recover(record, launch=False)
             results.append(record)
         return results
@@ -203,26 +211,34 @@ class SessionManager:
         registro gravado e se um resume foi despachado."""
         if record.state in _FINAL:
             return record, False
+        # Sem `launch` (reconcile) um estado que nao muda nao e regravado.
+        settle = functools.partial(self._settle, rewrite=launch)
         if record.terminal_id is None:
-            return self._store.replace(
-                record.with_state(SessionState.RECOVERY_REQUIRED)), False
+            return settle(record, SessionState.RECOVERY_REQUIRED), False
         liveness = self._terminal.probe(record.terminal_id)
         if liveness is Liveness.ALIVE:
-            return self._store.replace(record.with_state(
-                SessionState.DETACHED, last_healthy_at=self._clock())), False
+            return settle(record, SessionState.DETACHED,
+                          last_healthy_at=self._clock()), False
         if liveness is Liveness.UNKNOWN:
-            return self._store.replace(
-                record.with_state(SessionState.RECOVERY_REQUIRED)), False
+            return settle(record, SessionState.RECOVERY_REQUIRED), False
         if self._terminal.capture_exit_status(record.terminal_id) == 0:
-            return self._store.replace(
-                record.with_state(SessionState.COMPLETED)), False
+            return settle(record, SessionState.COMPLETED), False
         if not self._can_resume(record):
-            return self._store.replace(
-                record.with_state(SessionState.RECOVERY_REQUIRED)), False
+            return settle(record, SessionState.RECOVERY_REQUIRED), False
         if not launch:
-            return self._store.replace(
-                record.with_state(SessionState.EXITED_RESUMABLE)), False
+            return settle(record, SessionState.EXITED_RESUMABLE), False
         return self._native_resume(record), True
+
+    def _settle(self, record: AgentSession, state: SessionState, *,
+                rewrite: bool, **changes: object) -> AgentSession:
+        """Grava a classificacao de `_recover`. Com `rewrite=False`, um
+        registro que ja esta em `state` volta como esta, sem escrita (nem
+        `last_healthy_at`): so transicoes reais sobem a revisao. Nunca usado
+        pela escrita STARTING de `_native_resume`, que TEM de ser checada
+        por revisao."""
+        if not rewrite and record.state is state:
+            return record
+        return self._store.replace(record.with_state(state, **changes))
 
     def _native_resume(self, record: AgentSession) -> AgentSession:
         driver = self._drivers[record.agent]

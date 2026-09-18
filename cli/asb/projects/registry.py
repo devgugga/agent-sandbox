@@ -31,6 +31,7 @@ from typing import Callable, TypeVar
 
 from asb.checkouts.model import CheckoutId
 from asb.projects.model import Project, ProjectId
+from asb.workspace import _sanitize, workspace_id
 
 _SCHEMA_VERSION = 1
 _T = TypeVar("_T")
@@ -71,6 +72,20 @@ def _git_common_dir(path: Path) -> Path:
         raise ProjectRegistryError(
             f"git returned no common directory for {path}")
     return Path(common_dir)
+
+
+def _checkout_workspace(source_path: Path) -> str:
+    """Nome de workspace deterministico de um checkout, ou levanta.
+
+    Env VAZIO de proposito: um workspace criado pelo Orca tem outro nome
+    (ORCA_VM_INSTANCE_ID) e nunca e adotado. O nome so e aceito se for a
+    propria forma sanitizada, e nao vazio — o mesmo formato que
+    `workspace._sanitize` produz."""
+    name = workspace_id(source_path, {})
+    if not name or _sanitize(name) != name:
+        raise ProjectRegistryError(
+            f"unsafe workspace name {name!r} derived from {source_path}")
+    return name
 
 
 def _project_id_for(common_dir: Path) -> ProjectId:
@@ -142,6 +157,14 @@ class ProjectRegistry:
                 return list(checkouts)
         raise ProjectRegistryError(f"unknown project id: {project_id}")
 
+    def checkout(self, checkout_id: CheckoutId) -> CheckoutBinding:
+        """O vinculo com esta identidade estavel, em qualquer projeto."""
+        for _, checkouts in self._load():
+            for binding in checkouts:
+                if binding.checkout_id == checkout_id:
+                    return binding
+        raise ProjectRegistryError(f"unknown checkout id: {checkout_id}")
+
     # -- escrita ------------------------------------------------------------
 
     def add(self, primary: Path, integration_branch: str | None,
@@ -176,13 +199,24 @@ class ProjectRegistry:
 
         self._transact(mutate)
 
-    def bind_checkout(self, project_id: ProjectId, source_path: Path,
-                      workspace: str) -> CheckoutBinding:
+    def register_checkout(self, project_id: ProjectId,
+                          source_path: Path) -> CheckoutBinding:
+        """Registro idempotente de um checkout do operador.
+
+        Um caminho (resolvido) ja registrado no projeto devolve o vinculo
+        existente, intacto; senao cunha UM `CheckoutId` e o persiste junto
+        com o nome de workspace deterministico do caminho. Nenhum chamador
+        escolhe o workspace: ele vem de `workspace_id(path, {})` — nunca das
+        variaveis do Orca — e e validado antes de gravar."""
         source_path = Path(source_path).resolve()
+        workspace = _checkout_workspace(source_path)
 
         def mutate(entries: list[_ProjectEntry]) -> CheckoutBinding:
             for project, checkouts in entries:
                 if project.id == project_id:
+                    for binding in checkouts:
+                        if binding.source_path == source_path:
+                            return binding
                     binding = CheckoutBinding(
                         checkout_id=CheckoutId(f"c-{secrets.token_hex(8)}"),
                         project_id=project_id,

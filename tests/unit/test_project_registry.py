@@ -303,33 +303,48 @@ class ConcurrencyAndIsolationTests(ProjectRegistryTestCase):
         self.assertEqual(ids_from_a, ids_from_b)
         self.assertEqual(ids_from_a, {project_a.id, project_b.id})
 
-    def test_concurrent_bind_checkout_does_not_lose_updates(self):
-        registry = self.registry()
-        project = registry.add(self.repo, "main", self.worktree_root)
-
-        worker_count = 20
-        barrier = threading.Barrier(worker_count)
+    def _register_concurrently(self, project_id, paths) -> list:
+        barrier = threading.Barrier(len(paths))
         errors: list[BaseException] = []
+        results: list[CheckoutBinding] = []
 
-        def worker(index: int) -> None:
+        def worker(path: Path) -> None:
             try:
                 barrier.wait(timeout=5)
-                ProjectRegistry(self.registry_path).bind_checkout(
-                    project.id, self.repo, f"ws-{index}")
+                results.append(ProjectRegistry(self.registry_path)
+                               .register_checkout(project_id, path))
             except BaseException as exc:  # noqa: BLE001
                 errors.append(exc)
 
-        threads = [threading.Thread(target=worker, args=(i,))
-                  for i in range(worker_count)]
+        threads = [threading.Thread(target=worker, args=(p,)) for p in paths]
         for thread in threads:
             thread.start()
         for thread in threads:
             thread.join(timeout=10)
-
         self.assertEqual(errors, [])
+        return results
+
+    def test_concurrent_registration_of_one_path_mints_one_identity(self):
+        registry = self.registry()
+        project = registry.add(self.repo, "main", self.worktree_root)
+
+        results = self._register_concurrently(project.id, [self.repo] * 20)
+
         bindings = registry.bindings(project.id)
-        self.assertEqual(len(bindings), worker_count)
-        self.assertEqual(len({b.checkout_id for b in bindings}), worker_count)
+        self.assertEqual(len(bindings), 1)
+        self.assertEqual({b.checkout_id for b in results},
+                         {bindings[0].checkout_id})
+
+    def test_concurrent_registration_of_distinct_paths_loses_no_update(self):
+        registry = self.registry()
+        project = registry.add(self.repo, "main", self.worktree_root)
+        paths = [self.tmp / f"checkout-{i}" for i in range(20)]
+
+        self._register_concurrently(project.id, paths)
+
+        bindings = registry.bindings(project.id)
+        self.assertEqual(len(bindings), 20)
+        self.assertEqual(len({b.checkout_id for b in bindings}), 20)
 
 
 class LookupAndIdempotencyTests(ProjectRegistryTestCase):
@@ -360,27 +375,99 @@ class LookupAndIdempotencyTests(ProjectRegistryTestCase):
 
 
 class CheckoutBindingTests(ProjectRegistryTestCase):
-    def test_bind_and_unbind_checkout(self):
+    def test_register_and_unbind_checkout(self):
         registry = self.registry()
         project = registry.add(self.repo, "main", self.worktree_root)
 
-        binding = registry.bind_checkout(project.id, self.repo, "repo-a1b2c3d4")
+        binding = registry.register_checkout(project.id, self.repo)
         self.assertIsInstance(binding, CheckoutBinding)
         self.assertIsInstance(binding.checkout_id, CheckoutId)
+        self.assertTrue(str(binding.checkout_id).startswith("c-"))
         self.assertEqual(binding.project_id, project.id)
         self.assertEqual(binding.source_path, self.repo.resolve())
-        self.assertEqual(binding.workspace, "repo-a1b2c3d4")
 
         self.assertEqual(registry.bindings(project.id), [binding])
 
         registry.unbind_checkout(binding.checkout_id)
         self.assertEqual(registry.bindings(project.id), [])
 
-    def test_bind_checkout_unknown_project_raises(self):
+    def test_workspace_is_the_deterministic_orca_free_name_of_the_path(self):
+        registry = self.registry()
+        project = registry.add(self.repo, "main", self.worktree_root)
+        orca = {"ORCA_VM_INSTANCE_ID": "orca-vm-1",
+                "ORCA_WORKSPACE_ID": "orca-ws-1"}
+
+        with patch.dict(os.environ, orca):
+            binding = registry.register_checkout(project.id, self.repo)
+
+        # Literal esperado: `workspace_id` com env VAZIO — basename + 8 hex do
+        # sha256 do caminho resolvido; nunca as variaveis do Orca.
+        import hashlib
+        digest = hashlib.sha256(
+            str(self.repo.resolve()).encode()).hexdigest()[:8]
+        self.assertEqual(binding.workspace, f"repo-{digest}")
+
+    def test_registering_twice_returns_the_same_identity_and_writes_one_entry(self):
+        registry = self.registry()
+        project = registry.add(self.repo, "main", self.worktree_root)
+
+        first = registry.register_checkout(project.id, self.repo)
+        # Mesmo checkout por outra grafia do caminho: resolve() antes de casar.
+        second = registry.register_checkout(
+            project.id, self.repo / ".." / self.repo.name)
+
+        self.assertEqual(first, second)
+        raw = json.loads(self.registry_path.read_text(encoding="utf-8"))
+        self.assertEqual(len(raw["projects"][0]["checkouts"]), 1)
+
+    def test_two_paths_in_one_project_get_different_identities(self):
+        registry = self.registry()
+        project = registry.add(self.repo, "main", self.worktree_root)
+        other = self.tmp / "other-checkout"
+
+        first = registry.register_checkout(project.id, self.repo)
+        second = registry.register_checkout(project.id, other)
+
+        self.assertNotEqual(first.checkout_id, second.checkout_id)
+        self.assertNotEqual(first.workspace, second.workspace)
+        self.assertEqual(registry.bindings(project.id), [first, second])
+
+    def test_unsafe_workspace_name_is_refused_and_nothing_is_written(self):
+        registry = self.registry()
+        project = registry.add(self.repo, "main", self.worktree_root)
+        before = self.registry_path.read_text(encoding="utf-8")
+
+        # Um basename que so tem caracteres inseguros sanitiza para vazio,
+        # e `workspace_id` devolve "-<hash>", que nao e a propria forma
+        # sanitizada.
+        with self.assertRaises(ProjectRegistryError):
+            registry.register_checkout(project.id, self.tmp / "@@@")
+
+        self.assertEqual(self.registry_path.read_text(encoding="utf-8"),
+                         before)
+
+    def test_checkout_looks_a_binding_up_by_its_stable_identity(self):
+        registry = self.registry()
+        project = registry.add(self.repo, "main", self.worktree_root)
+        registry.register_checkout(project.id, self.tmp / "first")
+        wanted = registry.register_checkout(project.id, self.repo)
+
+        self.assertEqual(registry.checkout(wanted.checkout_id), wanted)
+
+    def test_checkout_unknown_identity_raises(self):
+        registry = self.registry()
+        registry.add(self.repo, "main", self.worktree_root)
+        with self.assertRaises(ProjectRegistryError):
+            registry.checkout(CheckoutId("c-0000000000000000"))
+
+    def test_old_minting_bind_checkout_is_gone(self):
+        self.assertFalse(hasattr(ProjectRegistry, "bind_checkout"))
+
+    def test_register_checkout_unknown_project_raises(self):
         registry = self.registry()
         with self.assertRaises(ProjectRegistryError):
-            registry.bind_checkout(ProjectId("p-0000000000000000"),
-                                   self.repo, "ws")
+            registry.register_checkout(ProjectId("p-0000000000000000"),
+                                       self.repo)
 
     def test_bindings_unknown_project_raises(self):
         registry = self.registry()

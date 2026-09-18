@@ -4,9 +4,10 @@
 workspace pronto. Ele NUNCA reimplementa `up`/`resume`: quando nao ha
 runtime vivo, invoca `cli/asb-agent` como um subprocesso injetado (o mesmo
 binario que o Orca chama), le a linha JSON que `lifecycle.emit()` imprime, e
-so entao confirma com evidencia ao vivo via `resolve_connection`. O vinculo
-so entra no `ProjectRegistry` depois que essa prontidao é confirmada — uma
-tentativa que falhou no meio nunca deixa relacionamento orfao no registro.
+so entao confirma com evidencia ao vivo via `resolve_connection`. Este
+modulo nunca escreve no `ProjectRegistry`: o vinculo checkout-workspace e o
+proprio registro do checkout, criado por `register_checkout` antes de
+qualquer workspace existir.
 """
 from __future__ import annotations
 
@@ -80,7 +81,7 @@ class SandboxRuntime:
 
     # -- unico ponto que pode criar um workspace ---------------------------
 
-    def ensure(self, checkout: Checkout) -> ConnectionInfo:
+    def ensure(self, checkout: CheckoutBinding) -> ConnectionInfo:
         """Conexao pronta para `checkout`. Delega a `cli/asb-agent up` (a
         MESMA fronteira estavel que o Orca chama) somente quando NAO ha
         container do workspace — a UNICA condicao que autoriza a queda para
@@ -101,7 +102,7 @@ class SandboxRuntime:
         argv = [
             str(self.root / "cli" / "asb-agent"), "up",
             "--workspace", checkout.workspace,
-            "--repo", str(checkout.path),
+            "--repo", str(checkout.source_path),
         ]
         try:
             result = self.runner(argv)
@@ -135,7 +136,4 @@ class SandboxRuntime:
                 f"saida invalida de 'asb-agent up' para {checkout.workspace}: "
                 f"{exc}") from exc
 
-        info = resolve_connection(checkout.workspace)
-        self.registry.bind_checkout(
-            checkout.project_id, checkout.path, checkout.workspace)
-        return info
+        return resolve_connection(checkout.workspace)

@@ -6,8 +6,8 @@ que `lifecycle.emit()` ja imprime), cada modo de falha de
 `resolve_connection` (container ausente, origem ausente, porta ausente,
 porta corrompida, chave ausente — todos levantam `PodmanError` sem imprimir
 nada em stdout), e a ordem de `SandboxRuntime.ensure()` (so dispara o CLI
-estavel quando nao ha runtime vivo, e so grava o vinculo no registro depois
-que a prontidao e confirmada ao vivo).
+estavel quando nao ha runtime vivo, e nunca escreve no registro: o vinculo
+ja existe desde o registro do checkout).
 
 Nenhum teste aqui toca Podman, systemd ou SSH de verdade: tudo o que
 `resolve_connection` consultaria e mockado.
@@ -308,6 +308,13 @@ def _project_and_checkout(tmp: Path) -> tuple[Project, Checkout]:
     return project, checkout
 
 
+def _binding(tmp: Path) -> CheckoutBinding:
+    """O registro persistido do checkout: e o que `ensure()` recebe."""
+    return CheckoutBinding(
+        checkout_id=CheckoutId("c-abc123"), project_id=ProjectId("p-" + "a" * 16),
+        source_path=tmp / "primary", workspace="ws-1")
+
+
 class TestSandboxRuntimeEnsure(unittest.TestCase):
     """Ronda 1 de revisao: so a AUSENCIA do container autoriza a queda para
     `asb-agent up`. Um container que ja existe segue direto para
@@ -318,7 +325,7 @@ class TestSandboxRuntimeEnsure(unittest.TestCase):
     def test_skips_the_cli_boundary_when_a_live_binding_already_exists(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
-            _, checkout = _project_and_checkout(tmp)
+            checkout = _binding(tmp)
             live = _info(workspace="ws-1", project_root=tmp / "root")
             registry = mock.MagicMock(spec=ProjectRegistry)
             runner = mock.Mock(side_effect=AssertionError(
@@ -333,12 +340,12 @@ class TestSandboxRuntimeEnsure(unittest.TestCase):
 
             self.assertEqual(info, live)
             runner.assert_not_called()
-            registry.bind_checkout.assert_not_called()
+            self.assertEqual(registry.method_calls, [])
 
     def test_raises_the_real_diagnostic_and_never_invokes_the_cli_boundary_when_the_live_container_has_a_corrupt_port(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
-            _, checkout = _project_and_checkout(tmp)
+            checkout = _binding(tmp)
             registry = mock.MagicMock(spec=ProjectRegistry)
             runner = mock.Mock(side_effect=AssertionError(
                 "nao deveria disparar o runner para um container ja existente"))
@@ -355,12 +362,12 @@ class TestSandboxRuntimeEnsure(unittest.TestCase):
 
             self.assertIn("porta SSH corrompida", str(ctx.exception))
             runner.assert_not_called()
-            registry.bind_checkout.assert_not_called()
+            self.assertEqual(registry.method_calls, [])
 
     def test_raises_the_real_diagnostic_and_never_invokes_the_cli_boundary_when_the_live_container_has_no_ssh_key(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
-            _, checkout = _project_and_checkout(tmp)
+            checkout = _binding(tmp)
             registry = mock.MagicMock(spec=ProjectRegistry)
             runner = mock.Mock(side_effect=AssertionError(
                 "nao deveria disparar o runner para um container ja existente"))
@@ -377,13 +384,13 @@ class TestSandboxRuntimeEnsure(unittest.TestCase):
 
             self.assertIn("chave SSH ausente", str(ctx.exception))
             runner.assert_not_called()
-            registry.bind_checkout.assert_not_called()
+            self.assertEqual(registry.method_calls, [])
 
     def test_spawns_the_stable_cli_boundary_with_the_exact_argv(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
             root = tmp / "root"
-            _, checkout = _project_and_checkout(tmp)
+            checkout = _binding(tmp)
             live = _info(workspace="ws-1", project_root=root)
             registry = mock.MagicMock(spec=ProjectRegistry)
             captured = {}
@@ -406,15 +413,14 @@ class TestSandboxRuntimeEnsure(unittest.TestCase):
             self.assertEqual(info, live)
             self.assertEqual(captured["argv"], [
                 str(root / "cli" / "asb-agent"), "up",
-                "--workspace", "ws-1", "--repo", str(checkout.path),
+                "--workspace", "ws-1", "--repo", str(checkout.source_path),
             ])
-            registry.bind_checkout.assert_called_once_with(
-                checkout.project_id, checkout.path, "ws-1")
+            self.assertEqual(registry.method_calls, [])
 
     def test_raises_and_never_records_a_binding_when_the_cli_boundary_exits_nonzero(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
-            _, checkout = _project_and_checkout(tmp)
+            checkout = _binding(tmp)
             registry = mock.MagicMock(spec=ProjectRegistry)
 
             def fake_runner(argv):
@@ -431,12 +437,12 @@ class TestSandboxRuntimeEnsure(unittest.TestCase):
                 with self.assertRaises(podman.PodmanError):
                     runtime.ensure(checkout)
 
-            registry.bind_checkout.assert_not_called()
+            self.assertEqual(registry.method_calls, [])
 
     def test_raises_and_never_records_a_binding_when_readiness_never_arrives(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
-            _, checkout = _project_and_checkout(tmp)
+            checkout = _binding(tmp)
             registry = mock.MagicMock(spec=ProjectRegistry)
 
             def fake_runner(argv):
@@ -455,12 +461,12 @@ class TestSandboxRuntimeEnsure(unittest.TestCase):
                 with self.assertRaises(podman.PodmanError):
                     runtime.ensure(checkout)
 
-            registry.bind_checkout.assert_not_called()
+            self.assertEqual(registry.method_calls, [])
 
     def test_raises_when_the_cli_boundary_prints_no_connection_line(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
-            _, checkout = _project_and_checkout(tmp)
+            checkout = _binding(tmp)
             registry = mock.MagicMock(spec=ProjectRegistry)
 
             def fake_runner(argv):
@@ -477,7 +483,7 @@ class TestSandboxRuntimeEnsure(unittest.TestCase):
                 with self.assertRaises(podman.PodmanError):
                     runtime.ensure(checkout)
 
-            registry.bind_checkout.assert_not_called()
+            self.assertEqual(registry.method_calls, [])
 
     def test_raises_a_podman_error_when_the_cli_binary_is_missing(self):
         """Minor (ronda 1): o runner injetado pode falhar fora do contrato
@@ -486,7 +492,7 @@ class TestSandboxRuntimeEnsure(unittest.TestCase):
         original tem de ficar encadeada."""
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
-            _, checkout = _project_and_checkout(tmp)
+            checkout = _binding(tmp)
             registry = mock.MagicMock(spec=ProjectRegistry)
             original = FileNotFoundError(
                 "[Errno 2] No such file or directory: 'asb-agent'")
@@ -505,7 +511,7 @@ class TestSandboxRuntimeEnsure(unittest.TestCase):
                     runtime.ensure(checkout)
 
             self.assertIs(ctx.exception.__cause__, original)
-            registry.bind_checkout.assert_not_called()
+            self.assertEqual(registry.method_calls, [])
 
 
 class TestSandboxRuntimeBindingFor(unittest.TestCase):

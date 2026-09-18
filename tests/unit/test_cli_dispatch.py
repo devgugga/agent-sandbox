@@ -151,8 +151,8 @@ class TestCliParserDispatchParity(unittest.TestCase):
         with mock.patch.object(self.module.sys, "argv", ["asb-agent", "tui"]), \
                 mock.patch.object(self.module.session_cli, "session_services",
                                   return_value=services) as build, \
-                mock.patch.object(self.module.tui, "run_tui",
-                                  return_value=0) as run_tui:
+                mock.patch("asb.interfaces.tui.run_tui",
+                           return_value=0) as run_tui:
             self.assertEqual(self.module.main(), 0)
         build.assert_called_once_with(self.module.ROOT)
         run_tui.assert_called_once_with(services)
@@ -232,6 +232,61 @@ class TestSingleRuntimeCli(unittest.TestCase):
         with self.assertRaises(SystemExit), contextlib.redirect_stderr(stderr):
             parser.parse_args(["up", "--workspace", "w", "--repo", "/tmp", "--runtime", "systemd"])
         self.assertIn("--runtime", stderr.getvalue())
+
+
+class TestCliWithoutCurses(unittest.TestCase):
+    """I1: um Python sem `_curses` nao pode derrubar todo comando. A TUI e
+    importada so no ramo `tui`; ali a falha vira mensagem e exit 2."""
+
+    @contextlib.contextmanager
+    def _masked(self):
+        """`curses`/`_curses` falham ao importar, e nenhuma copia ja
+        importada da TUI (em `sys.modules` ou como atributo do pacote
+        `asb.interfaces`, que a suite inteira ja carregou) a esconde."""
+        import sys
+        from unittest import mock
+        sys.path.insert(0, str(CLI_PATH.parent))
+        import asb.interfaces as interfaces
+        had = hasattr(interfaces, "tui")
+        saved = getattr(interfaces, "tui", None)
+        with mock.patch.dict(sys.modules, {"curses": None, "_curses": None}):
+            sys.modules.pop("asb.interfaces.tui", None)
+            if had:
+                delattr(interfaces, "tui")
+            try:
+                yield
+            finally:
+                if had:
+                    interfaces.tui = saved
+                elif hasattr(interfaces, "tui"):
+                    delattr(interfaces, "tui")
+
+    def test_parser_and_a_non_tui_command_work_without_curses(self):
+        import sys
+        from unittest import mock
+        with self._masked():
+            module = _load_cli_module()
+            self.assertIn("tui", _registered_commands(module.build_parser()))
+            with mock.patch.object(module.sys, "argv",
+                                   ["asb-agent", "build"]), \
+                    mock.patch.object(module.lifecycle, "build",
+                                      return_value=0) as build:
+                self.assertEqual(module.main(), 0)
+            build.assert_called_once_with(module.ROOT)
+
+    def test_tui_without_curses_fails_clearly_with_exit_two(self):
+        import sys
+        from unittest import mock
+        with self._masked():
+            module = _load_cli_module()
+            err = io.StringIO()
+            with mock.patch.object(module.sys, "argv", ["asb-agent", "tui"]), \
+                    mock.patch.object(module.sys, "stderr", err), \
+                    mock.patch.object(module.session_cli, "session_services",
+                                      return_value=object()):
+                self.assertEqual(module.main(), 2)
+        self.assertIn("curses", err.getvalue())
+        self.assertIn("asb-agent: tui", err.getvalue())
 
 
 if __name__ == "__main__":

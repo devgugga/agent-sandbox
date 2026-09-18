@@ -21,7 +21,6 @@ from asb.doctor import doctor  # noqa: E402
 from asb.agents.base import ResumeUnsupported  # noqa: E402
 from asb.interfaces import cli  # noqa: E402
 from asb.interfaces import sessions as session_cli  # noqa: E402
-from asb.interfaces import tui  # noqa: E402
 from asb.podman import PodmanError  # noqa: E402
 from asb.profile import ProfileError  # noqa: E402
 from asb.projects.registry import ProjectRegistryError  # noqa: E402
@@ -198,6 +197,14 @@ def main() -> int:
                 return session_cli.session_resume(
                     args.session_id, services=services)
         if args.command == "tui":
+            # Tardio: um Python sem `_curses` nao derruba os demais comandos
+            # (inclusive o `up`/`resume` que o Orca chama).
+            try:
+                from asb.interfaces import tui
+            except ImportError as error:
+                print(f"asb-agent: tui indisponivel: este Python nao tem o "
+                      f"modulo curses ({error})", file=sys.stderr)
+                return 2
             return tui.run_tui(session_cli.session_services(ROOT))
     except (ValueError, FileNotFoundError, RuntimeError) as error:
         print(f"asb-agent: {error}", file=sys.stderr)

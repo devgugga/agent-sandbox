@@ -12,6 +12,7 @@ qualquer workspace existir.
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
 from collections.abc import Callable, Sequence
@@ -20,16 +21,35 @@ from enum import StrEnum
 from pathlib import Path
 
 from .. import podman
+from ..checkouts.git import GitError, GitRepository
 from ..checkouts.model import Checkout
 from ..projects.model import Project
 from ..projects.registry import CheckoutBinding, ProjectRegistry
+from ..workspace import layout_for
 from .connection import ConnectionInfo, resolve_connection
 
 Runner = Callable[[Sequence[str]], "subprocess.CompletedProcess[str]"]
+Remote = Callable[[ConnectionInfo, Sequence[str]],
+                  "subprocess.CompletedProcess[str]"]
+
+_REMOTE_TIMEOUT_SECONDS = 30.0
 
 
 def _default_runner(argv: Sequence[str]) -> "subprocess.CompletedProcess[str]":
     return subprocess.run(list(argv), capture_output=True, text=True, check=False)
+
+
+def _default_remote(connection: ConnectionInfo,
+                    argv: Sequence[str]) -> "subprocess.CompletedProcess[str]":
+    """Roda `argv` DENTRO do sandbox por SSH nao interativo."""
+    return subprocess.run(connection.ssh_argv(tuple(argv), interactive=False),
+                          shell=False, capture_output=True, text=True,
+                          timeout=_REMOTE_TIMEOUT_SECONDS, check=False,
+                          stdin=subprocess.DEVNULL)
+
+
+class SandboxError(Exception):
+    """Evidencia do sandbox que nao se prova: export, guarda ou purge."""
 
 
 class WorkspaceStatus(StrEnum):
@@ -85,6 +105,10 @@ class SandboxRuntime:
     root: Path
     registry: ProjectRegistry
     runner: Runner = field(default=_default_runner)
+    # Git do host (o do operador e as leituras do clone do sandbox) e o
+    # comando executado DENTRO do sandbox; ambos injetaveis para testes.
+    repository: Callable[[Path], GitRepository] = field(default=GitRepository)
+    remote: Remote = field(default=_default_remote)
 
     # -- leitura, nunca muta estado de runtime -----------------------------
 
@@ -184,3 +208,157 @@ class SandboxRuntime:
                 f"{exc}") from exc
 
         return resolve_connection(checkout.workspace)
+
+    # -- finish: exportar e purgar so com evidencia -------------------------
+
+    def export_head(self, binding: CheckoutBinding) -> tuple[str, str]:
+        """Traz o commit EXATO do branch do clone do sandbox para
+        `refs/asb/<workspace>/<branch>` no repositorio do operador e devolve
+        `(commit, ref)`. Nao reusa `asb-agent pull`: o nome do branch vem
+        de um checkout gravavel pelo agente e e validado antes de virar
+        refspec. O `+` do refspec so atualiza a ref namespaced, que e nossa,
+        nunca um branch do operador."""
+        connection = self._connection(binding)
+        root = connection.project_root
+        sandbox = self.repository(root)
+        operator = self._operator(binding)
+        try:
+            branch = sandbox.symbolic_branch()
+            if branch is None:
+                raise SandboxError(
+                    f"sandbox HEAD in {root} is detached; put the work on a "
+                    "branch before finishing")
+            if not operator.valid_branch_name(branch):
+                raise SandboxError(
+                    f"sandbox branch {branch!r} is not a valid branch name")
+            commit = sandbox.commit(f"refs/heads/{branch}")
+            if commit is None:
+                raise SandboxError(
+                    f"sandbox branch {branch!r} does not resolve to a commit")
+            ref = f"refs/asb/{binding.workspace}/{branch}"
+            if not operator.valid_ref(ref):
+                raise SandboxError(f"export ref {ref!r} is not a valid ref")
+            fetched = operator.fetch(root, f"+refs/heads/{branch}:{ref}")
+            if not fetched.ok:
+                raise SandboxError(
+                    f"fetch from the sandbox failed: {fetched.reason()}")
+            exported = operator.commit(ref)
+            if exported != commit:
+                raise SandboxError(
+                    f"{ref} is at {exported}, not at the sandbox commit "
+                    f"{commit}; the sandbox branch moved during the export")
+        except GitError as exc:
+            raise SandboxError(str(exc)) from exc
+        return commit, ref
+
+    def sandbox_absent(self, binding: CheckoutBinding) -> bool:
+        """Prova POSITIVA de que o sandbox do binding nao existe mais: sem
+        container de agente, sem volumes do workspace, sem marcador de
+        origem e sem o diretorio do clone. Qualquer duvida e `False`."""
+        from .. import lifecycle  # tardio: mesmo padrao de resolve_connection
+
+        ws = binding.workspace
+        n = lifecycle.names(ws)
+        home = Path(os.path.expanduser("~"))
+        try:
+            if podman.exists("container", n["agent"]):
+                return False
+            for volume in (n["session"], f"asb-{ws}-containers"):
+                if podman.exists("volume", volume):
+                    return False
+            if lifecycle._origin_of(ws, home) is not None:
+                return False
+        except (podman.PodmanError, OSError, subprocess.SubprocessError):
+            return False
+        mount = layout_for(binding.source_path, ws, home).mount
+        return not os.path.lexists(mount)
+
+    def purge_integrated(self, binding: CheckoutBinding, target_commit: str,
+                         exported: str | None) -> bool:
+        """Purga o sandbox do binding so depois de provar que nada nele se
+        perde. `False`: ja estava ausente, nada feito. `True`: purgado e
+        confirmado ausente. Qualquer outra coisa levanta `SandboxError` sem
+        purgar (ou dizendo que o purge nao se confirmou)."""
+        if self.sandbox_absent(binding):
+            return False
+        problems = self._unexported_work(binding, target_commit, exported)
+        if problems:
+            raise SandboxError("purging would lose " + "; ".join(problems))
+        argv = [str(self.root / "cli" / "asb-agent"), "purge",
+                "--workspace", binding.workspace, "--yes"]
+        try:
+            result = self.runner(argv)
+        except OSError as exc:
+            raise SandboxError(
+                f"could not run 'asb-agent purge' for {binding.workspace}: "
+                f"{exc}") from exc
+        if result.returncode != 0:
+            lines = (result.stderr or "").strip().splitlines()
+            detail = (": " + _CONTROL.sub("?", lines[-1])[:_REASON_LIMIT]
+                      if lines else "")
+            raise SandboxError(
+                f"'asb-agent purge' failed for {binding.workspace} (code "
+                f"{result.returncode}){detail}")
+        if not self.sandbox_absent(binding):
+            raise SandboxError(
+                f"'asb-agent purge' exited 0 but {binding.workspace} still "
+                "exists")
+        return True
+
+    def _unexported_work(self, binding: CheckoutBinding, target_commit: str,
+                         exported: str | None) -> list[str]:
+        """O que um purge perderia. O status roda DENTRO do sandbox: um
+        `git status` do host num clone gravavel pelo agente executaria o
+        `core.fsmonitor` ou um filtro que o agente configurasse. As demais
+        leituras (refs, HEAD, worktrees) nao executam nada da config."""
+        connection = self._connection(binding)
+        root = connection.project_root
+        argv = ("git", "-C", str(root), "status", "--porcelain=v1", "-z",
+                "--untracked-files=all")
+        try:
+            status = self.remote(connection, argv)
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise SandboxError(
+                f"could not read the sandbox status: {exc}") from exc
+        if status.returncode != 0:
+            raise SandboxError(
+                f"git status failed in the sandbox (code {status.returncode})")
+        problems = []
+        if status.stdout:
+            problems.append(f"uncommitted changes in {root}")
+        sandbox = self.repository(root)
+        operator = self._operator(binding)
+        try:
+            head = sandbox.commit("HEAD")
+            if head is None:
+                raise SandboxError(f"could not read HEAD in {root}")
+            if exported is not None and head != exported:
+                problems.append(f"sandbox HEAD moved to {head[:12]} after "
+                                f"the export of {exported[:12]}")
+            tips = [(head, "HEAD"), *sandbox.refs("refs/heads", "refs/stash")]
+            for commit, ref in tips:
+                if operator.commit(commit) is None:
+                    problems.append(f"{ref} ({commit[:12]}) was never "
+                                    "exported")
+                elif not operator.is_ancestor(commit, target_commit):
+                    problems.append(f"{ref} ({commit[:12]}) is not "
+                                    "integrated into the target")
+            extra = sandbox.worktrees()[1:]
+            if extra:
+                problems.append(f"{len(extra)} extra worktree(s) in the "
+                                "sandbox clone")
+        except GitError as exc:
+            raise SandboxError(str(exc)) from exc
+        return problems
+
+    def _connection(self, binding: CheckoutBinding) -> ConnectionInfo:
+        try:
+            return resolve_connection(binding.workspace)
+        except (podman.PodmanError, OSError,
+                subprocess.SubprocessError) as exc:
+            raise SandboxError(
+                f"sandbox {binding.workspace} is not reachable: "
+                f"{_short_reason(exc)}") from exc
+
+    def _operator(self, binding: CheckoutBinding) -> GitRepository:
+        return self.repository(self.registry.get(binding.project_id).primary)

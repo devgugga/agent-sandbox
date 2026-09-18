@@ -238,6 +238,49 @@ class GitRepository:
         value = result.stdout.strip() if result.ok else ""
         return value or None
 
+    def symbolic_branch(self) -> str | None:
+        """O branch de `HEAD` como o Git o nomeia, ou `None` num HEAD
+        destacado (ou em qualquer falha). Diferente de `branch()`, nunca
+        devolve um commit no lugar do nome."""
+        result = self.run("symbolic-ref", "--short", "HEAD")
+        name = result.stdout.strip() if result.ok else ""
+        return name or None
+
+    def valid_ref(self, ref: str) -> bool:
+        """`git check-ref-format <ref>` para um nome de ref completo."""
+        if not ref or ref.startswith("-"):
+            return False
+        return self.run("check-ref-format", ref).ok
+
+    def refs(self, *patterns: str) -> list[tuple[str, str]]:
+        """`(commit, ref)` de cada ref sob `patterns`. Levanta se nao da
+        para listar: uma lista vazia tem de significar "nenhuma ref"."""
+        for pattern in patterns:
+            _refuse_option(pattern)
+        result = self.run("for-each-ref", "--format=%(objectname) %(refname)",
+                          *patterns)
+        if not result.ok:
+            raise GitError(f"git for-each-ref failed in {self.path}: "
+                           f"{result.reason()}")
+        found = []
+        for line in result.stdout.splitlines():
+            commit, _, ref = line.partition(" ")
+            found.append((commit, ref))
+        return found
+
+    def unmerged_paths(self) -> list[str]:
+        """Caminhos em conflito no indice (`ls-files -u`), sem repeticao."""
+        result = self.run("ls-files", "-u", "-z")
+        if not result.ok:
+            raise GitError(f"git ls-files failed in {self.path}: "
+                           f"{result.reason()}")
+        paths: list[str] = []
+        for record in result.stdout.split("\0"):
+            _, tab, path = record.partition("\t")
+            if tab and path not in paths:
+                paths.append(path)
+        return paths
+
     # -- mutacoes -------------------------------------------------------------------
 
     def worktree_add(self, branch: str, path: Path, base: str) -> GitResult:
@@ -248,6 +291,25 @@ class GitRepository:
     def worktree_remove(self, path: Path) -> GitResult:
         """Nunca `--force`: um worktree com mudancas e recusado pelo Git."""
         return self.run("worktree", "remove", str(path))
+
+    def fetch(self, source: Path, refspec: str) -> GitResult:
+        """Busca `refspec` do repositorio local `source`. As opcoes terminam
+        antes do repositorio (`--`); nenhuma tag, nenhum FETCH_HEAD."""
+        _refuse_option(refspec)
+        return self.run("fetch", "--no-tags", "--no-write-fetch-head", "--",
+                        str(source), refspec)
+
+    def merge(self, ref: str) -> GitResult:
+        """`git merge --no-edit <ref>` com uma ref completa ja validada; sem
+        `--` entre `merge` e a ref (o Git a leria como caminho)."""
+        _refuse_option(ref)
+        return self.run("merge", "--no-edit", ref)
+
+    def delete_merged_branch(self, name: str) -> GitResult:
+        """`git branch -d`: o proprio Git recusa um branch nao integrado.
+        Nunca `-D`."""
+        _refuse_option(name)
+        return self.run("branch", "-d", name)
 
     def delete_branch(self, name: str) -> GitResult:
         """So para o rollback que ja provou ter criado `name` no commit

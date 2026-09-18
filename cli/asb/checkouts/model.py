@@ -45,3 +45,45 @@ class Checkout:
     branch: str
     state: CheckoutState
     workspace: str
+
+
+class FinishState(StrEnum):
+    """Resultado de `finish`/`cleanup`. So `CLEANED` removeu recursos; um
+    `CLEANUP_PENDING` pode ter removido alguns e diz o que sobrou."""
+
+    MERGED = "merged"
+    CONFLICT = "conflict"
+    BLOCKED = "blocked"
+    CLEANUP_PENDING = "cleanup_pending"
+    CLEANED = "cleaned"
+
+
+@dataclass(frozen=True)
+class FinishCheckout:
+    """Pedido de integracao de um worktree em `target_branch`. Limpeza e
+    remocao do branch local so com escolha explicita."""
+
+    checkout_id: CheckoutId
+    target_branch: str
+    cleanup_after_merge: bool = False
+    delete_merged_branch: bool = False
+
+
+@dataclass(frozen=True)
+class FinishResult:
+    state: FinishState
+    source_commit: str | None
+    target_commit: str | None
+    message: str
+
+    @classmethod
+    def blocked(cls, message: str, source_commit: str | None = None,
+                target_commit: str | None = None) -> "FinishResult":
+        return cls(FinishState.BLOCKED, source_commit, target_commit, message)
+
+    @classmethod
+    def cleanup_pending(cls, source_commit: str | None,
+                        target_commit: str | None,
+                        message: str) -> "FinishResult":
+        return cls(FinishState.CLEANUP_PENDING, source_commit, target_commit,
+                   message)

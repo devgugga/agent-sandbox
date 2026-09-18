@@ -659,5 +659,62 @@ class TestSessionVolumeMountpoint(unittest.TestCase):
                 session_volume_mountpoint("ws1")
         run.assert_not_called()
 
+
+class TestSandboxAbsent(unittest.TestCase):
+    """Tarefa 12: so a ausencia PROVADA de tudo que `purge` removeria pula a
+    guarda e o purge; qualquer duvida e "presente". Podman mockado; o HOME
+    e um diretorio temporario."""
+
+    def _absent(self, *, existing=(), error=None, origin=False, mount=False):
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp)
+            binding = CheckoutBinding(
+                checkout_id=CheckoutId("c-abc123"),
+                project_id=ProjectId("p-" + "a" * 16),
+                source_path=home / "src" / "repo", workspace="ws-1")
+            if origin:
+                marker = home / ".local/state/agent-sandbox/ws-1/origin"
+                marker.parent.mkdir(parents=True)
+                marker.write_text(str(binding.source_path))
+            if mount:
+                (home / "asb-agent" / "repo" / "ws-1").mkdir(parents=True)
+
+            def exists(kind, name, *args, **kwargs):
+                if error is not None:
+                    raise error
+                return name in existing
+
+            runtime = SandboxRuntime(
+                root=home, registry=mock.MagicMock(spec=ProjectRegistry),
+                runner=mock.Mock(side_effect=AssertionError("never runs")))
+            with mock.patch.dict("os.environ", {"HOME": str(home)}), \
+                 mock.patch("asb.podman.exists", side_effect=exists):
+                absent = runtime.sandbox_absent(binding)
+                purged = (runtime.purge_integrated(binding, "c" * 40, None)
+                          if absent else None)
+            return absent, purged
+
+    def test_nothing_left_is_absent_and_purge_does_nothing(self):
+        self.assertEqual(self._absent(), (True, False))
+
+    def test_an_agent_container_is_present(self):
+        self.assertFalse(self._absent(existing={"asb-ws-1-agent"})[0])
+
+    def test_a_leftover_session_volume_is_present(self):
+        self.assertFalse(self._absent(existing={"asb-ws-1-session"})[0])
+
+    def test_a_leftover_containers_volume_is_present(self):
+        self.assertFalse(self._absent(existing={"asb-ws-1-containers"})[0])
+
+    def test_an_origin_marker_is_present(self):
+        self.assertFalse(self._absent(origin=True)[0])
+
+    def test_a_leftover_clone_directory_is_present(self):
+        self.assertFalse(self._absent(mount=True)[0])
+
+    def test_an_unanswered_existence_check_is_present(self):
+        self.assertFalse(
+            self._absent(error=podman.PodmanError("podman ausente"))[0])
+
 if __name__ == "__main__":
     unittest.main()

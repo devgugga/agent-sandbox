@@ -29,10 +29,23 @@ from pathlib import Path
 
 from ..projects.model import Project, ProjectId
 from ..projects.registry import (
-    CheckoutBinding, ProjectRegistry, _project_id_for,
+    CheckoutBinding, ProjectRegistry, ProjectRegistryError, _project_id_for,
 )
+from ..runtime.sandbox import SandboxError, SandboxRuntime
+from ..sessions.model import AgentSession, SessionState
+from ..sessions.terminal import Liveness
 from .git import GitError, GitRepository, Worktree
-from .model import Checkout, CheckoutId, CheckoutKind, CheckoutState
+from .model import (
+    Checkout, CheckoutId, CheckoutKind, CheckoutState, FinishCheckout,
+    FinishResult, FinishState,
+)
+
+# Sessoes que nunca mais rodam: nao precisam de sonda.
+_FINAL_SESSIONS = frozenset({SessionState.COMPLETED, SessionState.FAILED})
+_EXPORT_NAMESPACE = "refs/asb"
+
+SessionLister = Callable[[CheckoutId], "list[AgentSession]"]
+LivenessProbe = Callable[[CheckoutBinding, AgentSession], Liveness]
 
 
 class CheckoutError(Exception):
@@ -86,11 +99,18 @@ def checkout_kind(project: Project, path: Path) -> CheckoutKind:
 class CheckoutManager:
     def __init__(self, registry: ProjectRegistry, *,
                  repository: Callable[[Path], GitRepository] = GitRepository,
-                 agent_root: Path | None = None) -> None:
+                 agent_root: Path | None = None,
+                 runtime: SandboxRuntime | None = None,
+                 sessions: SessionLister | None = None,
+                 liveness: LivenessProbe | None = None) -> None:
         self._registry = registry
         self._repository = repository
         self._agent_root = (agent_root if agent_root is not None
                             else Path.home() / "asb-agent")
+        # So `finish`/`cleanup` usam estes tres; sem eles, recusam.
+        self._runtime = runtime
+        self._sessions = sessions
+        self._liveness = liveness
 
     # -- leitura ------------------------------------------------------------------
 
@@ -305,3 +325,310 @@ class CheckoutManager:
             return (f"could not remove branch {preview.branch}: "
                     f"{deleted.reason()}")
         return f"removed branch {preview.branch}"
+
+    # -- finish e cleanup ---------------------------------------------------------
+
+    def finish(self, request: FinishCheckout) -> FinishResult:
+        """Integra o worktree em `request.target_branch`. Toda a evidencia
+        e coletada antes da primeira mutacao, na ordem fixa: checkout,
+        sessoes, alvo, export; so entao o merge. Nada e removido sem a prova
+        de ancestralidade. Nunca levanta: toda recusa vira `BLOCKED`."""
+        try:
+            return self._finish(request)
+        except (CheckoutError, GitError, SandboxError,
+                ProjectRegistryError) as exc:
+            return FinishResult.blocked(str(exc))
+
+    def cleanup(self, checkout_id: CheckoutId, target_branch: str | None = None,
+                delete_merged_branch: bool = False) -> FinishResult:
+        """Limpa um worktree ja integrado (merge externo, ou retomada de um
+        `CLEANUP_PENDING`), sem merge: re-coleta checkout e sessoes e prova
+        de novo a ancestralidade contra o alvo resolvido (default: o branch
+        de integracao do projeto). Idempotente: retoma no primeiro passo
+        que falta. Nunca levanta."""
+        try:
+            return self._cleanup(checkout_id, target_branch,
+                                 delete_merged_branch)
+        except (CheckoutError, GitError, SandboxError,
+                ProjectRegistryError) as exc:
+            return FinishResult.blocked(str(exc))
+
+    def merged(self, checkout_id: CheckoutId,
+               target_branch: str | None = None) -> bool:
+        """Evidencia FRESCA de integracao externa, para o rotulo da TUI: o
+        HEAD do worktree e toda ref exportada do sandbox
+        (`refs/asb/<workspace>/...`, ao menos uma) sao ancestrais do alvo.
+        Read-only; `False` em qualquer duvida."""
+        try:
+            binding = self._registry.checkout(checkout_id)
+            project = self._registry.get(binding.project_id)
+            path = binding.source_path
+            if (checkout_kind(project, path) is CheckoutKind.PRIMARY
+                    or not path.is_dir()):
+                return False
+            primary = self._repository(project.primary)
+            target = primary.branch_commit(
+                target_branch or project.integration_branch)
+            head = self._repository(path).commit("HEAD")
+            exported = primary.refs(self._export_prefix(binding))
+            if target is None or head is None or not exported:
+                return False
+            commits = [head, *(commit for commit, _ in exported)]
+            return all(primary.is_ancestor(c, target) for c in commits)
+        except (GitError, ProjectRegistryError):
+            return False
+
+    def _finish(self, request: FinishCheckout) -> FinishResult:
+        self._require_finish_services()
+        binding = self._registry.checkout(request.checkout_id)
+        project = self._registry.get(binding.project_id)
+        # 1. O checkout de origem.
+        source = self._finishable(binding)
+        # 2. Sessoes: nenhuma viva, nenhuma incerta.
+        busy = self._busy_sessions(binding)
+        if busy is not None:
+            return FinishResult.blocked(busy)
+        # 3. Um checkout limpo JA no branch alvo.
+        target_path = self._clean_target(project, request.target_branch,
+                                         source.path)
+        # 4. O commit exato do sandbox, numa ref namespaced nossa.
+        sandbox_commit, ref = self._runtime.export_head(binding)
+        # 5. O HEAD do worktree do operador tambem tem de ser integrado.
+        operator_commit = self._repository(source.path).commit("HEAD")
+        if operator_commit is None:
+            raise CheckoutError(f"could not read HEAD of {source.path}")
+        # 6. A primeira mutacao: o merge no checkout alvo.
+        target = self._repository(target_path)
+        merged = target.merge(ref)
+        if not merged.ok:
+            conflicts = target.unmerged_paths()
+            if conflicts:
+                shown = ", ".join(conflicts[:5])
+                more = (f" (+{len(conflicts) - 5} more)"
+                        if len(conflicts) > 5 else "")
+                return FinishResult(
+                    FinishState.CONFLICT, sandbox_commit, None,
+                    f"merging {ref} into {request.target_branch} conflicts "
+                    f"in {shown}{more}; nothing was removed. Resolve and "
+                    f"commit in {target_path}, or run: git -C {target_path} "
+                    "merge --abort")
+            return FinishResult.blocked(
+                f"git merge {ref} failed in {target_path}: "
+                f"{merged.reason()}; nothing was removed", sandbox_commit)
+        # 7. A prova: os DOIS commits sao ancestrais do novo HEAD do alvo.
+        try:
+            target_commit = target.commit("HEAD")
+            proven = (target_commit is not None
+                      and target.is_ancestor(sandbox_commit, target_commit)
+                      and target.is_ancestor(operator_commit, target_commit))
+        except GitError as exc:
+            return FinishResult.cleanup_pending(
+                sandbox_commit, None, f"integration is not proven: {exc}")
+        if not proven:
+            return FinishResult.cleanup_pending(
+                sandbox_commit, target_commit, "integration is not proven")
+        done = f"merged {ref} into {request.target_branch} at {target_path}"
+        if not request.cleanup_after_merge:
+            return FinishResult(FinishState.MERGED, sandbox_commit,
+                                target_commit, f"{done}; cleanup available")
+        return self._cleanup_after_proof(
+            binding, project, source.path, source.branch, target_commit,
+            sandbox_commit, sandbox_commit, request.delete_merged_branch,
+            target_path, done)
+
+    def _cleanup(self, checkout_id: CheckoutId, target_branch: str | None,
+                 delete_merged_branch: bool) -> FinishResult:
+        self._require_finish_services()
+        binding = self._registry.checkout(checkout_id)
+        project = self._registry.get(binding.project_id)
+        branch_name = target_branch or project.integration_branch
+        primary = self._repository(project.primary)
+        target_commit = self._target_commit(primary, branch_name)
+        path = binding.source_path
+        if checkout_kind(project, path) is CheckoutKind.PRIMARY:
+            raise CheckoutError("the primary checkout is never cleaned up")
+        listed = any(wt.path.resolve() == path.resolve()
+                     for wt in primary.worktrees())
+        if path.is_dir() or listed:
+            source = self._finishable(binding)
+            source_commit = self._repository(path).commit("HEAD")
+            if source_commit is None:
+                raise CheckoutError(f"could not read HEAD of {path}")
+            if not primary.is_ancestor(source_commit, target_commit):
+                return FinishResult.blocked(
+                    f"{path} at {source_commit[:12]} is not integrated into "
+                    f"{branch_name}; finish it first", source_commit,
+                    target_commit)
+            source_path: Path | None = path
+            branch: str | None = source.branch
+        else:
+            # O Git ja removeu o worktree (uma limpeza interrompida): a
+            # prova vem das refs exportadas do sandbox.
+            prefix = self._export_prefix(binding)
+            exported = primary.refs(prefix)
+            if not exported:
+                return FinishResult.blocked(
+                    f"{path} is gone and no export ref under {prefix} "
+                    "proves its work was integrated; manual recovery "
+                    "required")
+            for commit, ref in exported:
+                if not primary.is_ancestor(commit, target_commit):
+                    return FinishResult.blocked(
+                        f"{path} is gone and {ref} is not integrated into "
+                        f"{branch_name}; manual recovery required", commit,
+                        target_commit)
+            source_commit = exported[0][0]
+            source_path, branch = None, None
+        busy = self._busy_sessions(binding)
+        if busy is not None:
+            return FinishResult.blocked(busy, source_commit, target_commit)
+        location = self._checkout_on(primary, branch_name) or project.primary
+        return self._cleanup_after_proof(
+            binding, project, source_path, branch, target_commit,
+            source_commit, None, delete_merged_branch, location,
+            f"{branch_name} contains {source_commit[:12]}")
+
+    def _cleanup_after_proof(
+            self, binding: CheckoutBinding, project: Project,
+            source_path: Path | None, branch: str | None, target_commit: str,
+            source_commit: str, exported: str | None, delete_branch: bool,
+            location: Path, done: str) -> FinishResult:
+        """So depois da prova. Cada passo se re-checa; uma falha devolve
+        `CLEANUP_PENDING` com o que ja foi feito e o que sobrou."""
+        notes = [done]
+
+        def pending(problem: str) -> FinishResult:
+            return FinishResult.cleanup_pending(
+                source_commit, target_commit,
+                "; ".join([*notes, problem]) + "; retry cleanup when fixed")
+
+        # 1-2. O sandbox, com a sua propria prova de que nada se perde.
+        try:
+            purged = self._runtime.purge_integrated(binding, target_commit,
+                                                    exported)
+        except SandboxError as exc:
+            return pending(f"sandbox {binding.workspace} kept: {exc}")
+        notes.append(f"purged sandbox {binding.workspace}" if purged
+                     else f"sandbox {binding.workspace} already absent")
+        # 3. O worktree do operador, sem --force.
+        if source_path is not None:
+            try:
+                removed = self._repository(project.primary).worktree_remove(
+                    source_path)
+            except GitError as exc:
+                return pending(f"could not remove {source_path}: {exc}")
+            if not removed.ok:
+                return pending(f"git refused to remove {source_path}: "
+                               f"{removed.reason()}")
+            notes.append(f"removed worktree {source_path}")
+        # 4. O branch local, so com escolha explicita e so com `-d`.
+        if delete_branch:
+            notes.append(self._delete_merged(project, branch, target_commit,
+                                             location))
+        # 5. O vinculo do registro, por ultimo.
+        try:
+            self._registry.unbind_checkout(binding.checkout_id)
+        except (ProjectRegistryError, OSError) as exc:
+            return pending(f"could not remove the registry binding: {exc}")
+        return FinishResult(FinishState.CLEANED, source_commit, target_commit,
+                            "; ".join(notes))
+
+    def _delete_merged(self, project: Project, branch: str | None,
+                       target_commit: str, location: Path) -> str:
+        """Uma recusa e relatada, nunca e falha do finish. Branches remotos
+        nunca sao tocados."""
+        if branch is None:
+            return "local branch unknown; not deleted"
+        primary = self._repository(project.primary)
+        try:
+            commit = primary.branch_commit(branch)
+            if commit is None:
+                return f"branch {branch} already deleted"
+            if not primary.is_ancestor(commit, target_commit):
+                return (f"branch {branch} moved to {commit[:12]}, which is "
+                        "not integrated; kept")
+            deleted = self._repository(location).delete_merged_branch(branch)
+        except GitError as exc:
+            return f"branch {branch} kept: {exc}"
+        if not deleted.ok:
+            return f"git refused to delete branch {branch}: {deleted.reason()}"
+        return f"deleted branch {branch}"
+
+    def _require_finish_services(self) -> None:
+        if (self._runtime is None or self._sessions is None
+                or self._liveness is None):
+            raise CheckoutError(
+                "finish needs the sandbox runtime and session liveness")
+
+    def _finishable(self, binding: CheckoutBinding) -> Checkout:
+        """O checkout de origem, como o Git o ve: nao primario, limpo e num
+        branch. `inspect` ja recusa um caminho ausente ou nao listado."""
+        source = self.inspect(binding.checkout_id)
+        if source.kind is CheckoutKind.PRIMARY:
+            raise CheckoutError("the primary checkout is never finished")
+        if source.state is CheckoutState.DIRTY:
+            raise CheckoutError(f"{source.path} has uncommitted changes; "
+                                "commit or stash them first")
+        if source.state is CheckoutState.DETACHED:
+            raise CheckoutError(f"{source.path} is on a detached HEAD; "
+                                "switch it to its branch first")
+        return source
+
+    def _busy_sessions(self, binding: CheckoutBinding) -> str | None:
+        """Motivo de recusa se alguma sessao do checkout pode estar viva.
+        Sem sandbox (prova positiva de ausencia) nao ha processo algum.
+        Nunca para uma sessao."""
+        pending = [s for s in self._sessions(binding.checkout_id)
+                   if s.state not in _FINAL_SESSIONS]
+        if not pending or self._runtime.sandbox_absent(binding):
+            return None
+        for session in pending:
+            liveness = (Liveness.UNKNOWN if session.terminal_id is None
+                        else self._liveness(binding, session))
+            if liveness is Liveness.ALIVE:
+                return (f"active session {session.id}; stop it before "
+                        "finishing")
+            if liveness is not Liveness.DEAD:
+                return (f"liveness unknown for session {session.id}; stop "
+                        "it (asb-agent session stop) or resume the "
+                        "workspace, then retry")
+        return None
+
+    def _target_commit(self, primary: GitRepository, branch: str) -> str:
+        if not primary.valid_branch_name(branch):
+            raise CheckoutError(f"invalid target branch {branch!r}")
+        commit = primary.branch_commit(branch)
+        if commit is None:
+            raise CheckoutError(f"target branch {branch} does not exist "
+                                "locally")
+        return commit
+
+    def _clean_target(self, project: Project, branch: str,
+                      source_path: Path) -> Path:
+        """O checkout do projeto que JA esta em `branch`, limpo. Nunca troca
+        o branch de checkout algum."""
+        primary = self._repository(project.primary)
+        self._target_commit(primary, branch)
+        found = self._checkout_on(primary, branch)
+        if found is None:
+            raise CheckoutError(
+                f"no checkout has {branch} checked out; check it out in a "
+                "clean checkout (the primary, for example) and retry")
+        if found.resolve() == source_path.resolve():
+            raise CheckoutError(f"{source_path} is itself on {branch}; "
+                                "choose another target branch")
+        if self._repository(found).status() is not CheckoutState.CLEAN:
+            raise CheckoutError(
+                f"target checkout {found} has uncommitted changes; commit or "
+                "stash them and retry")
+        return found
+
+    def _checkout_on(self, primary: GitRepository, branch: str) -> Path | None:
+        for wt in primary.worktrees():
+            if (wt.branch == branch and not wt.bare and not wt.prunable
+                    and wt.path.is_dir()):
+                return wt.path
+        return None
+
+    def _export_prefix(self, binding: CheckoutBinding) -> str:
+        return f"{_EXPORT_NAMESPACE}/{binding.workspace}"

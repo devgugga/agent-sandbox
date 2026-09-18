@@ -256,6 +256,12 @@ def _project_and_checkout(tmp: Path) -> tuple[Project, Checkout]:
 
 
 class TestSandboxRuntimeEnsure(unittest.TestCase):
+    """Ronda 1 de revisao: so a AUSENCIA do container autoriza a queda para
+    `asb-agent up`. Um container que ja existe segue direto para
+    `resolve_connection`, e qualquer falha dali (porta corrompida, chave
+    ausente) tem de chegar ao chamador sem disfarce — nunca dispara o
+    runner."""
+
     def test_skips_the_cli_boundary_when_a_live_binding_already_exists(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmp = Path(tmp)
@@ -265,13 +271,58 @@ class TestSandboxRuntimeEnsure(unittest.TestCase):
             runner = mock.Mock(side_effect=AssertionError(
                 "nao deveria disparar o runner quando ja ha runtime vivo"))
 
-            with mock.patch("asb.runtime.sandbox.resolve_connection",
+            with mock.patch("asb.podman.exists", return_value=True), \
+                 mock.patch("asb.runtime.sandbox.resolve_connection",
                             return_value=live):
                 runtime = SandboxRuntime(root=tmp / "root", registry=registry,
                                          runner=runner)
                 info = runtime.ensure(checkout)
 
             self.assertEqual(info, live)
+            runner.assert_not_called()
+            registry.bind_checkout.assert_not_called()
+
+    def test_raises_the_real_diagnostic_and_never_invokes_the_cli_boundary_when_the_live_container_has_a_corrupt_port(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            _, checkout = _project_and_checkout(tmp)
+            registry = mock.MagicMock(spec=ProjectRegistry)
+            runner = mock.Mock(side_effect=AssertionError(
+                "nao deveria disparar o runner para um container ja existente"))
+
+            with mock.patch("asb.podman.exists", return_value=True), \
+                 mock.patch(
+                     "asb.runtime.sandbox.resolve_connection",
+                     side_effect=podman.PodmanError(
+                         "porta SSH corrompida para ws-1: 'notaport'")):
+                runtime = SandboxRuntime(root=tmp / "root", registry=registry,
+                                         runner=runner)
+                with self.assertRaises(podman.PodmanError) as ctx:
+                    runtime.ensure(checkout)
+
+            self.assertIn("porta SSH corrompida", str(ctx.exception))
+            runner.assert_not_called()
+            registry.bind_checkout.assert_not_called()
+
+    def test_raises_the_real_diagnostic_and_never_invokes_the_cli_boundary_when_the_live_container_has_no_ssh_key(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            _, checkout = _project_and_checkout(tmp)
+            registry = mock.MagicMock(spec=ProjectRegistry)
+            runner = mock.Mock(side_effect=AssertionError(
+                "nao deveria disparar o runner para um container ja existente"))
+
+            with mock.patch("asb.podman.exists", return_value=True), \
+                 mock.patch(
+                     "asb.runtime.sandbox.resolve_connection",
+                     side_effect=podman.PodmanError(
+                         "chave SSH ausente para ws-1: /keys/id_ed25519")):
+                runtime = SandboxRuntime(root=tmp / "root", registry=registry,
+                                         runner=runner)
+                with self.assertRaises(podman.PodmanError) as ctx:
+                    runtime.ensure(checkout)
+
+            self.assertIn("chave SSH ausente", str(ctx.exception))
             runner.assert_not_called()
             registry.bind_checkout.assert_not_called()
 
@@ -292,16 +343,9 @@ class TestSandboxRuntimeEnsure(unittest.TestCase):
                                       "user": "v", "project_root": str(root)}),
                     stderr="")
 
-            resolve_calls = []
-
-            def fake_resolve(ws):
-                resolve_calls.append(ws)
-                if len(resolve_calls) == 1:
-                    raise podman.PodmanError("sem runtime vivo")
-                return live
-
-            with mock.patch("asb.runtime.sandbox.resolve_connection",
-                            side_effect=fake_resolve):
+            with mock.patch("asb.podman.exists", return_value=False), \
+                 mock.patch("asb.runtime.sandbox.resolve_connection",
+                            return_value=live):
                 runtime = SandboxRuntime(root=root, registry=registry,
                                          runner=fake_runner)
                 info = runtime.ensure(checkout)
@@ -324,8 +368,11 @@ class TestSandboxRuntimeEnsure(unittest.TestCase):
                 return subprocess.CompletedProcess(list(argv), 1, stdout="",
                                                    stderr="boom")
 
-            with mock.patch("asb.runtime.sandbox.resolve_connection",
-                            side_effect=podman.PodmanError("sem runtime vivo")):
+            with mock.patch("asb.podman.exists", return_value=False), \
+                 mock.patch(
+                     "asb.runtime.sandbox.resolve_connection",
+                     side_effect=AssertionError(
+                         "nao deveria chamar resolve_connection antes do runner")):
                 runtime = SandboxRuntime(root=tmp / "root", registry=registry,
                                          runner=fake_runner)
                 with self.assertRaises(podman.PodmanError):
@@ -346,7 +393,8 @@ class TestSandboxRuntimeEnsure(unittest.TestCase):
                                       "user": "v", "project_root": "/x"}),
                     stderr="")
 
-            with mock.patch(
+            with mock.patch("asb.podman.exists", return_value=False), \
+                 mock.patch(
                     "asb.runtime.sandbox.resolve_connection",
                     side_effect=podman.PodmanError("workspace nunca ficou pronto")):
                 runtime = SandboxRuntime(root=tmp / "root", registry=registry,
@@ -366,13 +414,44 @@ class TestSandboxRuntimeEnsure(unittest.TestCase):
                 return subprocess.CompletedProcess(list(argv), 0, stdout="",
                                                    stderr="")
 
-            with mock.patch("asb.runtime.sandbox.resolve_connection",
-                            side_effect=podman.PodmanError("sem runtime vivo")):
+            with mock.patch("asb.podman.exists", return_value=False), \
+                 mock.patch(
+                     "asb.runtime.sandbox.resolve_connection",
+                     side_effect=AssertionError(
+                         "nao deveria chamar resolve_connection antes do runner")):
                 runtime = SandboxRuntime(root=tmp / "root", registry=registry,
                                          runner=fake_runner)
                 with self.assertRaises(podman.PodmanError):
                     runtime.ensure(checkout)
 
+            registry.bind_checkout.assert_not_called()
+
+    def test_raises_a_podman_error_when_the_cli_binary_is_missing(self):
+        """Minor (ronda 1): o runner injetado pode falhar fora do contrato
+        de `CompletedProcess` (ex: 'asb-agent' ausente do disco) — isto tem
+        de virar `PodmanError`, nunca escapar como `OSError` cru, e a causa
+        original tem de ficar encadeada."""
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp = Path(tmp)
+            _, checkout = _project_and_checkout(tmp)
+            registry = mock.MagicMock(spec=ProjectRegistry)
+            original = FileNotFoundError(
+                "[Errno 2] No such file or directory: 'asb-agent'")
+
+            def fake_runner(argv):
+                raise original
+
+            with mock.patch("asb.podman.exists", return_value=False), \
+                 mock.patch(
+                     "asb.runtime.sandbox.resolve_connection",
+                     side_effect=AssertionError(
+                         "nao deveria chamar resolve_connection antes do runner")):
+                runtime = SandboxRuntime(root=tmp / "root", registry=registry,
+                                         runner=fake_runner)
+                with self.assertRaises(podman.PodmanError) as ctx:
+                    runtime.ensure(checkout)
+
+            self.assertIs(ctx.exception.__cause__, original)
             registry.bind_checkout.assert_not_called()
 
 

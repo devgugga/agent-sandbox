@@ -69,20 +69,38 @@ class SandboxRuntime:
 
     def ensure(self, checkout: Checkout) -> ConnectionInfo:
         """Conexao pronta para `checkout`. Delega a `cli/asb-agent up` (a
-        MESMA fronteira estavel que o Orca chama) somente quando ainda nao
-        ha runtime vivo, e so grava o vinculo no registro depois que
-        `resolve_connection` confirma a prontidao com evidencia ao vivo."""
-        try:
+        MESMA fronteira estavel que o Orca chama) somente quando NAO ha
+        container do workspace — a UNICA condicao que autoriza a queda para
+        esse caminho. Um container que JA existe segue direto para
+        `resolve_connection`: qualquer falha dali (porta corrompida, chave
+        SSH ausente, origem perdida) significa workspace QUEBRADO, nao
+        ausente, e tem de chegar ao chamador SEM disfarce — engoli-la e
+        tentar `asb-agent up` so devolveria "workspace ja existe" e
+        esconderia o diagnostico real (achado de revisao, ronda 1). So
+        grava o vinculo no registro depois que `resolve_connection`
+        confirma a prontidao com evidencia ao vivo."""
+        from .. import lifecycle  # tardio: mesmo padrao de resolve_connection
+
+        n = lifecycle.names(checkout.workspace)
+        if podman.exists("container", n["agent"]):
             return resolve_connection(checkout.workspace)
-        except podman.PodmanError:
-            pass
 
         argv = [
             str(self.root / "cli" / "asb-agent"), "up",
             "--workspace", checkout.workspace,
             "--repo", str(checkout.path),
         ]
-        result = self.runner(argv)
+        try:
+            result = self.runner(argv)
+        except OSError as exc:
+            # Unico ponto onde o runner injetado pode falhar fora do
+            # contrato de `CompletedProcess` (ex: binario 'asb-agent'
+            # ausente): sem isto um `OSError` cru escaparia deste modulo,
+            # diferente de todo outro caminho de falha aqui (achado de
+            # revisao, ronda 1, item Minor).
+            raise podman.PodmanError(
+                f"nao foi possivel executar 'asb-agent up' para "
+                f"{checkout.workspace}: {exc}") from exc
         if result.returncode != 0:
             raise podman.PodmanError(
                 f"'asb-agent up' falhou para {checkout.workspace} "

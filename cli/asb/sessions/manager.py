@@ -36,7 +36,7 @@ from asb.sessions.model import (
     AgentKind, AgentSession, ProviderSessionId, SessionId, SessionState,
     TerminalId,
 )
-from asb.sessions.store import SessionStore
+from asb.sessions.store import SessionStore, StaleRevisionError
 from asb.sessions.terminal import Liveness, TerminalError, TmuxTerminal
 
 # Descoberta do id do provedor: ate 5 tentativas, 1 s entre elas.
@@ -200,7 +200,28 @@ class SessionManager:
             # nenhum processo chegou a existir.
             return self._store.replace(
                 record.with_state(SessionState.COMPLETED))
-        return self._kill(record, SessionState.COMPLETED)
+        try:
+            return self._kill(record, SessionState.COMPLETED)
+        except StaleRevisionError:
+            # O tmux ja confirmou DEAD; um refresh concorrente regravou a
+            # classificacao entre o kill e esta escrita. Sem isto o
+            # registro ficava `exited_resumable` e o Enter relancava uma
+            # sessao que o operador parou.
+            return self._complete_after_race(record.id)
+
+    def _complete_after_race(self, session_id: SessionId) -> AgentSession:
+        """Regrava COMPLETED sobre o registro atual, com a sonda DEAD de
+        `_kill` como evidencia. Um estado final concorrente fica como esta;
+        um relancamento concorrente (`starting`/`running`, so gravados por
+        start e resume) NUNCA vira `completed`."""
+        fresh = self._store.get(session_id)
+        if fresh.state in _FINAL:
+            return fresh
+        if fresh.state in (SessionState.STARTING, SessionState.RUNNING):
+            raise SessionManagerError(
+                f"sessao {fresh.id} foi relancada durante o stop "
+                f"({fresh.state}); rode o stop de novo")
+        return self._store.replace(fresh.with_state(SessionState.COMPLETED))
 
     # -- ramos internos ----------------------------------------------------------
 

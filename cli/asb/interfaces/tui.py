@@ -105,12 +105,15 @@ def session_liveness(services: SessionServices
 
 def default_checkouts(services: SessionServices) -> CheckoutManager:
     """O `CheckoutManager` da TUI, com o que `finish` precisa: o runtime,
-    as sessoes do store e a sonda de liveness."""
+    as sessoes do store, a sonda de liveness e a escrita que marca
+    `completed` os registros que sobram depois da limpeza."""
     return CheckoutManager(
         services.registry, runtime=services.runtime,
         sessions=lambda checkout_id: [s for s in services.store.list()
                                       if s.checkout_id == checkout_id],
-        liveness=session_liveness(services))
+        liveness=session_liveness(services),
+        complete_session=lambda session: services.store.replace(
+            session.with_state(SessionState.COMPLETED)))
 
 
 def _reason(error: BaseException) -> str:
@@ -587,6 +590,11 @@ class TuiController:
 
     def _missing_cleanup_confirm(self, view: CheckoutView,
                                  target: str) -> None:
+        try:
+            lost = self.checkouts.lost_sessions(view.checkout_id)
+        except Exception as error:
+            self.message = f"cleanup refused: {_reason(error)}"
+            return
         self.prompt = Prompt(
             "clean up? y clean up  (other key cancels)",
             {"y": lambda: self._cleanup_run(view.checkout_id, target, False)},
@@ -598,6 +606,7 @@ class TuiController:
                 "without that proof it is refused and nothing is removed",
                 "local branch: kept (its name is unknown here); remote "
                 "branches are never touched",
+                _lost_line(lost),
             )))
 
     def _cleanup_confirm(self, checkout_id, target: str, *,
@@ -697,7 +706,16 @@ def _finish_lines(preview: FinishPreview, *, cleanup: bool,
         "sandbox, removes the worktree)",
         f"delete local branch: {_yes(delete)} (b toggles; git branch -d, "
         "after cleanup only; remote branches are never touched)",
+        _lost_line(preview.lost_sessions),
     ))
+
+
+def _lost_line(lost) -> str:
+    """O que o purge apaga das conversas retomaveis do checkout."""
+    if not lost:
+        return "purge deletes no resumable conversation"
+    return ("purge deletes the provider history of: " + ", ".join(
+        f"{s.id} ({s.agent}, {s.state})" for s in lost))
 
 
 def _cleanup_lines(preview: FinishPreview, *,
@@ -709,6 +727,7 @@ def _cleanup_lines(preview: FinishPreview, *,
         f"cleanup: purges sandbox {preview.workspace}, removes the worktree",
         f"delete local branch: {_yes(delete)} (b toggles; git branch -d; "
         "remote branches are never touched)",
+        _lost_line(preview.lost_sessions),
     ))
 
 

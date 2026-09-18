@@ -723,6 +723,47 @@ class TestStopAndSuspend(ManagerCase):
         self.assertEqual(stopped.state, SessionState.COMPLETED)
         self.assertEqual(terminal.calls, [])
 
+    def _racing_terminal(self, record: AgentSession,
+                         concurrent: SessionState) -> FakeTerminal:
+        """Um refresh (ou resume) concorrente grava `concurrent` entre o
+        `stop` do tmux e a escrita do stop."""
+        terminal = self.terminal(probes=[Liveness.DEAD])
+        store = self.store
+
+        def stop(terminal_id):
+            terminal.calls.append(("stop", terminal_id))
+            fresh = store.get(record.id)
+            store.replace(fresh.with_state(concurrent))
+        terminal.stop = stop
+        return terminal
+
+    def test_a_concurrent_refresh_cannot_undo_a_confirmed_stop(self):
+        for concurrent in (SessionState.EXITED_RESUMABLE,
+                           SessionState.RECOVERY_REQUIRED,
+                           SessionState.DETACHED):
+            with self.subTest(concurrent=concurrent):
+                record = self.seed(SessionState.DETACHED)
+                terminal = self._racing_terminal(record, concurrent)
+                stopped = self.make(terminal).stop(record.id)
+                self.assertEqual(stopped.state, SessionState.COMPLETED)
+                self.assertEqual(self.store.get(record.id), stopped)
+
+    def test_a_concurrent_final_state_is_returned_as_is(self):
+        record = self.seed(SessionState.DETACHED)
+        terminal = self._racing_terminal(record, SessionState.COMPLETED)
+        stopped = self.make(terminal).stop(record.id)
+        self.assertEqual(stopped, self.store.get(record.id))
+        self.assertEqual(stopped.state, SessionState.COMPLETED)
+
+    def test_a_concurrent_relaunch_is_not_marked_completed(self):
+        for concurrent in (SessionState.STARTING, SessionState.RUNNING):
+            with self.subTest(concurrent=concurrent):
+                record = self.seed(SessionState.DETACHED)
+                terminal = self._racing_terminal(record, concurrent)
+                with self.assertRaises(SessionManagerError):
+                    self.make(terminal).stop(record.id)
+                self.assertIs(self.store.get(record.id).state, concurrent)
+
     def test_suspend_kills_and_records_suspended_after_dead_probe(self):
         record = self.seed(SessionState.DETACHED)
         terminal = self.terminal(probes=[Liveness.DEAD])

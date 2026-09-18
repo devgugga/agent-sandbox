@@ -169,6 +169,7 @@ class _Case(unittest.TestCase):
         self.checkouts.list.return_value = []
         self.checkouts.merged.return_value = False
         self.checkouts.sandbox_absent.return_value = False
+        self.checkouts.lost_sessions.return_value = ()
         self.checkouts.default_path.side_effect = (
             lambda project, branch:
             project.worktree_root / branch.replace("/", "-"))
@@ -733,6 +734,10 @@ class TestNewWorktree(_Case):
                           tui.Liveness.DEAD)
         terminal.assert_called_once_with(_info())
         terminal.return_value.probe.assert_called_once_with(mine.terminal_id)
+        # M4: depois do unbind, o registro vira `completed` no store.
+        call.kwargs["complete_session"](mine)
+        self.assertIs(self.store.get(mine.id).state,
+                      SessionState.COMPLETED)
         self.resolve.assert_called_once_with("ws-wt")
         self.resolve.side_effect = PodmanError("container parado")
         self.assertIs(liveness(self.bindings[C_WT], mine),
@@ -917,6 +922,18 @@ class TestFinish(_Case):
         self.checkouts.finish.assert_not_called()
         self.assertEqual(ctl.message, "cleanup: blocked")
         self.assertIn("manual recovery", ctl.notice)
+
+    def test_unlistable_lost_sessions_refuse_the_missing_row_cleanup(self):
+        self.checkouts.list.return_value = [
+            ListedCheckout(WORKTREE, self.bindings[C_WT], None, True)]
+        self.checkouts.lost_sessions.side_effect = CheckoutError(
+            "session store\nunreadable")
+        ctl = self.controller()
+        self.select(ctl, "c:c-wt")
+        tui.handle_key(ctl, ord("f"))
+        self.assertIsNone(ctl.prompt)
+        self.assertEqual(ctl.message, "cleanup refused: session store")
+        self.checkouts.cleanup.assert_not_called()
 
     def test_any_other_key_cancels_the_missing_row_cleanup(self):
         self.checkouts.list.return_value = [

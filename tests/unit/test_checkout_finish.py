@@ -186,7 +186,14 @@ class _Case(unittest.TestCase):
             sessions=lambda checkout_id: [
                 s for s in self.sessions if s.checkout_id == checkout_id],
             liveness=lambda binding, session: self.liveness[session.id],
+            complete_session=kwargs.pop("complete_session",
+                                        self.complete_session),
             **kwargs)
+
+    def complete_session(self, session: AgentSession) -> None:
+        """O `store.replace(... COMPLETED)` da TUI, sobre a lista falsa."""
+        index = [s.id for s in self.sessions].index(session.id)
+        self.sessions[index] = session.with_state(SessionState.COMPLETED)
 
     # -- cenario --------------------------------------------------------------
 
@@ -438,16 +445,50 @@ class TestMerge(_Case):
         self.assertFalse(self.reachable(self.agent_commit))
 
     def test_unreadable_ancestry_after_merge_is_cleanup_pending(self):
-        self.faults[("merge-base",)] = 128
+        # So DEPOIS do merge: antes dele a checagem do M7 bloquearia.
+        self.after[("merge",)] = lambda: self.faults.__setitem__(
+            ("merge-base",), 128)
         result = self.finish(cleanup=True)
         self.assert_preserved(result, FinishState.CLEANUP_PENDING)
         self.assertIn("integration is not proven", result.message)
 
-    def test_operator_commit_in_the_worktree_must_also_be_integrated(self):
-        own = self.commit_on(self.worktree, "operator.txt")
+    def test_unreadable_ancestry_before_merge_blocks_and_merges_nothing(self):
+        main_before = self.main_head()
+        self.faults[("merge-base",)] = 128
         result = self.finish(cleanup=True)
-        self.assert_preserved(result, FinishState.CLEANUP_PENDING)
+        self.assert_preserved(result, FinishState.BLOCKED)
+        self.assertEqual(self.main_head(), main_before)
+        self.assertFalse([c for c in self.calls if "merge" in c[3:4]])
+
+    def test_operator_commit_missing_from_the_sandbox_blocks_before_merge(self):
+        # M7: o merge so levaria o commit do sandbox; o do operador ficaria
+        # de fora e a limpeza entraria em CLEANUP_PENDING para sempre.
+        own = self.commit_on(self.worktree, "operator.txt")
+        main_before = self.main_head()
+        result = self.finish(cleanup=True)
+        self.assert_preserved(result, FinishState.BLOCKED)
+        self.assertIn("the operator branch has commits the sandbox branch "
+                      "does not contain", result.message)
+        self.assertIn(own[:12], result.message)
+        self.assertEqual(self.main_head(), main_before)
+        self.assertFalse([c for c in self.calls if "merge" in c[3:4]])
         self.assertFalse(self.reachable(own))
+
+    def test_operator_commit_already_in_the_target_does_not_block(self):
+        own = self.commit_on(self.worktree, "operator.txt")
+        git(self.repo, "merge", "-q", "--no-edit", "topic")
+        result = self.finish()
+        self.assertIs(result.state, FinishState.MERGED, result.message)
+        self.assertTrue(self.reachable(own))
+        self.assertTrue(self.reachable(self.agent_commit))
+
+    def test_operator_commit_the_sandbox_contains_does_not_block(self):
+        own = self.commit_on(self.worktree, "operator.txt")
+        git(self.sandbox, "pull", "-q", "--no-rebase", "--no-edit",
+            str(self.worktree), "topic")
+        result = self.finish()
+        self.assertIs(result.state, FinishState.MERGED, result.message)
+        self.assertTrue(self.reachable(own))
 
     def test_ancestry_proven_without_cleanup_is_merged(self):
         result = self.finish()
@@ -1167,6 +1208,111 @@ class TestWorktreeWithoutSandbox(_Case):
                                   agent_root=self.tmp / "home" / "asb-agent")
         self.assertFalse(manager.merged(self.checkout_id))
         self.assertFalse(manager.sandbox_absent(self.checkout_id))
+
+
+class TestConversationsThePurgeDeletes(_Case):
+    """M4: a confirmacao lista as sessoes cuja historia do provedor o purge
+    apaga (`suspended`/`exited_resumable`/`detached` com sonda DEAD), e
+    depois do unbind os registros nao finais viram `completed`."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.agent_commit = self.commit_on(self.sandbox, "agent.txt")
+        self.doomed = []
+        for state in (SessionState.SUSPENDED, SessionState.EXITED_RESUMABLE,
+                      SessionState.DETACHED):
+            record = self.session(state)
+            self.liveness[record.id] = Liveness.DEAD
+            self.doomed.append(record)
+        self.recovery = self.session(SessionState.RECOVERY_REQUIRED)
+        self.liveness[self.recovery.id] = Liveness.DEAD
+        self.done = self.session(SessionState.COMPLETED, terminal=False)
+
+    def controller(self) -> tui.TuiController:
+        return TestMissingRowFromTheTui.controller(self)
+
+    def select(self, ctl: tui.TuiController) -> None:
+        key = f"c:{self.checkout_id}"
+        index = [row.key for row in ctl.rows].index(key)
+        ctl.move(index - ctl.selected)
+
+    def assert_lists_the_doomed(self, detail: tuple[str, ...]) -> None:
+        text = "\n".join(detail)
+        self.assertIn("purge deletes the provider history of", text)
+        for record in self.doomed:
+            self.assertIn(f"{record.id} ({record.agent}, {record.state})",
+                          text)
+        self.assertNotIn(self.recovery.id, text)
+        self.assertNotIn(self.done.id, text)
+
+    def test_the_manager_lists_only_dead_resumable_sessions(self):
+        alive = self.session(SessionState.DETACHED)
+        self.liveness[alive.id] = Liveness.ALIVE
+        lost = self.manager().lost_sessions(self.checkout_id)
+        self.assertEqual([s.id for s in lost], [s.id for s in self.doomed])
+        runtime = self.runtime()
+        runtime.sandbox_absent = lambda binding: True
+        self.assertEqual(self.manager(runtime=runtime).lost_sessions(
+            self.checkout_id), ())
+
+    def test_the_finish_confirmation_lists_them(self):
+        ctl = self.controller()
+        self.select(ctl)
+        tui.handle_key(ctl, ord("f"))
+        tui.handle_key(ctl, 10)
+        self.assertIn("finish?", ctl.prompt.text)
+        self.assert_lists_the_doomed(ctl.prompt.detail)
+
+    def test_the_cleanup_confirmation_lists_them(self):
+        ref = f"refs/asb/{self.ws}/topic"
+        git(self.repo, "fetch", "-q", str(self.sandbox),
+            f"refs/heads/topic:{ref}")
+        git(self.repo, "merge", "-q", "--no-edit", ref)
+        ctl = self.controller()
+        self.select(ctl)
+        tui.handle_key(ctl, ord("f"))
+        self.assertIn("clean up?", ctl.prompt.text)
+        self.assert_lists_the_doomed(ctl.prompt.detail)
+
+    def test_the_missing_row_confirmation_lists_them(self):
+        git(self.repo, "worktree", "remove", str(self.worktree))
+        ctl = self.controller()
+        self.select(ctl)
+        tui.handle_key(ctl, ord("f"))
+        self.assertIn("missing", "\n".join(ctl.prompt.detail))
+        self.assert_lists_the_doomed(ctl.prompt.detail)
+
+    def test_nothing_to_lose_is_said_plainly(self):
+        for record in self.doomed:
+            self.sessions.remove(record)
+        preview = self.manager().finish_preview(self.checkout_id, "main")
+        self.assertEqual(preview.lost_sessions, ())
+        lines = tui._finish_lines(preview, cleanup=False, delete=False)
+        self.assertIn("purge deletes no resumable conversation",
+                      "\n".join(lines))
+
+    def test_after_the_unbind_every_open_record_is_completed(self):
+        result = self.finish(cleanup=True)
+        self.assert_cleaned(result, self.agent_commit)
+        states = {s.id: s.state for s in self.sessions}
+        for record in (*self.doomed, self.recovery, self.done):
+            self.assertIs(states[record.id], SessionState.COMPLETED)
+        self.assertIn("marked 4 session record(s) completed", result.message)
+
+    def test_a_blocked_cleanup_completes_nothing(self):
+        self.commit_on(self.worktree, "operator.txt")
+        result = self.manager().cleanup(self.checkout_id)
+        self.assertIs(result.state, FinishState.BLOCKED, result.message)
+        self.assertEqual([s.state for s in self.sessions][:3],
+                         [s.state for s in self.doomed])
+
+    def test_a_record_that_cannot_be_completed_is_a_note_not_a_failure(self):
+        def refuse(session):
+            raise RuntimeError("store locked")
+        result = self.finish(cleanup=True, complete_session=refuse)
+        self.assert_cleaned(result, self.agent_commit)
+        self.assertIn("could not mark session", result.message)
+        self.assertIn("store locked", result.message)
 
 
 if __name__ == "__main__":

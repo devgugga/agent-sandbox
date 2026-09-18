@@ -42,10 +42,16 @@ from .model import (
 
 # Sessoes que nunca mais rodam: nao precisam de sonda.
 _FINAL_SESSIONS = frozenset({SessionState.COMPLETED, SessionState.FAILED})
+# Conversas retomaveis cuja historia do provedor vive no volume de sessao
+# do workspace, que o purge apaga.
+_RESUMABLE_SESSIONS = frozenset({SessionState.SUSPENDED,
+                                 SessionState.EXITED_RESUMABLE,
+                                 SessionState.DETACHED})
 _EXPORT_NAMESPACE = "refs/asb"
 
 SessionLister = Callable[[CheckoutId], "list[AgentSession]"]
 LivenessProbe = Callable[[CheckoutBinding, AgentSession], Liveness]
+SessionWriter = Callable[[AgentSession], object]
 
 
 class CheckoutError(Exception):
@@ -93,6 +99,9 @@ class FinishPreview:
     # host sem mutacao (so na previa de merge).
     sandbox_branch: str | None = None
     sandbox_commit: str | None = None
+    # Sessoes cuja historia do provedor o purge apaga (ver
+    # `CheckoutManager.lost_sessions`).
+    lost_sessions: tuple[AgentSession, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -121,7 +130,8 @@ class CheckoutManager:
                  agent_root: Path | None = None,
                  runtime: SandboxRuntime | None = None,
                  sessions: SessionLister | None = None,
-                 liveness: LivenessProbe | None = None) -> None:
+                 liveness: LivenessProbe | None = None,
+                 complete_session: SessionWriter | None = None) -> None:
         self._registry = registry
         self._repository = repository
         self._agent_root = (agent_root if agent_root is not None
@@ -130,6 +140,7 @@ class CheckoutManager:
         self._runtime = runtime
         self._sessions = sessions
         self._liveness = liveness
+        self._complete_session = complete_session
 
     # -- leitura ------------------------------------------------------------------
 
@@ -398,7 +409,27 @@ class CheckoutManager:
         return FinishPreview(source.path, source.branch, commit,
                              binding.workspace, target_branch, target,
                              sandbox_branch=sandbox[0],
-                             sandbox_commit=sandbox[1])
+                             sandbox_commit=sandbox[1],
+                             lost_sessions=self.lost_sessions(checkout_id))
+
+    def lost_sessions(self, checkout_id: CheckoutId
+                      ) -> tuple[AgentSession, ...]:
+        """As sessoes do checkout cuja historia do provedor o purge do
+        sandbox apagaria: `suspended`, `exited_resumable` ou `detached`
+        com sonda DEAD (uma viva ou incerta bloqueia o finish de qualquer
+        jeito). Vazio sem os servicos do finish ou com o sandbox ausente
+        (nao ha volume a apagar). Read-only, para a confirmacao."""
+        if (self._runtime is None or self._sessions is None
+                or self._liveness is None):
+            return ()
+        binding = self._registry.checkout(checkout_id)
+        candidates = [s for s in self._sessions(checkout_id)
+                      if s.state in _RESUMABLE_SESSIONS
+                      and s.terminal_id is not None]
+        if not candidates or self._runtime.sandbox_absent(binding):
+            return ()
+        return tuple(s for s in candidates
+                     if self._liveness(binding, s) is Liveness.DEAD)
 
     def merged(self, checkout_id: CheckoutId,
                target_branch: str | None = None) -> bool:
@@ -479,8 +510,23 @@ class CheckoutManager:
         operator_commit = self._repository(source.path).commit("HEAD")
         if operator_commit is None:
             raise CheckoutError(f"could not read HEAD of {source.path}")
-        # 6. A primeira mutacao: o merge no checkout alvo.
+        # 5b. O merge so leva o commit do sandbox: o HEAD do operador tem
+        #     de estar nele ou ja no alvo, senao a prova do passo 7 nunca
+        #     fecha e a limpeza fica em CLEANUP_PENDING para sempre.
         target = self._repository(target_path)
+        target_before = target.commit("HEAD")
+        if not (target.is_ancestor(operator_commit, sandbox_commit)
+                or (target_before is not None
+                    and target.is_ancestor(operator_commit, target_before))):
+            return FinishResult.blocked(
+                f"the operator branch has commits the sandbox branch does "
+                f"not contain: {source.path} is at {operator_commit[:12]}, "
+                f"which is neither in {ref} nor in {request.target_branch}; "
+                "nothing was merged. Bring those commits into the sandbox "
+                f"branch, or merge {source.branch} into "
+                f"{request.target_branch} yourself, then retry",
+                sandbox_commit)
+        # 6. A primeira mutacao: o merge no checkout alvo.
         recovery = (f"Resolve and commit in {target_path}, or run: "
                     f"git -C {target_path} merge --abort")
         try:
@@ -638,8 +684,34 @@ class CheckoutManager:
             self._registry.unbind_checkout(binding.checkout_id)
         except (ProjectRegistryError, OSError) as exc:
             return pending(f"could not remove the registry binding: {exc}")
+        # 6. Os registros de sessao que sobraram: o checkout nao existe
+        #    mais e o purge apagou a historia do provedor. Nenhum esta vivo
+        #    (provado acima); falhar aqui e so uma nota, o CLEANED fica.
+        notes.extend(self._complete_orphans(binding.checkout_id))
         return FinishResult(FinishState.CLEANED, source_commit, target_commit,
                             "; ".join(notes))
+
+    def _complete_orphans(self, checkout_id: CheckoutId) -> list[str]:
+        if self._complete_session is None:
+            return []
+        notes: list[str] = []
+        done = 0
+        try:
+            orphans = [s for s in self._sessions(checkout_id)
+                       if s.state not in _FINAL_SESSIONS]
+        except Exception as exc:  # depois do unbind: nunca desfaz o CLEANED
+            return [f"could not list the session records: {exc}"]
+        for session in orphans:
+            try:
+                self._complete_session(session)
+            except Exception as exc:  # idem
+                notes.append(f"could not mark session {session.id} "
+                             f"completed: {exc}")
+            else:
+                done += 1
+        if done:
+            notes.insert(0, f"marked {done} session record(s) completed")
+        return notes
 
     def _delete_merged(self, project: Project, branch: str | None,
                        target_commit: str, location: Path) -> str:

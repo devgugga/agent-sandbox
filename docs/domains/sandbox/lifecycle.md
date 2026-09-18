@@ -313,7 +313,8 @@ integration again and is `blocked` without that proof.
    `cleanup_pending` ("integration is not proven").
 
 Git commands that mutate (`fetch`, `merge`, `worktree remove`,
-`branch -d`) run with a 600 s timeout; reads keep the 10 s one.
+`branch -d`) run with a 600 s timeout; reads keep the 10 s one, and so
+do `worktree add` and its rollback `branch -D` in worktree creation (§6).
 
 ### Cleanup and retry
 

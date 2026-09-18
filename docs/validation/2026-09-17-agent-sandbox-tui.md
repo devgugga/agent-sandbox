@@ -186,6 +186,23 @@ with a real terminal.
 
 Drawn from the controller's ledger; none is fixed by this task.
 
+**Spec divergence to ratify: external-merge detection (spec §10.4)**
+
+Spec §10.4 says the next refresh detects clean worktrees whose `HEAD` is
+already contained in the target branch and labels them
+`merged / cleanup available`. The implementation also requires at least
+one exported sandbox ref (`refs/asb/<ws>/*`) and requires every such ref
+to be contained in the integration branch. Scenario 11 covers that path
+(`asb-agent pull`, which writes the ref, then `git merge`). The gap: an
+operator who merges the worktree branch by hand without ever running
+`pull` or a finish gets no label and no direct cleanup; `f` then runs a
+full finish, which exports and merges (a no-op merge) before cleaning up.
+Task 12 chose this on purpose: when the work lives only in the sandbox,
+the operator worktree's `HEAD` is still the base commit and is always
+contained in `main`, so a `HEAD`-only check would label every untouched
+worktree as merged. The controller should ratify this divergence or
+change the spec.
+
 **Security (needs a human decision)**
 
 - `asb-agent pull` (existing command, outside this plan) reads the sandbox
@@ -208,9 +225,8 @@ Drawn from the controller's ledger; none is fixed by this task.
 
 **Behaviour to know**
 
-- `merged / cleanup available` needs at least one `refs/asb/<ws>/*` ref: an
-  external merge made without `asb-agent pull` or a finish is not labelled.
-  The label and the direct cleanup always target the integration branch.
+- The `merged / cleanup available` label and its direct cleanup always
+  target the integration branch.
 - A provider that creates its session file only after the first prompt
   leaves the session with no provider ID; after a restart it becomes
   `recovery_required`, not natively resumed.
@@ -236,8 +252,6 @@ Drawn from the controller's ledger; none is fixed by this task.
 - `lifecycle.md` §4 still says a suspended workspace surfaces the raw
   `podman port` failure, and the suspended-workspace message names no
   remedy.
-- `lifecycle.md` §7 says every mutating Git command gets the 600 s
-  timeout; `worktree add` and the rollback `branch -D` keep 10 s.
 - `ensure()`'s docstring still says it writes the registry;
   `codex.py`/`claude.py` module docstrings overstate the session-ID proof.
 - `remote_run` can raise `ValueError` for an out-of-range port; `--title`

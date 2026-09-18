@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import base64
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -125,6 +126,9 @@ class SandboxFixture:
         self._registered_networks: set[str] = set()
         self._registered_units: set[str] = set()
         self._registered_paths: set[Path] = set([self.state_root])
+        # (container, sessao tmux, usuario): encerradas no teardown ANTES de
+        # parar qualquer unit, pelo mesmo usuario que as criou por SSH.
+        self._registered_tmux_sessions: set[tuple[str, str, str]] = set()
 
         # Pre-register all isolated units for this workspace and keyring
         self._registered_units.add(self.unit)
@@ -170,6 +174,40 @@ class SandboxFixture:
         self._validate_resource_name(name)
         self._registered_units.add(name)
         return name
+
+    _TMUX_NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+
+    def register_tmux_session(self, container: str, name: str, user: str) -> str:
+        """Registra uma sessao tmux que roda DENTRO de `container` (um
+        container desta fixture) para o teardown encerrar."""
+        self._validate_resource_name(container)
+        if not self._TMUX_NAME.fullmatch(name):
+            raise IsolationError(f"Sessao tmux {name!r} recusada: nome invalido")
+        self._registered_tmux_sessions.add((container, name, user))
+        return name
+
+    def _kill_tmux_session(self, container: str, name: str, user: str) -> None:
+        """Encerra a sessao se o container ainda roda; ausente nao e erro.
+        O servidor tmux vive dentro do container, que o teardown remove em
+        seguida — isto so garante que a sessao nao sobrevive ate la."""
+        if not self._podman_exists("container", container):
+            return
+        running = subprocess.run(
+            [self._podman_bin, "inspect", container, "--format", "{{.State.Running}}"],
+            capture_output=True, text=True)
+        if running.stdout.strip() != "true":
+            return
+        res = subprocess.run(
+            [self._podman_bin, "exec", "--user", user, container,
+             "tmux", "kill-session", "-t", f"={name}"],
+            capture_output=True, text=True)
+        gone = res.returncode == 1 and (
+            f"can't find session: {name}" in res.stderr
+            or "no server running" in res.stderr)
+        if res.returncode != 0 and not gone:
+            raise IsolationError(
+                f"tmux kill-session {name} em {container} falhou "
+                f"(rc={res.returncode}): {res.stderr.strip()}")
 
     def _validate_resource_name(self, name: str) -> str:
         if not name.startswith("asb-test-"):
@@ -739,6 +777,17 @@ class SandboxFixture:
 
     def cli(self, *args: str) -> subprocess.CompletedProcess[str]:
         """Executes the ASB CLI within the isolated environment."""
+        cli_bin = Path(__file__).resolve().parents[2] / "cli" / "asb-agent"
+        return subprocess.run(
+            [sys.executable, str(cli_bin), *args],
+            env=self.cli_env(),
+            capture_output=True,
+            text=True,
+        )
+
+    def cli_env(self) -> dict[str, str]:
+        """O ambiente isolado que `cli()` passa ao CLI real; um teste que
+        chama o pacote em processo o aplica a `os.environ`."""
         env = dict(os.environ)
         env["ASB_CREDENTIALS_VOLUME"] = self.credentials_volume
         env["ASB_TOOLCACHE_VOLUME"] = self.toolcache_volume
@@ -749,13 +798,7 @@ class SandboxFixture:
         env["ASB_CONFIG_ROOT"] = str(self.config_dir)
         env["ASB_STATE_ROOT"] = str(self.state_root / "state")
         env["ASB_NETWORK_UNIT"] = self.network_unit
-        cli_bin = Path(__file__).resolve().parents[2] / "cli" / "asb-agent"
-        return subprocess.run(
-            [sys.executable, str(cli_bin), *args],
-            env=env,
-            capture_output=True,
-            text=True,
-        )
+        return env
 
     # Mesma tabela estrita do supervisor (a fixture nao importa `asb`): pares
     # (exit code, stdout) aceitos; qualquer outro par ou stderr falha fechado.
@@ -883,6 +926,10 @@ class SandboxFixture:
                 action(*args, **kwargs)
             except (IsolationError, OSError, AssertionError) as exc:
                 errors.append(str(exc))
+
+        # 0. Sessoes tmux registradas, enquanto o container ainda roda.
+        for container, name, user in sorted(self._registered_tmux_sessions):
+            attempt(self._kill_tmux_session, container, name, user)
 
         # 1. Units: parar e desabilitar no manager, em qualquer escopo.
         for unit in sorted(self._registered_units):

@@ -7,6 +7,12 @@ primeira linha e um registro
 `{"type": "session_meta", "payload": {"id": "...", ...}}`. So a primeira
 linha e lida (metadado de sessao, nunca conteudo de transcript).
 
+O volume de sessao e do WORKSPACE, compartilhado por todos os checkouts
+ligados a ele, e e varrido recursivamente: um rollout novo de OUTRA sessao
+Codex viva no mesmo workspace pode aparecer durante a descoberta. Por isso
+so conta como candidato o arquivo cujo `payload.cwd` (string, caminho
+absoluto sem barra final) e o checkout de execucao desta sessao.
+
 Dentro do sandbox, `$HOME/.codex/sessions` e o subpath `codex-sessions` do
 volume de sessao do workspace; o driver o le PELO HOST, pelo mountpoint do
 volume, via `sessions_root`. Sem `sessions_root` nao ha varredura: o
@@ -16,7 +22,7 @@ from __future__ import annotations
 
 import json
 import re
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Iterable
 
 from asb.agents.base import AgentDriver, SessionEvidence
@@ -38,26 +44,38 @@ class CodexDriver(AgentDriver):
         return root.rglob("*.jsonl")
 
     def discover_session_id(self, evidence: SessionEvidence) -> str | None:
-        candidates = [p for p in evidence.new_paths if p.suffix == ".jsonl"]
-        if len(candidates) != 1:
+        if evidence.cwd is None:
             return None
-        try:
-            with candidates[0].open("r", encoding="utf-8") as handle:
-                first_line = handle.readline()
-        except OSError:
-            return None
-        try:
-            record = json.loads(first_line)
-        except json.JSONDecodeError:
-            return None
-        if not isinstance(record, dict):
-            return None
-        if record.get("type") != "session_meta":
-            return None
-        payload = record.get("payload")
-        if not isinstance(payload, dict):
-            return None
-        session_id = payload.get("id")
-        if isinstance(session_id, str) and session_id:
-            return session_id
+        ids = [session_id for path in evidence.new_paths
+               if path.suffix == ".jsonl"
+               and (session_id := _session_id_for(path, evidence.cwd))]
+        return ids[0] if len(ids) == 1 else None
+
+
+def _session_id_for(path: Path, cwd: Path) -> str | None:
+    """`payload.id` do `session_meta` na primeira linha de `path`, somente
+    se `payload.cwd` e o checkout `cwd`; senao `None`."""
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            first_line = handle.readline()
+    except OSError:
         return None
+    try:
+        record = json.loads(first_line)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(record, dict):
+        return None
+    if record.get("type") != "session_meta":
+        return None
+    payload = record.get("payload")
+    if not isinstance(payload, dict):
+        return None
+    session_cwd = payload.get("cwd")
+    if not isinstance(session_cwd, str) \
+            or PurePosixPath(session_cwd) != PurePosixPath(cwd):
+        return None
+    session_id = payload.get("id")
+    if isinstance(session_id, str) and session_id:
+        return session_id
+    return None

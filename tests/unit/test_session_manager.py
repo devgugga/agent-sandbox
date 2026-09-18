@@ -30,7 +30,7 @@ from asb.sessions.manager import (  # noqa: E402
 from asb.sessions.model import (  # noqa: E402
     AgentKind, AgentSession, ProviderSessionId, SessionState, TerminalId,
 )
-from asb.sessions.store import SessionStore  # noqa: E402
+from asb.sessions.store import SessionStore, StaleRevisionError  # noqa: E402
 from asb.sessions.terminal import Liveness, TerminalError  # noqa: E402
 
 CWD = Path("/srv/sandbox/project")
@@ -61,6 +61,7 @@ class FakeTerminal:
         self.start_error = start_error
         self.stop_error = stop_error
         self.calls: list[tuple] = []
+        self.on_exit_status = None
         # Estado persistido no instante de cada `start`: prova a ordem
         # "persistir STARTING, depois lancar".
         self.state_at_start: list[SessionState] = []
@@ -88,6 +89,8 @@ class FakeTerminal:
 
     def capture_exit_status(self, terminal_id) -> int | None:
         self.calls.append(("capture_exit_status", terminal_id))
+        if self.on_exit_status is not None:
+            self.on_exit_status()
         return self.exit_status
 
     def stop(self, terminal_id) -> None:
@@ -109,8 +112,10 @@ class FakeDriver:
 
     def __init__(self, kind: AgentKind = AgentKind.CODEX,
                  discoveries=(None,), resume_supported: bool = True,
-                 launch_env=None, resume_env=None) -> None:
+                 launch_env=None, resume_env=None,
+                 available=(True,)) -> None:
         self.kind = kind
+        self.available = list(available)
         self.discoveries = list(discoveries)
         self.resume_supported = resume_supported
         self.launch_env = launch_env or {}
@@ -132,9 +137,12 @@ class FakeDriver:
 
     def probe(self, run) -> AgentAvailability:
         self.probe_runs.append(run)
-        return AgentAvailability(available=True, version="1.0",
-                                 resume_supported=self.resume_supported,
-                                 reason="fake")
+        available = self.available.pop(0) if len(self.available) > 1 \
+            else self.available[0]
+        return AgentAvailability(
+            available=available, version="1.0" if available else None,
+            resume_supported=available and self.resume_supported,
+            reason="fake")
 
     def capture_before(self, cwd: Path) -> SessionEvidence:
         self.capture_before_cwds.append(cwd)
@@ -210,7 +218,8 @@ class TestStart(ManagerCase):
         self.assertEqual(session.terminal_id, terminal_name(session.id))
         self.assertEqual(session.last_healthy_at, NOW_STORED)
         self.assertEqual(self.store.get(session.id), session)
-        # Metadados capturados ANTES do lancamento, no cwd de execucao.
+        # Metadados capturados no cwd de execucao (a ORDEM antes do
+        # lancamento e provada pelo teste com o CodexDriver real).
         self.assertEqual(driver.capture_before_cwds, [CWD])
         self.assertEqual(terminal.names("start"),
                          [("start", session.terminal_id, CWD, ("codex",))])
@@ -308,13 +317,39 @@ class TestStart(ManagerCase):
                 for name in ("a", "b"):
                     (root / f"rollout-{name}.jsonl").write_text(
                         json.dumps({"type": "session_meta",
-                                    "payload": {"id": f"id-{name}"}}) + "\n")
+                                    "payload": {"cwd": str(CWD),
+                                                "id": f"id-{name}"}}) + "\n")
 
             terminal.start = start_and_write
             session = self.make(terminal, driver).start(self.request())
         self.assertEqual(session.state, SessionState.RUNNING)
         self.assertIsNone(session.provider_session_id)
         self.assertEqual(self.sleeps, [1.0] * 4)
+
+    def test_snapshot_is_taken_before_launch_with_real_codex_driver(self):
+        # O `start` do terminal escreve o rollout desta sessao: so um
+        # instantaneo tirado ANTES do lancamento o ve como arquivo novo.
+        import json
+
+        from asb.agents.codex import CodexDriver
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            terminal = self.terminal()
+
+            def start_and_write(terminal_id, cwd, command):
+                (root / "rollout-mine.jsonl").write_text(
+                    json.dumps({"type": "session_meta",
+                                "payload": {"cwd": str(CWD),
+                                            "id": PROVIDER_ID}}) + "\n")
+
+            terminal.start = start_and_write
+            session = self.make(terminal, CodexDriver(sessions_root=root)
+                                ).start(self.request())
+        self.assertEqual(session.state, SessionState.RUNNING)
+        self.assertEqual(session.provider_session_id, PROVIDER_ID)
+        self.assertEqual(self.store.get(session.id), session)
+        self.assertEqual(self.sleeps, [])
 
     def test_invalid_discovered_id_is_not_persisted(self):
         driver = FakeDriver(discoveries=["-rm -rf"])
@@ -490,14 +525,48 @@ class TestResume(ManagerCase):
         self.assertEqual(terminal.names("start"), [])
         self.assertEqual(self.store.get(record.id), record)
 
-    def test_failed_clearing_of_dead_pane_propagates_without_state_change(self):
+    def test_failed_clearing_of_dead_pane_propagates_without_launch(self):
         record = self.seed(SessionState.DETACHED)
         terminal = self.terminal(probes=[Liveness.DEAD],
                                  stop_error=TerminalError("exit 255"))
         with self.assertRaises(TerminalError):
             self.make(terminal).resume(record.id)
         self.assertEqual(terminal.names("start"), [])
-        self.assertEqual(self.store.get(record.id), record)
+        # STARTING (despachado, nao confirmado) ja estava gravado; a proxima
+        # chamada sonda de novo.
+        self.assertEqual(self.store.get(record.id).state,
+                         SessionState.STARTING)
+
+    def test_stale_concurrent_resumer_fails_before_touching_the_terminal(self):
+        record = self.seed(SessionState.DETACHED)
+        terminal = self.terminal(probes=[Liveness.DEAD])
+
+        def concurrent_winner():
+            # Outro resumidor grava STARTING entre a nossa sonda e a escrita.
+            current = self.store.get(record.id)
+            self.store.replace(current.with_state(SessionState.STARTING))
+
+        terminal.on_exit_status = concurrent_winner
+        with self.assertRaises(StaleRevisionError):
+            self.make(terminal).resume(record.id)
+        self.assertEqual(terminal.names("stop"), [])
+        self.assertEqual(terminal.names("start"), [])
+
+    def test_transient_probe_failure_is_not_cached(self):
+        record = self.seed(SessionState.DETACHED)
+        # 1a chamada: sonda DEAD, probe do driver falha, sem lancamento.
+        # 2a chamada: sonda DEAD, probe ok, resume, sonda ALIVE.
+        terminal = self.terminal(probes=[Liveness.DEAD, Liveness.DEAD,
+                                         Liveness.ALIVE])
+        driver = FakeDriver(available=[False, True])
+        manager = self.make(terminal, driver)
+        first = manager.resume(record.id)
+        self.assertFalse(first.launched)
+        self.assertEqual(first.session.state, SessionState.RECOVERY_REQUIRED)
+        second = manager.resume(record.id)
+        self.assertTrue(second.launched)
+        self.assertEqual(second.session.state, SessionState.RUNNING)
+        self.assertEqual(len(driver.probe_runs), 2)
 
     def test_availability_is_probed_once_per_agent_kind(self):
         codex = FakeDriver(AgentKind.CODEX)

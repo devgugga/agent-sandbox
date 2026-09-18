@@ -227,10 +227,13 @@ class SessionManager:
     def _native_resume(self, record: AgentSession) -> AgentSession:
         driver = self._drivers[record.agent]
         argv = _argv_only(driver.resume(record.cwd, record.provider_session_id))
+        # STARTING primeiro (a sonda DEAD e a evidencia): a escrita checada
+        # por revisao faz um segundo resumidor concorrente falhar com
+        # `StaleRevisionError` ANTES de tocar o terminal do vencedor.
+        record = self._store.replace(record.with_state(SessionState.STARTING))
         # O pane morto (remain-on-exit) ainda ocupa o nome: remove-lo antes
         # de relancar com o MESMO TerminalId.
         self._terminal.stop(record.terminal_id)
-        record = self._store.replace(record.with_state(SessionState.STARTING))
         if self._launch(record, argv) is not Liveness.ALIVE:
             # A conversa nativa continua existindo: nao e `failed`.
             return self._store.replace(
@@ -252,10 +255,14 @@ class SessionManager:
         sandbox, sondado uma vez por tipo de agente."""
         if record.provider_session_id is None:
             return False
-        if record.agent not in self._availability:
-            self._availability[record.agent] = \
-                self._drivers[record.agent].probe(self._remote_run)
-        return self._availability[record.agent].resume_supported
+        availability = self._availability.get(record.agent)
+        if availability is None:
+            availability = self._drivers[record.agent].probe(self._remote_run)
+            if availability.available:
+                # So um binario que respondeu --version e --help e resultado
+                # definitivo; uma falha ao executar vale so para esta chamada.
+                self._availability[record.agent] = availability
+        return availability.resume_supported
 
     def _kill(self, record: AgentSession, state: SessionState) -> AgentSession:
         self._terminal.stop(record.terminal_id)

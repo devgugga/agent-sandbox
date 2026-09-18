@@ -290,7 +290,7 @@ class TestCodexSessionEvidence(unittest.TestCase):
             after = driver.capture_after(baseline)
             self.assertIsNone(driver.discover_session_id(after))
 
-    def test_multiple_new_files_returns_none(self):
+    def test_two_matching_new_files_return_none(self):
         with tempfile.TemporaryDirectory() as tmp:
             sessions_root = Path(tmp)
             sessions = sessions_root / "2026" / "09" / "17"
@@ -299,10 +299,10 @@ class TestCodexSessionEvidence(unittest.TestCase):
             baseline = driver.capture_before(Path("/repo"))
             (sessions / "rollout-a.jsonl").write_text(
                 json.dumps({"type": "session_meta",
-                            "payload": {"id": "id-a"}}) + "\n")
+                            "payload": {"cwd": "/repo", "id": "id-a"}}) + "\n")
             (sessions / "rollout-b.jsonl").write_text(
                 json.dumps({"type": "session_meta",
-                            "payload": {"id": "id-b"}}) + "\n")
+                            "payload": {"cwd": "/repo", "id": "id-b"}}) + "\n")
             after = driver.capture_after(baseline)
             self.assertIsNone(driver.discover_session_id(after))
 
@@ -316,7 +316,7 @@ class TestCodexSessionEvidence(unittest.TestCase):
             new_file = sessions / "rollout-2026-09-17T00-00-00-abc.jsonl"
             new_file.write_text(
                 json.dumps({"type": "session_meta",
-                            "payload": {"id": "session-meta-id"}}) + "\n"
+                            "payload": {"cwd": "/repo", "id": "session-meta-id"}}) + "\n"
                 + json.dumps({"type": "response_item"}) + "\n")
             after = driver.capture_after(baseline)
             self.assertEqual(after.new_paths, frozenset({new_file}))
@@ -344,7 +344,8 @@ class TestCodexSessionEvidence(unittest.TestCase):
             baseline = driver.capture_before(Path("/repo"))
             new_file = sessions / "rollout-no-id.jsonl"
             new_file.write_text(
-                json.dumps({"type": "session_meta", "payload": {}}) + "\n")
+                json.dumps({"type": "session_meta",
+                            "payload": {"cwd": "/repo"}}) + "\n")
             after = driver.capture_after(baseline)
             self.assertIsNone(driver.discover_session_id(after))
 
@@ -398,7 +399,7 @@ class TestCodexSessionEvidence(unittest.TestCase):
             new_file = sessions / "rollout-unreadable.jsonl"
             new_file.write_text(
                 json.dumps({"type": "session_meta",
-                            "payload": {"id": "session-meta-id"}}) + "\n")
+                            "payload": {"cwd": "/repo", "id": "session-meta-id"}}) + "\n")
             after = driver.capture_after(baseline)
             new_file.unlink()  # o candidato existia na varredura, mas sumiu
             self.assertIsNone(driver.discover_session_id(after))
@@ -410,12 +411,78 @@ class TestCodexSessionEvidence(unittest.TestCase):
             sessions.mkdir(parents=True)
             (sessions / "rollout-pre-existing.jsonl").write_text(
                 json.dumps({"type": "session_meta",
-                            "payload": {"id": "pre-existing"}}) + "\n")
+                            "payload": {"cwd": "/repo", "id": "pre-existing"}}) + "\n")
             driver = self._driver(sessions_root)
             baseline = driver.capture_before(Path("/repo"))
             after = driver.capture_after(baseline)
             self.assertEqual(after.new_paths, frozenset())
             self.assertIsNone(driver.discover_session_id(after))
+
+    def _write_meta(self, path: Path, payload: object) -> None:
+        path.write_text(json.dumps({"type": "session_meta",
+                                    "payload": payload}) + "\n")
+
+    def test_capture_records_cwd_in_both_snapshots(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            driver = self._driver(Path(tmp))
+            baseline = driver.capture_before(Path("/repo"))
+            after = driver.capture_after(baseline)
+            self.assertEqual(baseline.cwd, Path("/repo"))
+            self.assertEqual(after.cwd, Path("/repo"))
+
+    def test_candidate_with_matching_cwd_is_accepted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sessions_root = Path(tmp)
+            driver = self._driver(sessions_root)
+            baseline = driver.capture_before(Path("/repo"))
+            self._write_meta(sessions_root / "rollout-mine.jsonl",
+                             {"cwd": "/repo", "id": "mine"})
+            after = driver.capture_after(baseline)
+            self.assertEqual(driver.discover_session_id(after), "mine")
+
+    def test_only_new_file_from_another_checkout_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sessions_root = Path(tmp)
+            driver = self._driver(sessions_root)
+            baseline = driver.capture_before(Path("/repo"))
+            self._write_meta(sessions_root / "rollout-other.jsonl",
+                             {"cwd": "/other-checkout", "id": "other"})
+            after = driver.capture_after(baseline)
+            self.assertEqual(len(after.new_paths), 1)
+            self.assertIsNone(driver.discover_session_id(after))
+
+    def test_other_checkout_file_does_not_make_own_file_ambiguous(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sessions_root = Path(tmp)
+            driver = self._driver(sessions_root)
+            baseline = driver.capture_before(Path("/repo"))
+            self._write_meta(sessions_root / "rollout-other.jsonl",
+                             {"cwd": "/other-checkout", "id": "other"})
+            self._write_meta(sessions_root / "rollout-mine.jsonl",
+                             {"cwd": "/repo", "id": "mine"})
+            after = driver.capture_after(baseline)
+            self.assertEqual(driver.discover_session_id(after), "mine")
+
+    def test_missing_or_non_string_cwd_is_rejected(self):
+        for payload in ({"id": "no-cwd"}, {"cwd": None, "id": "null-cwd"},
+                        {"cwd": ["/repo"], "id": "list-cwd"}):
+            with self.subTest(payload=payload), \
+                    tempfile.TemporaryDirectory() as tmp:
+                sessions_root = Path(tmp)
+                driver = self._driver(sessions_root)
+                baseline = driver.capture_before(Path("/repo"))
+                self._write_meta(sessions_root / "rollout-x.jsonl", payload)
+                after = driver.capture_after(baseline)
+                self.assertIsNone(driver.discover_session_id(after))
+
+    def test_evidence_without_cwd_is_rejected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            new_file = Path(tmp) / "rollout-x.jsonl"
+            self._write_meta(new_file, {"cwd": "/repo", "id": "x"})
+            evidence = SessionEvidence(scan_root=Path(tmp),
+                                       new_paths=frozenset({new_file}))
+            self.assertIsNone(
+                self._driver(Path(tmp)).discover_session_id(evidence))
 
 
 class TestClaudeSessionEvidence(unittest.TestCase):

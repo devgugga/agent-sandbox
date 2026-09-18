@@ -74,13 +74,16 @@ class SessionEvidence:
     transcript. `scan_root` e o diretorio observado, ou `None` quando o
     provedor nao tem um local de estado comprovado neste host.
 
-    `capture_before()` preenche `known_paths` com o que ja existia.
-    `capture_after()` preenche `new_paths` com o que apareceu desde entao.
+    `capture_before()` preenche `known_paths` com o que ja existia e grava
+    em `cwd` o checkout de execucao da sessao; `capture_after()` preenche
+    `new_paths` com o que apareceu desde entao e repassa o mesmo `cwd`, para
+    que a descoberta recuse arquivos de OUTRO checkout do mesmo workspace.
     """
 
     scan_root: Path | None
     known_paths: frozenset[Path] = frozenset()
     new_paths: frozenset[Path] = frozenset()
+    cwd: Path | None = None
 
 
 def _first_line(text: str) -> str:
@@ -187,14 +190,15 @@ class AgentDriver(ABC):
 
     def capture_before(self, cwd: Path) -> SessionEvidence:
         root = self._scan_root(cwd)
-        return SessionEvidence(scan_root=root, known_paths=self._scan(root))
+        return SessionEvidence(scan_root=root, known_paths=self._scan(root),
+                               cwd=cwd)
 
     def capture_after(self, baseline: SessionEvidence) -> SessionEvidence:
         root = baseline.scan_root
         current = self._scan(root)
         new_paths = frozenset(current - baseline.known_paths)
         return SessionEvidence(scan_root=root, known_paths=current,
-                                new_paths=new_paths)
+                                new_paths=new_paths, cwd=baseline.cwd)
 
     @abstractmethod
     def discover_session_id(self, evidence: SessionEvidence) -> str | None:

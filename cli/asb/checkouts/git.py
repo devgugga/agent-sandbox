@@ -24,6 +24,9 @@ from pathlib import Path
 from .model import CheckoutState
 
 GIT_TIMEOUT_SECONDS = 10.0
+# Mutacoes que o finish roda (merge, fetch, worktree remove, branch -d):
+# matar uma delas no meio deixa estado parcial, entao o limite e longo.
+GIT_MUTATION_TIMEOUT_SECONDS = 600.0
 _HEADS = "refs/heads/"
 _ORIGIN = "refs/remotes/origin/"
 # Progresso que o Git escreve no stderr mesmo quando o comando falha
@@ -37,6 +40,11 @@ _UNSAFE_CATEGORIES = frozenset({"Cc", "Cf", "Zl", "Zp", "Cs"})
 
 class GitError(Exception):
     """O Git nao pode ser executado, ou respondeu algo que nao se prova."""
+
+
+class GitTimeout(GitError):
+    """O Git foi morto pelo timeout: uma mutacao pode ter ficado pela
+    metade (`index.lock`, `MERGE_HEAD`, um checkout parcial)."""
 
 
 @dataclass(frozen=True)
@@ -137,12 +145,18 @@ class GitRepository:
         self._runner = runner
         self._timeout = timeout
 
-    def run(self, *args: str) -> GitResult:
+    def run(self, *args: str, timeout: float | None = None) -> GitResult:
+        """`timeout`: o das leituras (curto) por padrao; mutacoes passam
+        `GIT_MUTATION_TIMEOUT_SECONDS`."""
         argv = ["git", "-C", str(self.path), *args]
+        limit = self._timeout if timeout is None else timeout
         try:
             completed = self._runner(argv, shell=False, capture_output=True,
-                                     timeout=self._timeout, check=False,
+                                     timeout=limit, check=False,
                                      stdin=subprocess.DEVNULL)
+        except subprocess.TimeoutExpired as exc:
+            raise GitTimeout(f"git {args[0]} in {self.path} was interrupted "
+                             f"after {limit:g} s") from exc
         except (OSError, subprocess.SubprocessError) as exc:
             raise GitError(f"could not run git in {self.path}: {exc}") from exc
         return GitResult(completed.returncode, _decode(completed.stdout),
@@ -301,26 +315,30 @@ class GitRepository:
 
     def worktree_remove(self, path: Path) -> GitResult:
         """Nunca `--force`: um worktree com mudancas e recusado pelo Git."""
-        return self.run("worktree", "remove", str(path))
+        return self.run("worktree", "remove", str(path),
+                        timeout=GIT_MUTATION_TIMEOUT_SECONDS)
 
     def fetch(self, source: Path, refspec: str) -> GitResult:
         """Busca `refspec` do repositorio local `source`. As opcoes terminam
         antes do repositorio (`--`); nenhuma tag, nenhum FETCH_HEAD."""
         _refuse_option(refspec)
         return self.run("fetch", "--no-tags", "--no-write-fetch-head", "--",
-                        str(source), refspec)
+                        str(source), refspec,
+                        timeout=GIT_MUTATION_TIMEOUT_SECONDS)
 
     def merge(self, ref: str) -> GitResult:
         """`git merge --no-edit <ref>` com uma ref completa ja validada; sem
         `--` entre `merge` e a ref (o Git a leria como caminho)."""
         _refuse_option(ref)
-        return self.run("merge", "--no-edit", ref)
+        return self.run("merge", "--no-edit", ref,
+                        timeout=GIT_MUTATION_TIMEOUT_SECONDS)
 
     def delete_merged_branch(self, name: str) -> GitResult:
         """`git branch -d`: o proprio Git recusa um branch nao integrado.
         Nunca `-D`."""
         _refuse_option(name)
-        return self.run("branch", "-d", name)
+        return self.run("branch", "-d", name,
+                        timeout=GIT_MUTATION_TIMEOUT_SECONDS)
 
     def delete_branch(self, name: str) -> GitResult:
         """So para o rollback que ja provou ter criado `name` no commit

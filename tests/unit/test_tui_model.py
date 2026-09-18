@@ -275,6 +275,16 @@ class TestWorktreeMarkers(unittest.TestCase):
                                 [replace(view, merged=False)], [])
         self.assertNotIn("merged", plain.text)
 
+    def test_a_missing_merged_worktree_shows_a_pending_cleanup(self):
+        view = CheckoutView(
+            checkout_id=CheckoutId("c-a"), project_id=P_ALPHA,
+            source_path=Path("/w/gone"), workspace="ws",
+            kind=CheckoutKind.WORKTREE, status=WorkspaceStatus.ABSENT,
+            branch=None, missing=True, merged=True)
+        [_, row] = build_tree([_project(P_ALPHA, "/src/alpha")], [view], [])
+        self.assertTrue(row.text.endswith(
+            "/w/gone  missing  merged / cleanup pending"))
+
 
 class TestSanitize(unittest.TestCase):
     def test_control_characters_become_a_visible_placeholder(self):

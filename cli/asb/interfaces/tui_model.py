@@ -63,6 +63,7 @@ class CheckoutView:
 
 
 MERGED_LABEL = "merged / cleanup available"
+PENDING_LABEL = "merged / cleanup pending"
 
 
 @dataclass(frozen=True)
@@ -146,7 +147,9 @@ def _checkout_text(view: CheckoutView, expanded: bool) -> str:
     if view.missing:
         parts.append("missing")
     if view.merged:
-        parts.append(MERGED_LABEL)
+        # Sem o worktree, a prova veio das refs exportadas: resta a limpeza
+        # interrompida.
+        parts.append(PENDING_LABEL if view.missing else MERGED_LABEL)
     text = "  ".join(parts)
     return f"{text}  !! {view.error}" if view.error else text
 

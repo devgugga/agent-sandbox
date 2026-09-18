@@ -255,8 +255,9 @@ class TuiController:
                     view = _with_error(view, store_error)
                 if found.binding.checkout_id in missing:
                     view = replace(view, missing=True)
-                if view.kind is CheckoutKind.WORKTREE and not view.missing:
-                    # Prova fresca a cada refresh, nunca guardada.
+                if view.kind is CheckoutKind.WORKTREE:
+                    # Prova fresca a cada refresh, nunca guardada; para um
+                    # worktree ausente, a das refs exportadas.
                     view = replace(view, merged=self.checkouts.merged(
                         view.checkout_id, project.integration_branch))
                 self._views.append(view)
@@ -531,6 +532,11 @@ class TuiController:
             self.message = "the primary checkout is never finished"
             return
         project = next(p for p in self._projects if p.id == view.project_id)
+        if view.missing:
+            # Nada para mergear: so a limpeza, que prova tudo de novo e
+            # recusa (BLOCKED) sem evidencia.
+            self._missing_cleanup_confirm(view, project.integration_branch)
+            return
         if view.merged:
             self._cleanup_confirm(view.checkout_id, project.integration_branch,
                                   delete=False)
@@ -555,7 +561,10 @@ class TuiController:
         delete = request.delete_merged_branch
         self.prompt = Prompt(
             "finish? y finish  c cleanup  b branch  (other key cancels)",
-            {"y": lambda: self._finish_run(request),
+            # O finish fica preso ao branch e commit do sandbox mostrados.
+            {"y": lambda: self._finish_run(replace(
+                request, expected_sandbox_branch=preview.sandbox_branch,
+                expected_sandbox_commit=preview.sandbox_commit)),
              "c": lambda: self._finish_confirm(
                  replace(request, cleanup_after_merge=not cleanup)),
              "b": lambda: self._finish_confirm(
@@ -566,6 +575,21 @@ class TuiController:
         self.message = "finishing..."
         self.terminal.redraw()
         self._show_result(lambda: self.checkouts.finish(request), "finish")
+
+    def _missing_cleanup_confirm(self, view: CheckoutView,
+                                 target: str) -> None:
+        self.prompt = Prompt(
+            "clean up? y clean up  (other key cancels)",
+            {"y": lambda: self._cleanup_run(view.checkout_id, target, False)},
+            detail=tuple(sanitize(line) for line in (
+                f"worktree: {view.source_path} is missing",
+                f"cleanup: proves integration into {target} through the "
+                f"export refs of {view.workspace}, then purges the sandbox "
+                "and removes the registry binding",
+                "without that proof it is refused and nothing is removed",
+                "local branch: kept (its name is unknown here); remote "
+                "branches are never touched",
+            )))
 
     def _cleanup_confirm(self, checkout_id, target: str, *,
                          delete: bool) -> None:
@@ -656,8 +680,9 @@ def _finish_lines(preview: FinishPreview, *, cleanup: bool,
                   delete: bool) -> tuple[str, ...]:
     return tuple(sanitize(line) for line in (
         _source_line(preview),
-        f"merges: the sandbox branch HEAD of {preview.workspace}, exported "
-        "on confirm",
+        f"merges: sandbox branch {preview.sandbox_branch} at "
+        f"{(preview.sandbox_commit or '')[:12]} ({preview.workspace}); "
+        "refused if it moves before the export",
         f"target: {preview.target_branch} in {preview.target_path}",
         f"cleanup after merge: {_yes(cleanup)} (c toggles; purges the "
         "sandbox, removes the worktree)",

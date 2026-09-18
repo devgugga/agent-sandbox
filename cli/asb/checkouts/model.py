@@ -67,6 +67,10 @@ class FinishCheckout:
     target_branch: str
     cleanup_after_merge: bool = False
     delete_merged_branch: bool = False
+    # O branch e o commit do sandbox que a confirmacao mostrou; com eles,
+    # o export recusa se o sandbox mudou desde entao.
+    expected_sandbox_branch: str | None = None
+    expected_sandbox_commit: str | None = None
 
 
 @dataclass(frozen=True)

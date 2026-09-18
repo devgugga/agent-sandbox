@@ -767,6 +767,7 @@ class TestNewWorktree(_Case):
 
 
 SOURCE_COMMIT = "fedcba9876543210fedcba9876543210fedcba98"
+SANDBOX_COMMIT = "abcdef0123456789abcdef0123456789abcdef01"
 
 
 class TestFinish(_Case):
@@ -778,7 +779,9 @@ class TestFinish(_Case):
         self.checkouts.finish_preview.side_effect = (
             lambda checkout_id, target, merge=True: FinishPreview(
                 WORKTREE, "topic", SOURCE_COMMIT, "ws-wt", target,
-                PRIMARY if merge else None))
+                PRIMARY if merge else None,
+                sandbox_branch="agent-work" if merge else None,
+                sandbox_commit=SANDBOX_COMMIT if merge else None))
         self.checkouts.finish.return_value = FinishResult(
             FinishState.CLEANED, SOURCE_COMMIT, BASE_COMMIT,
             "merged refs/asb/ws-wt/topic into main; purged sandbox ws-wt")
@@ -798,6 +801,8 @@ class TestFinish(_Case):
         ctl = self.open_confirmation()
         self.checkouts.finish_preview.assert_called_once_with(C_WT, "main")
         detail = "\n".join(ctl.prompt.detail)
+        self.assertIn(f"merges: sandbox branch agent-work at "
+                      f"{SANDBOX_COMMIT[:12]}", detail)
         for needle in (str(WORKTREE), SOURCE_COMMIT[:12], "target: main in "
                        f"{PRIMARY}", "cleanup after merge: no",
                        "delete local branch: no", "git branch -d",
@@ -815,7 +820,9 @@ class TestFinish(_Case):
         tui.handle_key(ctl, ord("y"))
         self.checkouts.finish.assert_called_once_with(
             FinishCheckout(C_WT, "main", cleanup_after_merge=True,
-                           delete_merged_branch=True))
+                           delete_merged_branch=True,
+                           expected_sandbox_branch="agent-work",
+                           expected_sandbox_commit=SANDBOX_COMMIT))
         self.runtime.discover.assert_called_once()  # refresh depois
         self.assertEqual(ctl.message, "finish: cleaned")
         self.assertIn("purged sandbox ws-wt", ctl.notice)
@@ -881,14 +888,44 @@ class TestFinish(_Case):
         ctl.refresh()
         self.assertEqual(self.checkouts.merged.call_count, 2)
 
-    def test_a_missing_worktree_is_never_labelled_merged(self):
+    def test_a_missing_worktree_with_proof_is_labelled_cleanup_pending(self):
         self.checkouts.list.return_value = [
             ListedCheckout(WORKTREE, self.bindings[C_WT], None, True)]
         self.checkouts.merged.return_value = True
         ctl = self.controller()
-        self.checkouts.merged.assert_not_called()
+        self.checkouts.merged.assert_called_once_with(C_WT, "main")
         rows = {row.key: row for row in ctl.rows}
-        self.assertNotIn("merged", rows["c:c-wt"].text)
+        self.assertIn("merged / cleanup pending", rows["c:c-wt"].text)
+        self.assertNotIn("cleanup available", rows["c:c-wt"].text)
+
+    def test_f_on_a_missing_row_offers_cleanup_even_without_the_label(self):
+        self.checkouts.list.return_value = [
+            ListedCheckout(WORKTREE, self.bindings[C_WT], None, True)]
+        self.checkouts.cleanup.return_value = FinishResult(
+            FinishState.BLOCKED, None, None, "no export ref; manual recovery")
+        ctl = self.controller()
+        self.select(ctl, "c:c-wt")
+        tui.handle_key(ctl, ord("f"))
+        self.checkouts.finish_preview.assert_not_called()
+        detail = "\n".join(ctl.prompt.detail)
+        for needle in (str(WORKTREE), "missing", "ws-wt", "main",
+                       "remote branches are never touched"):
+            self.assertIn(needle, detail)
+        tui.handle_key(ctl, ord("y"))
+        self.checkouts.cleanup.assert_called_once_with(C_WT, "main", False)
+        self.checkouts.finish.assert_not_called()
+        self.assertEqual(ctl.message, "cleanup: blocked")
+        self.assertIn("manual recovery", ctl.notice)
+
+    def test_any_other_key_cancels_the_missing_row_cleanup(self):
+        self.checkouts.list.return_value = [
+            ListedCheckout(WORKTREE, self.bindings[C_WT], None, True)]
+        ctl = self.controller()
+        self.select(ctl, "c:c-wt")
+        tui.handle_key(ctl, ord("f"))
+        tui.handle_key(ctl, ord("n"))
+        self.assertEqual(ctl.message, "cancelled")
+        self.checkouts.cleanup.assert_not_called()
 
     def test_f_on_a_merged_row_offers_cleanup_directly(self):
         self.checkouts.merged.return_value = True

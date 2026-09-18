@@ -211,30 +211,55 @@ class SandboxRuntime:
 
     # -- finish: exportar e purgar so com evidencia -------------------------
 
-    def export_head(self, binding: CheckoutBinding) -> tuple[str, str]:
+    def sandbox_head(self, binding: CheckoutBinding) -> tuple[str, str]:
+        """`(branch, commit)` do clone do sandbox, validados, so com leituras
+        do host (`symbolic-ref`, `rev-parse`). E o que a confirmacao do
+        finish mostra e o que `export_head` exige depois."""
+        root = self._connection(binding).project_root
+        try:
+            return self._head(root, self.repository(root),
+                              self._operator(binding))
+        except GitError as exc:
+            raise SandboxError(str(exc)) from exc
+
+    def _head(self, root: Path, sandbox: GitRepository,
+              operator: GitRepository) -> tuple[str, str]:
+        branch = sandbox.symbolic_branch()
+        if branch is None:
+            raise SandboxError(
+                f"sandbox HEAD in {root} is detached; put the work on a "
+                "branch before finishing")
+        if not operator.valid_branch_name(branch):
+            raise SandboxError(
+                f"sandbox branch {branch!r} is not a valid branch name")
+        commit = sandbox.commit(f"refs/heads/{branch}")
+        if commit is None:
+            raise SandboxError(
+                f"sandbox branch {branch!r} does not resolve to a commit")
+        return branch, commit
+
+    def export_head(self, binding: CheckoutBinding,
+                    expected: tuple[str, str] | None = None
+                    ) -> tuple[str, str]:
         """Traz o commit EXATO do branch do clone do sandbox para
         `refs/asb/<workspace>/<branch>` no repositorio do operador e devolve
         `(commit, ref)`. Nao reusa `asb-agent pull`: o nome do branch vem
         de um checkout gravavel pelo agente e e validado antes de virar
         refspec. O `+` do refspec so atualiza a ref namespaced, que e nossa,
-        nunca um branch do operador."""
+        nunca um branch do operador. `expected`: o `(branch, commit)` que o
+        operador confirmou; qualquer diferenca recusa antes do fetch."""
         connection = self._connection(binding)
         root = connection.project_root
         sandbox = self.repository(root)
         operator = self._operator(binding)
         try:
-            branch = sandbox.symbolic_branch()
-            if branch is None:
+            branch, commit = self._head(root, sandbox, operator)
+            if expected is not None and (branch, commit) != expected:
                 raise SandboxError(
-                    f"sandbox HEAD in {root} is detached; put the work on a "
-                    "branch before finishing")
-            if not operator.valid_branch_name(branch):
-                raise SandboxError(
-                    f"sandbox branch {branch!r} is not a valid branch name")
-            commit = sandbox.commit(f"refs/heads/{branch}")
-            if commit is None:
-                raise SandboxError(
-                    f"sandbox branch {branch!r} does not resolve to a commit")
+                    f"the sandbox changed since the confirmation: it is on "
+                    f"{branch} at {commit[:12]}, the confirmation showed "
+                    f"{expected[0]} at {(expected[1] or '')[:12]}; nothing "
+                    "was merged, confirm again")
             ref = f"refs/asb/{binding.workspace}/{branch}"
             if not operator.valid_ref(ref):
                 raise SandboxError(f"export ref {ref!r} is not a valid ref")

@@ -41,7 +41,12 @@ from asb.projects.registry import (  # noqa: E402
     ProjectRegistry, ProjectRegistryError,
 )
 from asb.runtime.connection import ConnectionInfo  # noqa: E402
-from asb.runtime.sandbox import SandboxRuntime  # noqa: E402
+from asb.checkouts import git as git_module  # noqa: E402
+from asb.interfaces import sessions as session_cli, tui  # noqa: E402
+from asb.runtime.sandbox import (  # noqa: E402
+    SandboxRuntime, WorkspaceDiscovery, WorkspaceStatus,
+)
+from asb.sessions.store import SessionStore  # noqa: E402
 from asb.sessions.model import (  # noqa: E402
     AgentKind, AgentSession, SessionState, TerminalId,
 )
@@ -62,6 +67,7 @@ class _Case(unittest.TestCase):
         self.primary = self.registry.register_checkout(self.project.id,
                                                        self.repo)
         self.calls: list[list[str]] = []
+        self.timeouts: list[tuple[tuple[str, ...], float]] = []
         # prefixo do argv (depois de `git -C <path>`) -> acao.
         self.faults: dict[tuple[str, ...], object] = {}
         self.before: dict[tuple[str, ...], object] = {}
@@ -115,6 +121,7 @@ class _Case(unittest.TestCase):
         self.assertIs(kwargs["shell"], False)
         self.assertGreater(kwargs["timeout"], 0)
         args = tuple(argv[3:])
+        self.timeouts.append((args, kwargs["timeout"]))
         for key, hook in self.before.items():
             if args[:len(key)] == key:
                 hook()
@@ -122,6 +129,8 @@ class _Case(unittest.TestCase):
             if args[:len(key)] == key:
                 if fault is OSError:
                     raise OSError("injected")
+                if fault is subprocess.TimeoutExpired:
+                    raise subprocess.TimeoutExpired(argv, kwargs["timeout"])
                 return subprocess.CompletedProcess(argv, fault, b"",
                                                    b"error: injected")
         result = subprocess.run(argv, **kwargs)
@@ -851,9 +860,10 @@ class TestFinishPreview(_Case):
     def test_preview_names_the_source_commit_and_the_clean_target(self):
         before = list(self.calls)
         preview = self.manager().finish_preview(self.checkout_id, "main")
+        head = git(self.worktree, "rev-parse", "HEAD")
         self.assertEqual(preview, FinishPreview(
-            self.worktree, "topic", git(self.worktree, "rev-parse", "HEAD"),
-            self.ws, "main", self.repo))
+            self.worktree, "topic", head, self.ws, "main", self.repo,
+            sandbox_branch="topic", sandbox_commit=head))
         written = [c for c in self.calls[len(before):]
                    if c[3] in ("merge", "fetch", "worktree", "branch")
                    and c[3:5] != ["worktree", "list"]]
@@ -882,6 +892,194 @@ class TestFinishPreview(_Case):
         self.faults[("rev-parse", "--verify", "--quiet", "HEAD^{commit}")] = 1
         with self.assertRaisesRegex(CheckoutError, "could not read HEAD"):
             self.manager().finish_preview(self.checkout_id, "main")
+
+
+# -- rodada de correcao 1 -----------------------------------------------------------
+
+
+class TestConfirmedSandboxCommit(_Case):
+    """O commit que a confirmacao mostrou e o que o finish exporta."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.agent_commit = self.commit_on(self.sandbox, "agent.txt")
+        self.main_before = self.main_head()
+
+    def confirmed(self, preview, **kwargs) -> FinishResult:
+        return self.manager().finish(FinishCheckout(
+            self.checkout_id, "main",
+            expected_sandbox_branch=preview.sandbox_branch,
+            expected_sandbox_commit=preview.sandbox_commit, **kwargs))
+
+    def test_the_preview_names_the_sandbox_branch_and_commit(self):
+        git(self.sandbox, "switch", "-q", "-c", "agent-work")
+        preview = self.manager().finish_preview(self.checkout_id, "main")
+        self.assertEqual((preview.sandbox_branch, preview.sandbox_commit),
+                         ("agent-work", self.agent_commit))
+        self.assertFalse([c for c in self.calls if "fetch" in c])
+
+    def test_the_confirmed_commit_is_merged(self):
+        preview = self.manager().finish_preview(self.checkout_id, "main")
+        result = self.confirmed(preview)
+        self.assertIs(result.state, FinishState.MERGED, result.message)
+        self.assertEqual(result.source_commit, self.agent_commit)
+
+    def test_a_sandbox_commit_after_the_preview_is_refused(self):
+        preview = self.manager().finish_preview(self.checkout_id, "main")
+        self.commit_on(self.sandbox, "late.txt")
+        result = self.confirmed(preview, cleanup_after_merge=True)
+        self.assert_preserved(result, FinishState.BLOCKED)
+        self.assertIn("since the confirmation", result.message)
+        self.assertEqual(self.main_head(), self.main_before)
+        self.assertFalse([c for c in self.calls if "fetch" in c])
+
+    def test_a_sandbox_branch_switch_after_the_preview_is_refused(self):
+        preview = self.manager().finish_preview(self.checkout_id, "main")
+        git(self.sandbox, "switch", "-q", "-c", "other")
+        result = self.confirmed(preview)
+        self.assert_preserved(result, FinishState.BLOCKED)
+        self.assertIn("since the confirmation", result.message)
+        self.assertEqual(self.main_head(), self.main_before)
+
+
+class TestInterruptedMutations(_Case):
+    def setUp(self) -> None:
+        super().setUp()
+        self.agent_commit = self.commit_on(self.sandbox, "agent.txt")
+
+    def test_mutating_commands_get_the_long_timeout(self):
+        long = git_module.GIT_MUTATION_TIMEOUT_SECONDS
+        self.assertGreaterEqual(long, 300)
+        result = self.finish(cleanup=True, delete=True)
+        self.assert_cleaned(result, self.agent_commit)
+        seen = {args[0] if args[0] != "worktree" else " ".join(args[:2]):
+                timeout for args, timeout in self.timeouts}
+        for mutation in ("merge", "fetch", "worktree remove", "branch"):
+            self.assertEqual(seen[mutation], long, mutation)
+        self.assertEqual(seen["rev-parse"], git_module.GIT_TIMEOUT_SECONDS)
+
+    def test_an_interrupted_merge_reports_the_recovery(self):
+        self.faults[("merge",)] = subprocess.TimeoutExpired
+        result = self.finish(cleanup=True)
+        self.assert_preserved(result, FinishState.BLOCKED)
+        self.assertIn("interrupted", result.message)
+        self.assertIn(f"git -C {self.repo} status", result.message)
+        self.assertIn(f"git -C {self.repo} merge --abort", result.message)
+
+    def test_an_interrupted_worktree_removal_is_cleanup_pending(self):
+        self.faults[("worktree", "remove")] = subprocess.TimeoutExpired
+        result = self.finish(cleanup=True)
+        self.assertIs(result.state, FinishState.CLEANUP_PENDING,
+                      result.message)
+        self.assertIn("interrupted", result.message)
+        self.assertIn(f"inspect {self.worktree}", result.message)
+        self.assertEqual(self.registry.checkout(self.checkout_id),
+                         self.binding)
+
+    def test_unlistable_conflict_paths_are_still_a_conflict(self):
+        self.faults[("merge",)] = 1
+        self.faults[("ls-files", "-u")] = 1
+        result = self.finish(cleanup=True)
+        self.assert_preserved(result, FinishState.CONFLICT)
+        self.assertIn("could not be listed", result.message)
+        self.assertIn("merge --abort", result.message)
+
+
+class TestSessionsBeforeThePurge(_Case):
+    def test_a_session_that_wakes_before_the_purge_stops_the_cleanup(self):
+        agent_commit = self.commit_on(self.sandbox, "agent.txt")
+        session = self.session()
+        answers = iter([Liveness.DEAD, Liveness.ALIVE])
+        manager = CheckoutManager(
+            self.registry, repository=self.repository,
+            runtime=self.runtime(), sessions=lambda cid: [session],
+            liveness=lambda binding, s: next(answers))
+        result = manager.finish(FinishCheckout(
+            self.checkout_id, "main", cleanup_after_merge=True))
+        self.assert_preserved(result, FinishState.CLEANUP_PENDING)
+        self.assertIn("active session", result.message)
+        self.assertTrue(self.reachable(agent_commit))
+        self.assertTrue(self.sandbox.is_dir())
+
+
+class TestSeveralExportRefs(_Case):
+    """O laco de prova do caminho sem worktree passa por TODAS as refs."""
+
+    def check(self, integrated: str, loose: str) -> None:
+        agent = self.commit_on(self.sandbox, "agent.txt")
+        git(self.repo, "fetch", "-q", str(self.sandbox),
+            f"refs/heads/topic:refs/asb/{self.ws}/{integrated}")
+        git(self.repo, "merge", "-q", "--no-edit",
+            f"refs/asb/{self.ws}/{integrated}")
+        other = git(self.repo, "commit-tree", "HEAD^{tree}", "-p", "HEAD",
+                    "-m", "unmerged")
+        git(self.repo, "update-ref", f"refs/asb/{self.ws}/{loose}", other)
+        git(self.repo, "worktree", "remove", str(self.worktree))
+        result = self.manager().cleanup(self.checkout_id)
+        self.assert_preserved(result, FinishState.BLOCKED, path=False)
+        self.assertIn(f"refs/asb/{self.ws}/{loose} is not integrated",
+                      result.message)
+        self.assertTrue(self.reachable(agent))
+
+    def test_an_unintegrated_ref_after_an_integrated_one_blocks(self):
+        self.check("a-done", "b-open")
+
+    def test_an_unintegrated_ref_before_an_integrated_one_blocks(self):
+        self.check("b-done", "a-open")
+
+
+class TestMissingRowFromTheTui(_Case):
+    """`f` numa linha `missing` chega ao `cleanup()` real."""
+
+    def controller(self) -> tui.TuiController:
+        runtime = mock.Mock()
+        runtime.discover.side_effect = lambda project: [
+            WorkspaceDiscovery(b, WorkspaceStatus.ABSENT)
+            for b in self.registry.bindings(project.id)]
+        services = session_cli.SessionServices(
+            registry=self.registry,
+            store=SessionStore(self.tmp / "state" / "sessions.json"),
+            runtime=runtime, resolve=mock.Mock(), manager_for=mock.Mock())
+        ctl = tui.TuiController(services, read_branch=lambda path: None,
+                                run_child=mock.Mock(),
+                                checkouts=self.manager())
+        ctl.refresh()
+        return ctl
+
+    def press_f_then_y(self, ctl: tui.TuiController) -> str:
+        key = f"c:{self.checkout_id}"
+        index = [row.key for row in ctl.rows].index(key)
+        ctl.move(index - ctl.selected)
+        tui.handle_key(ctl, ord("f"))
+        self.assertIn("missing", "\n".join(ctl.prompt.detail))
+        tui.handle_key(ctl, ord("y"))
+        return ctl.message
+
+    def test_a_pending_cleanup_is_labelled_and_finished_from_the_tui(self):
+        agent = self.commit_on(self.sandbox, "agent.txt")
+        with mock.patch.object(ProjectRegistry, "unbind_checkout",
+                               side_effect=ProjectRegistryError("disk full")):
+            pending = self.finish(cleanup=True)
+        self.assertIs(pending.state, FinishState.CLEANUP_PENDING)
+        ctl = self.controller()
+        row = next(r for r in ctl.rows if r.checkout_id == self.checkout_id)
+        self.assertIn("missing", row.text)
+        self.assertIn("merged / cleanup pending", row.text)
+        self.assertEqual(self.press_f_then_y(ctl), "cleanup: cleaned")
+        with self.assertRaises(ProjectRegistryError):
+            self.registry.checkout(self.checkout_id)
+        self.assertTrue(self.reachable(agent))
+
+    def test_a_missing_row_without_evidence_is_blocked_from_the_tui(self):
+        git(self.repo, "worktree", "remove", str(self.worktree))
+        ctl = self.controller()
+        row = next(r for r in ctl.rows if r.checkout_id == self.checkout_id)
+        self.assertNotIn("merged", row.text)
+        self.assertEqual(self.press_f_then_y(ctl), "cleanup: blocked")
+        self.assertEqual(self.registry.checkout(self.checkout_id),
+                         self.binding)
+        self.assertIn("topic", self.branches())
+        self.assertEqual(self.purge_argv, [])
 
 
 if __name__ == "__main__":

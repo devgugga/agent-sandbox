@@ -89,6 +89,10 @@ class FinishPreview:
     workspace: str
     target_branch: str
     target_path: Path | None
+    # O que o merge levaria: branch e commit do clone do sandbox, lidos no
+    # host sem mutacao (so na previa de merge).
+    sandbox_branch: str | None = None
+    sandbox_commit: str | None = None
 
 
 @dataclass(frozen=True)
@@ -380,38 +384,51 @@ class CheckoutManager:
             if commit is None:
                 raise CheckoutError(f"could not read HEAD of {source.path}")
             primary = self._repository(project.primary)
+            sandbox: tuple[str | None, str | None] = (None, None)
             if merge:
                 target = self._clean_target(project, target_branch,
                                             source.path)
+                self._require_finish_services()
+                sandbox = self._runtime.sandbox_head(binding)
             else:
                 self._target_commit(primary, target_branch)
                 target = self._checkout_on(primary, target_branch)
-        except (GitError, ProjectRegistryError) as exc:
+        except (GitError, ProjectRegistryError, SandboxError) as exc:
             raise CheckoutError(str(exc)) from exc
         return FinishPreview(source.path, source.branch, commit,
-                             binding.workspace, target_branch, target)
+                             binding.workspace, target_branch, target,
+                             sandbox_branch=sandbox[0],
+                             sandbox_commit=sandbox[1])
 
     def merged(self, checkout_id: CheckoutId,
                target_branch: str | None = None) -> bool:
         """Evidencia FRESCA de integracao externa, para o rotulo da TUI: o
         HEAD do worktree e toda ref exportada do sandbox
         (`refs/asb/<workspace>/...`, ao menos uma) sao ancestrais do alvo.
-        Read-only; `False` em qualquer duvida."""
+        Um worktree que o Git ja removeu (limpeza interrompida) conta so
+        com as refs exportadas, a mesma prova de `cleanup`. Read-only;
+        `False` em qualquer duvida."""
         try:
             binding = self._registry.checkout(checkout_id)
             project = self._registry.get(binding.project_id)
             path = binding.source_path
-            if (checkout_kind(project, path) is CheckoutKind.PRIMARY
-                    or not path.is_dir()):
+            if checkout_kind(project, path) is CheckoutKind.PRIMARY:
                 return False
             primary = self._repository(project.primary)
+            if path.is_dir():
+                head = self._repository(path).commit("HEAD")
+                heads = [head]
+            elif any(wt.path.resolve() == path.resolve()
+                     for wt in primary.worktrees()):
+                return False  # listado mas ausente: `cleanup` recusa
+            else:
+                head, heads = "", []
             target = primary.branch_commit(
                 target_branch or project.integration_branch)
-            head = self._repository(path).commit("HEAD")
             exported = primary.refs(self._export_prefix(binding))
             if target is None or head is None or not exported:
                 return False
-            commits = [head, *(commit for commit, _ in exported)]
+            commits = [*heads, *(commit for commit, _ in exported)]
             return all(primary.is_ancestor(c, target) for c in commits)
         except (GitError, ProjectRegistryError):
             return False
@@ -430,16 +447,39 @@ class CheckoutManager:
         target_path = self._clean_target(project, request.target_branch,
                                          source.path)
         # 4. O commit exato do sandbox, numa ref namespaced nossa.
-        sandbox_commit, ref = self._runtime.export_head(binding)
+        #    Com a confirmacao, so o branch e o commit que o operador viu.
+        confirmed = (None if request.expected_sandbox_branch is None
+                     and request.expected_sandbox_commit is None
+                     else (request.expected_sandbox_branch,
+                           request.expected_sandbox_commit))
+        sandbox_commit, ref = self._runtime.export_head(binding, confirmed)
         # 5. O HEAD do worktree do operador tambem tem de ser integrado.
         operator_commit = self._repository(source.path).commit("HEAD")
         if operator_commit is None:
             raise CheckoutError(f"could not read HEAD of {source.path}")
         # 6. A primeira mutacao: o merge no checkout alvo.
         target = self._repository(target_path)
-        merged = target.merge(ref)
+        recovery = (f"Resolve and commit in {target_path}, or run: "
+                    f"git -C {target_path} merge --abort")
+        try:
+            merged = target.merge(ref)
+        except GitError as exc:
+            # Morto no meio (timeout) ou nem executou: o alvo pode ter um
+            # merge pela metade.
+            return FinishResult.blocked(
+                f"git merge {ref} was interrupted in {target_path}: {exc}; "
+                f"nothing was removed. Inspect git -C {target_path} status "
+                f"and, if a merge is in progress, run: git -C {target_path} "
+                "merge --abort", sandbox_commit)
         if not merged.ok:
-            conflicts = target.unmerged_paths()
+            try:
+                conflicts = target.unmerged_paths()
+            except GitError as exc:
+                return FinishResult(
+                    FinishState.CONFLICT, sandbox_commit, None,
+                    f"merging {ref} into {request.target_branch} failed and "
+                    f"the conflicting paths could not be listed ({exc}); "
+                    f"nothing was removed. {recovery}")
             if conflicts:
                 shown = ", ".join(conflicts[:5])
                 more = (f" (+{len(conflicts) - 5} more)"
@@ -447,9 +487,7 @@ class CheckoutManager:
                 return FinishResult(
                     FinishState.CONFLICT, sandbox_commit, None,
                     f"merging {ref} into {request.target_branch} conflicts "
-                    f"in {shown}{more}; nothing was removed. Resolve and "
-                    f"commit in {target_path}, or run: git -C {target_path} "
-                    "merge --abort")
+                    f"in {shown}{more}; nothing was removed. {recovery}")
             return FinishResult.blocked(
                 f"git merge {ref} failed in {target_path}: "
                 f"{merged.reason()}; nothing was removed", sandbox_commit)
@@ -540,6 +578,11 @@ class CheckoutManager:
                 source_commit, target_commit,
                 "; ".join([*notes, problem]) + "; retry cleanup when fixed")
 
+        # 0. As sessoes de novo, logo antes do purge: o finish as checou
+        #    antes do export e do merge, e uma pode ter voltado desde entao.
+        busy = self._busy_sessions(binding)
+        if busy is not None:
+            return pending(busy)
         # 1-2. O sandbox, com a sua propria prova de que nada se perde.
         try:
             purged = self._runtime.purge_integrated(binding, target_commit,
@@ -554,7 +597,12 @@ class CheckoutManager:
                 removed = self._repository(project.primary).worktree_remove(
                     source_path)
             except GitError as exc:
-                return pending(f"could not remove {source_path}: {exc}")
+                # Morto no meio (timeout) ou nem executou: o caminho pode
+                # ter ficado pela metade.
+                return pending(
+                    f"could not remove {source_path}: {exc}; inspect "
+                    f"{source_path} and git -C {project.primary} worktree "
+                    "list")
             if not removed.ok:
                 return pending(f"git refused to remove {source_path}: "
                                f"{removed.reason()}")

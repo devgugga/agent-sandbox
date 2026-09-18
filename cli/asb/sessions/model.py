@@ -20,7 +20,8 @@ _ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
 # provider_session_id vem de fora (APIs do Codex, Claude, Antigravity): o
 # formato e do provedor, nao nosso, entao so recusamos vazio, espaco em
-# branco e metacaracteres de shell — sem exigir minusculas-64.
+# branco, metacaracteres de shell e um "-" inicial (que um argv de resume
+# leria como flag de linha de comando) — sem exigir minusculas-64.
 _SHELL_METACHARACTERS = re.compile(r"[;&|`$()<>{}\[\]\\'\"\n\r]")
 
 
@@ -48,7 +49,8 @@ class ProviderSessionId(str):
     def __new__(cls, value: str) -> "ProviderSessionId":
         if not isinstance(value, str) or not value \
                 or re.search(r"\s", value) \
-                or _SHELL_METACHARACTERS.search(value):
+                or _SHELL_METACHARACTERS.search(value) \
+                or value.startswith("-"):
             raise ValueError(f"invalid provider session id: {value!r}")
         return super().__new__(cls, value)
 

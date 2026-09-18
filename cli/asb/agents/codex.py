@@ -48,6 +48,8 @@ class CodexDriver(AgentDriver):
             record = json.loads(first_line)
         except json.JSONDecodeError:
             return None
+        if not isinstance(record, dict):
+            return None
         if record.get("type") != "session_meta":
             return None
         payload = record.get("payload")

@@ -115,6 +115,13 @@ class TestResumeValidatesProviderSessionId(unittest.TestCase):
         with self.assertRaises(ValueError):
             ClaudeDriver().resume(Path("/repo"), "abc;rm -rf")
 
+    def test_rejects_leading_dash(self):
+        # A provider session id that comes back looking like a CLI flag
+        # (e.g. a filename stem an agent wrote as "--dangerously-skip-
+        # permissions") must never reach argv unvalidated.
+        with self.assertRaises(ValueError):
+            ClaudeDriver().resume(Path("/repo"), "--dangerously-skip-permissions")
+
 
 class TestProbeMissingBinary(unittest.TestCase):
     def test_missing_binary_is_unavailable(self):
@@ -362,6 +369,21 @@ class TestCodexSessionEvidence(unittest.TestCase):
             new_file = sessions / "rollout-non-dict-payload.jsonl"
             new_file.write_text(
                 json.dumps({"type": "session_meta", "payload": "oops"}) + "\n")
+            after = driver.capture_after(baseline)
+            self.assertIsNone(driver.discover_session_id(after))
+
+    def test_new_file_with_non_object_first_line_returns_none(self):
+        # A first line that is valid JSON but not an object (e.g. a JSON
+        # array) must not crash discover_session_id() with AttributeError
+        # from calling .get() on a non-dict.
+        with tempfile.TemporaryDirectory() as tmp:
+            state_home = Path(tmp)
+            sessions = state_home / "sessions" / "2026" / "09" / "17"
+            sessions.mkdir(parents=True)
+            driver = self._driver(state_home)
+            baseline = driver.capture_before(Path("/repo"))
+            new_file = sessions / "rollout-non-object-line.jsonl"
+            new_file.write_text(json.dumps([1]) + "\n")
             after = driver.capture_after(baseline)
             self.assertIsNone(driver.discover_session_id(after))
 

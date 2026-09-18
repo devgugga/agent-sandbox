@@ -52,6 +52,15 @@ class TestIdentifiers(unittest.TestCase):
         value = "Session_ABC-123-" + ("x" * 60)
         self.assertEqual(str(ProviderSessionId(value)), value)
 
+    def test_provider_session_id_rejects_leading_dash(self):
+        # A value beginning with "-" would be parsed as a CLI flag once it
+        # lands in a driver's resume() argv (e.g. "--dangerously-skip-
+        # permissions"). The id comes from agent-writable files, so this
+        # must be rejected here, not left to callers.
+        for value in ("-x", "--flag"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                ProviderSessionId(value)
+
 
 class TestEnumMembership(unittest.TestCase):
     def test_session_state_is_exactly_the_named_set(self):

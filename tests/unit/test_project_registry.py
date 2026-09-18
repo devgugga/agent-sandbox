@@ -213,6 +213,80 @@ class CorruptionAndSchemaRejectionTests(ProjectRegistryTestCase):
             registry.add(self.repo, "main", self.worktree_root)
         self.assertEqual(self.registry_path.read_text(), payload)
 
+    def test_project_missing_required_key_raises_and_leaves_file_untouched(self):
+        payload = json.dumps({
+            "schemaVersion": 1,
+            "projects": [{
+                "id": "p-missing-branch",
+                "primary": "/tmp/repo",
+                "gitCommonDir": "/tmp/repo/.git",
+                # "integrationBranch" deliberately omitted.
+                "worktreeRoot": "/tmp/worktrees",
+                "checkouts": [],
+            }],
+        })
+        self._seed(payload)
+        registry = self.registry()
+        with self.assertRaises(ProjectRegistryError):
+            registry.list()
+        with self.assertRaises(ProjectRegistryError):
+            registry.add(self.repo, "main", self.worktree_root)
+        self.assertEqual(self.registry_path.read_text(), payload)
+
+    def test_checkout_missing_required_key_raises_and_leaves_file_untouched(self):
+        payload = json.dumps({
+            "schemaVersion": 1,
+            "projects": [{
+                "id": "p-1",
+                "primary": "/tmp/repo",
+                "gitCommonDir": "/tmp/repo/.git",
+                "integrationBranch": "main",
+                "worktreeRoot": "/tmp/worktrees",
+                "checkouts": [{
+                    "id": "c-1",
+                    "sourcePath": "/tmp/repo",
+                    # "workspace" deliberately omitted.
+                }],
+            }],
+        })
+        self._seed(payload)
+        registry = self.registry()
+        with self.assertRaises(ProjectRegistryError):
+            registry.list()
+        with self.assertRaises(ProjectRegistryError):
+            registry.add(self.repo, "main", self.worktree_root)
+        self.assertEqual(self.registry_path.read_text(), payload)
+
+    def test_non_object_project_entry_raises_and_leaves_file_untouched(self):
+        payload = json.dumps({"schemaVersion": 1, "projects": ["not-an-object"]})
+        self._seed(payload)
+        registry = self.registry()
+        with self.assertRaises(ProjectRegistryError):
+            registry.list()
+        with self.assertRaises(ProjectRegistryError):
+            registry.add(self.repo, "main", self.worktree_root)
+        self.assertEqual(self.registry_path.read_text(), payload)
+
+    def test_non_object_checkout_entry_raises_and_leaves_file_untouched(self):
+        payload = json.dumps({
+            "schemaVersion": 1,
+            "projects": [{
+                "id": "p-1",
+                "primary": "/tmp/repo",
+                "gitCommonDir": "/tmp/repo/.git",
+                "integrationBranch": "main",
+                "worktreeRoot": "/tmp/worktrees",
+                "checkouts": ["not-an-object"],
+            }],
+        })
+        self._seed(payload)
+        registry = self.registry()
+        with self.assertRaises(ProjectRegistryError):
+            registry.list()
+        with self.assertRaises(ProjectRegistryError):
+            registry.add(self.repo, "main", self.worktree_root)
+        self.assertEqual(self.registry_path.read_text(), payload)
+
 
 class ConcurrencyAndIsolationTests(ProjectRegistryTestCase):
     def test_two_registry_instances_see_each_others_writes(self):

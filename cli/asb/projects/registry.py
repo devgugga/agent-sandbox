@@ -253,26 +253,51 @@ class ProjectRegistry:
 
         entries: list[_ProjectEntry] = []
         for raw in data.get("projects", []):
-            project_id = ProjectId(raw["id"])
+            if not isinstance(raw, dict):
+                raise ProjectRegistryError(
+                    f"project entry must be a JSON object at {self.path}: "
+                    f"{raw!r}")
+            project_id = ProjectId(self._required_field(raw, "id", "project"))
             git_common_dir = raw.get("gitCommonDir")
             project = Project(
                 id=project_id,
-                primary=Path(raw["primary"]),
-                integration_branch=raw["integrationBranch"],
-                worktree_root=Path(raw["worktreeRoot"]),
+                primary=Path(self._required_field(raw, "primary", "project")),
+                integration_branch=self._required_field(
+                    raw, "integrationBranch", "project"),
+                worktree_root=Path(self._required_field(
+                    raw, "worktreeRoot", "project")),
                 git_common_dir=Path(git_common_dir) if git_common_dir else None,
             )
-            checkouts = [
-                CheckoutBinding(
-                    checkout_id=CheckoutId(raw_checkout["id"]),
+            checkouts: list[CheckoutBinding] = []
+            for raw_checkout in raw.get("checkouts", []):
+                if not isinstance(raw_checkout, dict):
+                    raise ProjectRegistryError(
+                        "checkout entry must be a JSON object at "
+                        f"{self.path}: {raw_checkout!r}")
+                checkouts.append(CheckoutBinding(
+                    checkout_id=CheckoutId(
+                        self._required_field(raw_checkout, "id", "checkout")),
                     project_id=project_id,
-                    source_path=Path(raw_checkout["sourcePath"]),
-                    workspace=raw_checkout["workspace"],
-                )
-                for raw_checkout in raw.get("checkouts", [])
-            ]
+                    source_path=Path(self._required_field(
+                        raw_checkout, "sourcePath", "checkout")),
+                    workspace=self._required_field(
+                        raw_checkout, "workspace", "checkout"),
+                ))
             entries.append((project, checkouts))
         return entries
+
+    def _required_field(self, raw: dict, key: str, what: str) -> str:
+        """Retorna `raw[key]`, ou levanta `ProjectRegistryError` nomeando o
+        campo quando ele esta ausente ou nao e uma string — nunca deixa um
+        `KeyError`/`TypeError` bruto escapar para o chamador. Uma string
+        vazia e aceita aqui: validar o *conteudo* de `workspace` (ou de
+        qualquer outro campo) fica fora do escopo desta correcao."""
+        value = raw.get(key)
+        if not isinstance(value, str):
+            raise ProjectRegistryError(
+                f"{what} entry missing or invalid required field {key!r} "
+                f"at {self.path}")
+        return value
 
     def _write(self, entries: list[_ProjectEntry]) -> None:
         payload = {

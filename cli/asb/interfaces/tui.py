@@ -25,7 +25,10 @@ confirmacao (commit de origem, branch e checkout alvo, limpeza depois do
 merge e remocao do branch local, ambas NAO por padrao e alternadas com `c`
 e `b`) -> so `y` roda `CheckoutManager.finish`. Numa linha marcada
 `merged / cleanup available` (prova fresca do refresh), `f` oferece a
-limpeza direto. Nao existe acao de remocao remota.
+limpeza direto; tambem num worktree cujo sandbox esta POSITIVAMENTE
+ausente (nunca criado ou purgado a mao), onde nao ha finish possivel e a
+limpeza prova a integracao pelo HEAD do proprio worktree. Nao existe acao
+de remocao remota.
 """
 from __future__ import annotations
 
@@ -538,6 +541,12 @@ class TuiController:
             self._missing_cleanup_confirm(view, project.integration_branch)
             return
         if view.merged:
+            self._cleanup_confirm(view.checkout_id, project.integration_branch,
+                                  delete=False)
+            return
+        if self.checkouts.sandbox_absent(view.checkout_id):
+            # Sem sandbox nao ha o que exportar nem mergear: so a limpeza,
+            # que prova a integracao pelo HEAD do worktree e recusa sem ela.
             self._cleanup_confirm(view.checkout_id, project.integration_branch,
                                   delete=False)
             return

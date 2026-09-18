@@ -1082,5 +1082,92 @@ class TestMissingRowFromTheTui(_Case):
         self.assertEqual(self.purge_argv, [])
 
 
+class TestWorktreeWithoutSandbox(_Case):
+    """I2: um worktree cujo sandbox nunca existiu (criado com `w`, nunca
+    usado) ou foi purgado a mao. So com ausencia POSITIVA (`sandbox_absent`)
+    o HEAD do proprio worktree prova a integracao, sem ref exportada, e `f`
+    oferece a limpeza em vez do finish."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        shutil.rmtree(self.sandbox.parent)
+        self.absent = True
+
+    def merge_topic(self) -> None:
+        git(self.repo, "merge", "-q", "--no-edit", "topic")
+
+    def controller(self) -> tui.TuiController:
+        return TestMissingRowFromTheTui.controller(self)
+
+    def press_f(self, ctl: tui.TuiController) -> None:
+        key = f"c:{self.checkout_id}"
+        index = [row.key for row in ctl.rows].index(key)
+        ctl.move(index - ctl.selected)
+        tui.handle_key(ctl, ord("f"))
+
+    def test_a_merged_worktree_is_labelled_and_cleaned_from_the_tui(self):
+        own = self.commit_on(self.worktree, "operator.txt")
+        self.merge_topic()
+        self.assertTrue(self.manager().merged(self.checkout_id))
+        ctl = self.controller()
+        row = next(r for r in ctl.rows if r.checkout_id == self.checkout_id)
+        self.assertIn("merged / cleanup available", row.text)
+        self.press_f(ctl)
+        self.assertIsInstance(ctl.prompt, tui.Prompt)
+        self.assertIn("clean up?", ctl.prompt.text)
+        tui.handle_key(ctl, ord("y"))
+        self.assertEqual(ctl.message, "cleanup: cleaned")
+        self.assertFalse(self.worktree.exists())
+        with self.assertRaises(ProjectRegistryError):
+            self.registry.checkout(self.checkout_id)
+        self.assertTrue(self.reachable(own))
+        self.assertIn("topic", self.branches())
+        self.assertEqual(self.purge_argv, [])
+
+    def test_an_unmerged_worktree_is_not_labelled_and_cleanup_is_blocked(self):
+        self.commit_on(self.worktree, "operator.txt")
+        self.assertFalse(self.manager().merged(self.checkout_id))
+        ctl = self.controller()
+        row = next(r for r in ctl.rows if r.checkout_id == self.checkout_id)
+        self.assertNotIn("merged", row.text)
+        self.press_f(ctl)
+        # Sem sandbox nao ha finish possivel: `f` oferece a limpeza, que
+        # prova de novo e recusa.
+        self.assertIsInstance(ctl.prompt, tui.Prompt)
+        self.assertIn("clean up?", ctl.prompt.text)
+        tui.handle_key(ctl, ord("y"))
+        self.assertEqual(ctl.message, "cleanup: blocked")
+        self.assertTrue(self.worktree.is_dir())
+        self.assertEqual(self.registry.checkout(self.checkout_id),
+                         self.binding)
+        self.assertEqual(self.purge_argv, [])
+
+    def test_a_dirty_worktree_is_not_labelled(self):
+        self.commit_on(self.worktree, "operator.txt")
+        self.merge_topic()
+        (self.worktree / "scratch.txt").write_text("wip", encoding="utf-8")
+        self.assertFalse(self.manager().merged(self.checkout_id))
+
+    def test_unproven_absence_keeps_todays_behaviour(self):
+        self.absent = False
+        self.commit_on(self.worktree, "operator.txt")
+        self.merge_topic()
+        self.assertFalse(self.manager().merged(self.checkout_id))
+        ctl = self.controller()
+        self.press_f(ctl)
+        self.assertIsInstance(ctl.prompt, tui.TextPrompt)
+        self.assertIn("target branch", ctl.prompt.text)
+        self.assertFalse(ctl.checkouts.sandbox_absent(
+            CheckoutId("c-unknown")))
+
+    def test_a_manager_without_runtime_never_labels_by_head(self):
+        self.commit_on(self.worktree, "operator.txt")
+        self.merge_topic()
+        manager = CheckoutManager(self.registry, repository=self.repository,
+                                  agent_root=self.tmp / "home" / "asb-agent")
+        self.assertFalse(manager.merged(self.checkout_id))
+        self.assertFalse(manager.sandbox_absent(self.checkout_id))
+
+
 if __name__ == "__main__":
     unittest.main()

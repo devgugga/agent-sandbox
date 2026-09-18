@@ -406,8 +406,11 @@ class CheckoutManager:
         HEAD do worktree e toda ref exportada do sandbox
         (`refs/asb/<workspace>/...`, ao menos uma) sao ancestrais do alvo.
         Um worktree que o Git ja removeu (limpeza interrompida) conta so
-        com as refs exportadas, a mesma prova de `cleanup`. Read-only;
-        `False` em qualquer duvida."""
+        com as refs exportadas, a mesma prova de `cleanup`. Sem ref
+        exportada, so um sandbox POSITIVAMENTE ausente (nunca criado, ou
+        purgado a mao) deixa o HEAD do worktree, limpo, provar sozinho:
+        nao ha trabalho do sandbox a perder. Read-only; `False` em
+        qualquer duvida."""
         try:
             binding = self._registry.checkout(checkout_id)
             project = self._registry.get(binding.project_id)
@@ -426,12 +429,31 @@ class CheckoutManager:
             target = primary.branch_commit(
                 target_branch or project.integration_branch)
             exported = primary.refs(self._export_prefix(binding))
-            if target is None or head is None or not exported:
+            if target is None or head is None:
                 return False
+            if not exported:
+                return (bool(heads)
+                        and primary.is_ancestor(heads[0], target)
+                        and self._repository(path).status()
+                        is CheckoutState.CLEAN
+                        and self._runtime is not None
+                        and self._runtime.sandbox_absent(binding))
             commits = [*heads, *(commit for commit, _ in exported)]
             return all(primary.is_ancestor(c, target) for c in commits)
         except (GitError, ProjectRegistryError):
             return False
+
+    def sandbox_absent(self, checkout_id: CheckoutId) -> bool:
+        """Prova POSITIVA de que o sandbox do checkout nao existe (ver
+        `SandboxRuntime.sandbox_absent`). `False` sem runtime ou em
+        qualquer duvida; read-only."""
+        if self._runtime is None:
+            return False
+        try:
+            binding = self._registry.checkout(checkout_id)
+        except ProjectRegistryError:
+            return False
+        return self._runtime.sandbox_absent(binding)
 
     def _finish(self, request: FinishCheckout) -> FinishResult:
         self._require_finish_services()

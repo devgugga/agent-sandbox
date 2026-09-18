@@ -168,6 +168,7 @@ class _Case(unittest.TestCase):
         self.checkouts = mock.MagicMock(spec=CheckoutManager)
         self.checkouts.list.return_value = []
         self.checkouts.merged.return_value = False
+        self.checkouts.sandbox_absent.return_value = False
         self.checkouts.default_path.side_effect = (
             lambda project, branch:
             project.worktree_root / branch.replace("/", "-"))

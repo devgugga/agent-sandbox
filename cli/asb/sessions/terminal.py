@@ -12,9 +12,15 @@ container descartavel, ver relatorio da Tarefa 7):
   vira ";" literal — por isso `_tmux_arg` escapa esse caso;
 - `new-session -c` expande formatos (`#S`...); "##" e "#" literal;
 - comando de UM elemento roda via `sh -c`; com dois ou mais, via exec direto;
-- sessao ausente: "can't find session: <nome>"; sem servidor: "no server
-  running on <socket>" ou "error connecting to <socket> (No such file or
-  directory)" — todos com exit 1;
+- sessao ausente: "can't find session: <nome>"; socket existe mas nenhum
+  servidor escuta: "no server running on <socket>" — ambos com exit 1 e
+  ambos provam ausencia;
+- socket APAGADO com o servidor vivo: "error connecting to <socket> (No
+  such file or directory)", exit 1 — NAO prova ausencia (qualquer coisa no
+  workspace pode apagar o arquivo), entao e incerteza;
+- `list-panes -t =<nome>:` sem `-s` so lista a janela CORRENTE; com `-s`
+  lista todas. `-s -t =<nome>` SEM ":" casa por prefixo; por isso sempre
+  `-s -t =<nome>:`;
 - com `remain-on-exit on`, `#{pane_dead}` e "1" e `#{pane_dead_status}` e o
   exit status do comando (vazio se morto por sinal).
 """
@@ -35,11 +41,8 @@ from asb.sessions.model import TerminalId
 _TIMEOUT_SECONDS = 30.0
 
 _PANE_FORMAT = "#{pane_dead} #{pane_dead_status}"
-_PANE_LINE = re.compile(r"^([01]) (\d*)$")
-_NO_SERVER = (
-    re.compile(r"^no server running on \S+$"),
-    re.compile(r"^error connecting to \S+ \(No such file or directory\)$"),
-)
+_PANE_LINE = re.compile(r"^([01]) ([0-9]*)$")
+_NO_SERVER = re.compile(r"^no server running on \S+$")
 
 
 class Liveness(StrEnum):
@@ -68,7 +71,12 @@ class TmuxTerminal:
               command: Sequence[str]) -> None:
         """Cria a sessao desanexada e liga `remain-on-exit` SO nela, na
         mesma invocacao do tmux (`;`), para que um comando que termina na
-        hora ainda deixe o pane morto com seu exit status."""
+        hora ainda deixe o pane morto com seu exit status.
+
+        O `TerminalError` e o mesmo para falha definitiva e para falha
+        ambigua: em timeout, falha ao executar o `ssh` ou exit 255 do SSH
+        a sessao PODE ter sido criada. Quem chama deve sondar com `probe`
+        antes de tentar de novo."""
         name = TerminalId(terminal_id)
         cwd = str(cwd)
         if not cwd or not PurePosixPath(cwd).is_absolute():
@@ -135,7 +143,9 @@ class TmuxTerminal:
             ("tmux", "attach-session", "-t", f"={name}"), interactive=True)
 
     def _pane_state(self, name: TerminalId):
-        return self._call(("tmux", "list-panes", "-t", f"={name}:",
+        # `-s`: todos os panes da sessao; mais de um pane vira mais de
+        # uma linha e, portanto, UNKNOWN/None — nunca a janela errada.
+        return self._call(("tmux", "list-panes", "-s", "-t", f"={name}:",
                            "-F", _PANE_FORMAT))
 
     def _call(self, remote: tuple[str, ...]):
@@ -161,7 +171,7 @@ def _session_missing(result: subprocess.CompletedProcess,
         line = line.strip()
         if line == f"can't find session: {name}":
             return True
-        if any(p.fullmatch(line) for p in _NO_SERVER):
+        if _NO_SERVER.fullmatch(line):
             return True
     return False
 

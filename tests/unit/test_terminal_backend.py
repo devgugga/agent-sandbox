@@ -39,7 +39,7 @@ SSH_TTY = [
     "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR",
     "-i", "/keys/id_ed25519", "-p", "2222", "--", "v@127.0.0.1",
 ]
-PROBE_REMOTE = (f"tmux list-panes -t ={NAME}: -F "
+PROBE_REMOTE = (f"tmux list-panes -s -t ={NAME}: -F "
                 "'#{pane_dead} #{pane_dead_status}'")
 
 
@@ -111,6 +111,20 @@ class TestStart(_RunContract, unittest.TestCase):
         self.assertIn("-c '/sandbox/d\\;' -- sh -c 'true\\;' '\\;' ';' ",
                       remote)
 
+    def test_hash_in_a_command_element_is_passed_unchanged(self):
+        # Argumentos do comando NAO passam por expansao de formato (pinado).
+        terminal, run = _terminal(_done(0))
+        terminal.start(NAME, "/sandbox/repo", ("sh", "-c", "echo #S #{x}"))
+        remote = run.call_args.args[0][-1]
+        self.assertIn(" -- sh -c 'echo #S #{x}' ';' ", remote)
+
+    def test_backslash_before_a_trailing_semicolon_is_preserved(self):
+        # "a\;" vira "a\\;"; o tmux devolve "a\;" literal (pinado).
+        terminal, run = _terminal(_done(0))
+        terminal.start(NAME, "/sandbox/repo", ("printf", "a\\;"))
+        remote = run.call_args.args[0][-1]
+        self.assertIn(" -- printf 'a\\\\;' ';' ", remote)
+
     def test_hash_in_cwd_is_escaped_against_format_expansion(self):
         # `new-session -c` expande formatos (#S etc.); "##" e "#" literal.
         terminal, run = _terminal(_done(0))
@@ -180,11 +194,25 @@ class TestProbe(_RunContract, unittest.TestCase):
             1, stderr="no server running on /tmp/tmux-1000/default\n"))
         self.assertIs(terminal.probe(NAME), Liveness.DEAD)
 
-    def test_no_server_socket_is_dead(self):
+    def test_deleted_socket_is_unknown(self):
+        # Socket apagado com o servidor vivo (pinado): o agente pode
+        # continuar rodando, entao isto nao prova ausencia.
         terminal, _ = _terminal(_done(1, stderr=(
             "error connecting to /tmp/tmux-1000/default "
             "(No such file or directory)\n")))
-        self.assertIs(terminal.probe(NAME), Liveness.DEAD)
+        self.assertIs(terminal.probe(NAME), Liveness.UNKNOWN)
+
+    def test_more_than_one_pane_is_unknown(self):
+        # `list-panes -s` com uma segunda janela: agente morto na janela 0
+        # e outro pane vivo (pinado). Nao sabemos qual pane e o agente.
+        for stdout in ("1 4\n0 \n", "0 \n0 \n"):
+            terminal, _ = _terminal(_done(0, stdout=stdout))
+            with self.subTest(stdout=stdout):
+                self.assertIs(terminal.probe(NAME), Liveness.UNKNOWN)
+
+    def test_non_ascii_digits_are_unknown(self):
+        terminal, _ = _terminal(_done(0, stdout="1 \u0663\n"))
+        self.assertIs(terminal.probe(NAME), Liveness.UNKNOWN)
 
     def test_missing_other_session_name_is_unknown(self):
         terminal, _ = _terminal(_done(1, stderr="can't find session: asb-x\n"))
@@ -236,6 +264,10 @@ class TestCaptureExitStatus(_RunContract, unittest.TestCase):
 
     def test_none_when_status_is_not_observable(self):
         for result in (_done(0, stdout="0 \n"),            # pane vivo
+                       _done(0, stdout="1 4\n0 \n"),      # dois panes
+                       _done(0, stdout="1 \u0663\n"),     # digito nao ASCII
+                       _done(1, stderr="error connecting to /tmp/tmux-1000/"
+                                       "default (No such file or directory)\n"),
                        _done(0, stdout="1 \n"),            # morto por sinal
                        _done(0, stdout="garbage\n"),
                        _done(1, stderr=f"can't find session: {NAME}\n"),
@@ -261,6 +293,8 @@ class TestStop(_RunContract, unittest.TestCase):
 
     def test_failures_raise(self):
         for result in (_done(255, stderr="Connection refused\n"),
+                       _done(1, stderr="error connecting to /tmp/tmux-1000/"
+                                       "default (No such file or directory)\n"),
                        _done(1, stderr="server exited unexpectedly\n"),
                        subprocess.TimeoutExpired("ssh", 30)):
             terminal, _ = _terminal(result)

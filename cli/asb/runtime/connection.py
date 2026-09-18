@@ -29,16 +29,25 @@ class ConnectionInfo:
     identity_file: Path
     project_root: Path
 
-    def ssh_argv(self, command: tuple[str, ...] = ()) -> list[str]:
+    def ssh_argv(self, command: tuple[str, ...] = (), *,
+                 interactive: bool = True) -> list[str]:
         """Argumentos de `ssh` para esta conexao, como LISTA — nunca uma
         string de shell. Um `command` nao vazio vira um UNICO argumento
         final via `shlex.join`, exatamente como o operador digitaria depois
-        do `ssh host`; isto nunca invoca um shell local."""
+        do `ssh host`; isto nunca invoca um shell local.
+
+        `interactive=False` e para chamadas de maquina: sem TTY (`-T`),
+        sem prompt de senha (`BatchMode=yes`) e com `ConnectTimeout=10`,
+        as mesmas opcoes de `auth.py`. O resto do argv e identico."""
         if (not isinstance(self.port, int) or isinstance(self.port, bool)
                 or not (1 <= self.port <= 65535)):
             raise ValueError(f"porta SSH invalida: {self.port!r}")
+        if interactive:
+            tty = ["-tt"]
+        else:
+            tty = ["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10"]
         argv = [
-            "ssh", "-tt", "-o", "IdentitiesOnly=yes", "-o",
+            "ssh", *tty, "-o", "IdentitiesOnly=yes", "-o",
             "StrictHostKeyChecking=no",
             "-o", "UserKnownHostsFile=/dev/null",
             "-o", "LogLevel=ERROR",

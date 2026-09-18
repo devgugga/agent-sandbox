@@ -26,6 +26,9 @@ for bin in claude codex agy gh git rg jq socat ssh-keygen podman-compose; do
   assert_eq "0" "$(in_image sh -lc "command -v $bin >/dev/null; echo \$?")" \
     "$bin esta no PATH de um shell de login"
 done
+# Terminal persistente das sessoes de agente (asb.sessions.terminal).
+assert_eq "0" "$(in_image sh -lc 'tmux -V >/dev/null 2>&1; echo $?')" \
+  "tmux -V responde na imagem"
 assert_eq "0" "$(in_image bash -lc "podman compose version >/dev/null 2>&1; echo \$?")" \
   "podman compose funciona via wrapper nativo"
 

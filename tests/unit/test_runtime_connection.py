@@ -106,6 +106,46 @@ class TestSshArgvContract(unittest.TestCase):
             _info(port=True).ssh_argv()
 
 
+class TestSshArgvNonInteractive(unittest.TestCase):
+    """`interactive=False`: sem TTY (`-T` no lugar de `-tt`), nunca pede
+    senha (`BatchMode=yes`) e desiste de conectar em 10 s — as mesmas
+    opcoes que `auth.py` ja usa para SSH nao interativo."""
+
+    def test_exact_argv_with_a_command(self):
+        self.assertEqual(_info().ssh_argv(("pwd",), interactive=False), [
+            "ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+            "-o", "IdentitiesOnly=yes", "-o",
+            "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "LogLevel=ERROR", "-i", "/keys/id_ed25519",
+            "-p", "2222", "--", "v@127.0.0.1", "pwd",
+        ])
+
+    def test_exact_argv_without_a_command(self):
+        self.assertEqual(_info().ssh_argv(interactive=False), [
+            "ssh", "-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10",
+            "-o", "IdentitiesOnly=yes", "-o",
+            "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "LogLevel=ERROR", "-i", "/keys/id_ed25519",
+            "-p", "2222", "--", "v@127.0.0.1",
+        ])
+
+    def test_multi_word_command_is_still_one_joined_trailing_argument(self):
+        argv = _info().ssh_argv(("ls", "-la", "/a b"), interactive=False)
+        self.assertEqual(argv[-1], "ls -la '/a b'")
+        self.assertEqual(argv[-2], "v@127.0.0.1")
+        self.assertEqual(argv[-3], "--")
+        self.assertNotIn("-tt", argv)
+
+    def test_interactive_true_is_the_default_argv(self):
+        info = _info()
+        self.assertEqual(info.ssh_argv(("pwd",), interactive=True),
+                         info.ssh_argv(("pwd",)))
+
+    def test_non_interactive_still_rejects_invalid_ports(self):
+        with self.assertRaises(ValueError):
+            _info(port=0).ssh_argv(interactive=False)
+
+
 class TestLifecyclePayloadContract(unittest.TestCase):
     def test_exact_payload_shape(self):
         info = _info()

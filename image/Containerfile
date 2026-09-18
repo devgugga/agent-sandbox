@@ -13,7 +13,7 @@ RUN test -n "$ASB_USER" && test -n "$ASB_HOME" \
     || (echo "ASB_USER e ASB_HOME sao obrigatorios" >&2; exit 1)
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      ca-certificates curl git openssh-server ripgrep jq socat \
+      ca-certificates curl git openssh-server ripgrep jq socat tmux \
       netcat-openbsd python3 build-essential procps less nano bubblewrap \
       gnome-keyring libsecret-tools dbus-daemon dbus-bin dbus-x11 \
     && rm -rf /var/lib/apt/lists/*

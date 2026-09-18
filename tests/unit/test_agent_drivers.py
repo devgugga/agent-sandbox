@@ -15,6 +15,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "cli"))
 
@@ -278,23 +279,23 @@ class TestAntigravitySessionIdUnproven(unittest.TestCase):
 
 
 class TestCodexSessionEvidence(unittest.TestCase):
-    def _driver(self, state_home: Path) -> CodexDriver:
-        return CodexDriver(state_home=state_home)
+    def _driver(self, sessions_root: Path) -> CodexDriver:
+        return CodexDriver(sessions_root=sessions_root)
 
     def test_zero_new_files_returns_none(self):
         with tempfile.TemporaryDirectory() as tmp:
-            state_home = Path(tmp)
-            driver = self._driver(state_home)
+            sessions_root = Path(tmp)
+            driver = self._driver(sessions_root)
             baseline = driver.capture_before(Path("/repo"))
             after = driver.capture_after(baseline)
             self.assertIsNone(driver.discover_session_id(after))
 
     def test_multiple_new_files_returns_none(self):
         with tempfile.TemporaryDirectory() as tmp:
-            state_home = Path(tmp)
-            sessions = state_home / "sessions" / "2026" / "09" / "17"
+            sessions_root = Path(tmp)
+            sessions = sessions_root / "2026" / "09" / "17"
             sessions.mkdir(parents=True)
-            driver = self._driver(state_home)
+            driver = self._driver(sessions_root)
             baseline = driver.capture_before(Path("/repo"))
             (sessions / "rollout-a.jsonl").write_text(
                 json.dumps({"type": "session_meta",
@@ -307,10 +308,10 @@ class TestCodexSessionEvidence(unittest.TestCase):
 
     def test_exactly_one_new_file_with_session_meta_id(self):
         with tempfile.TemporaryDirectory() as tmp:
-            state_home = Path(tmp)
-            sessions = state_home / "sessions" / "2026" / "09" / "17"
+            sessions_root = Path(tmp)
+            sessions = sessions_root / "2026" / "09" / "17"
             sessions.mkdir(parents=True)
-            driver = self._driver(state_home)
+            driver = self._driver(sessions_root)
             baseline = driver.capture_before(Path("/repo"))
             new_file = sessions / "rollout-2026-09-17T00-00-00-abc.jsonl"
             new_file.write_text(
@@ -324,10 +325,10 @@ class TestCodexSessionEvidence(unittest.TestCase):
 
     def test_new_file_without_session_meta_first_line_returns_none(self):
         with tempfile.TemporaryDirectory() as tmp:
-            state_home = Path(tmp)
-            sessions = state_home / "sessions" / "2026" / "09" / "17"
+            sessions_root = Path(tmp)
+            sessions = sessions_root / "2026" / "09" / "17"
             sessions.mkdir(parents=True)
-            driver = self._driver(state_home)
+            driver = self._driver(sessions_root)
             baseline = driver.capture_before(Path("/repo"))
             new_file = sessions / "rollout-other.jsonl"
             new_file.write_text(json.dumps({"type": "response_item"}) + "\n")
@@ -336,10 +337,10 @@ class TestCodexSessionEvidence(unittest.TestCase):
 
     def test_new_file_with_session_meta_missing_id_returns_none(self):
         with tempfile.TemporaryDirectory() as tmp:
-            state_home = Path(tmp)
-            sessions = state_home / "sessions" / "2026" / "09" / "17"
+            sessions_root = Path(tmp)
+            sessions = sessions_root / "2026" / "09" / "17"
             sessions.mkdir(parents=True)
-            driver = self._driver(state_home)
+            driver = self._driver(sessions_root)
             baseline = driver.capture_before(Path("/repo"))
             new_file = sessions / "rollout-no-id.jsonl"
             new_file.write_text(
@@ -349,10 +350,10 @@ class TestCodexSessionEvidence(unittest.TestCase):
 
     def test_new_file_with_invalid_json_first_line_returns_none(self):
         with tempfile.TemporaryDirectory() as tmp:
-            state_home = Path(tmp)
-            sessions = state_home / "sessions" / "2026" / "09" / "17"
+            sessions_root = Path(tmp)
+            sessions = sessions_root / "2026" / "09" / "17"
             sessions.mkdir(parents=True)
-            driver = self._driver(state_home)
+            driver = self._driver(sessions_root)
             baseline = driver.capture_before(Path("/repo"))
             new_file = sessions / "rollout-not-json.jsonl"
             new_file.write_text("not json at all\n")
@@ -361,10 +362,10 @@ class TestCodexSessionEvidence(unittest.TestCase):
 
     def test_new_file_with_non_dict_payload_returns_none(self):
         with tempfile.TemporaryDirectory() as tmp:
-            state_home = Path(tmp)
-            sessions = state_home / "sessions" / "2026" / "09" / "17"
+            sessions_root = Path(tmp)
+            sessions = sessions_root / "2026" / "09" / "17"
             sessions.mkdir(parents=True)
-            driver = self._driver(state_home)
+            driver = self._driver(sessions_root)
             baseline = driver.capture_before(Path("/repo"))
             new_file = sessions / "rollout-non-dict-payload.jsonl"
             new_file.write_text(
@@ -377,10 +378,10 @@ class TestCodexSessionEvidence(unittest.TestCase):
         # array) must not crash discover_session_id() with AttributeError
         # from calling .get() on a non-dict.
         with tempfile.TemporaryDirectory() as tmp:
-            state_home = Path(tmp)
-            sessions = state_home / "sessions" / "2026" / "09" / "17"
+            sessions_root = Path(tmp)
+            sessions = sessions_root / "2026" / "09" / "17"
             sessions.mkdir(parents=True)
-            driver = self._driver(state_home)
+            driver = self._driver(sessions_root)
             baseline = driver.capture_before(Path("/repo"))
             new_file = sessions / "rollout-non-object-line.jsonl"
             new_file.write_text(json.dumps([1]) + "\n")
@@ -389,10 +390,10 @@ class TestCodexSessionEvidence(unittest.TestCase):
 
     def test_new_file_that_cannot_be_read_returns_none(self):
         with tempfile.TemporaryDirectory() as tmp:
-            state_home = Path(tmp)
-            sessions = state_home / "sessions" / "2026" / "09" / "17"
+            sessions_root = Path(tmp)
+            sessions = sessions_root / "2026" / "09" / "17"
             sessions.mkdir(parents=True)
-            driver = self._driver(state_home)
+            driver = self._driver(sessions_root)
             baseline = driver.capture_before(Path("/repo"))
             new_file = sessions / "rollout-unreadable.jsonl"
             new_file.write_text(
@@ -404,13 +405,13 @@ class TestCodexSessionEvidence(unittest.TestCase):
 
     def test_pre_existing_file_is_not_a_new_candidate(self):
         with tempfile.TemporaryDirectory() as tmp:
-            state_home = Path(tmp)
-            sessions = state_home / "sessions" / "2026" / "09" / "17"
+            sessions_root = Path(tmp)
+            sessions = sessions_root / "2026" / "09" / "17"
             sessions.mkdir(parents=True)
             (sessions / "rollout-pre-existing.jsonl").write_text(
                 json.dumps({"type": "session_meta",
                             "payload": {"id": "pre-existing"}}) + "\n")
-            driver = self._driver(state_home)
+            driver = self._driver(sessions_root)
             baseline = driver.capture_before(Path("/repo"))
             after = driver.capture_after(baseline)
             self.assertEqual(after.new_paths, frozenset())
@@ -420,19 +421,19 @@ class TestCodexSessionEvidence(unittest.TestCase):
 class TestClaudeSessionEvidence(unittest.TestCase):
     def test_slug_replaces_slash_and_dot(self):
         with tempfile.TemporaryDirectory() as tmp:
-            state_home = Path(tmp)
-            driver = ClaudeDriver(state_home=state_home)
+            sessions_root = Path(tmp)
+            driver = ClaudeDriver(sessions_root=sessions_root)
             cwd = Path("/a/b/.c/d")
             baseline = driver.capture_before(cwd)
             expected_slug = "-a-b--c-d"
             self.assertEqual(baseline.scan_root,
-                              state_home / "projects" / expected_slug)
+                              sessions_root / expected_slug)
 
     def test_exactly_one_new_jsonl_returns_its_filename_stem(self):
         with tempfile.TemporaryDirectory() as tmp:
-            state_home = Path(tmp)
+            sessions_root = Path(tmp)
             cwd = Path("/repo")
-            driver = ClaudeDriver(state_home=state_home)
+            driver = ClaudeDriver(sessions_root=sessions_root)
             baseline = driver.capture_before(cwd)
             project_dir = baseline.scan_root
             project_dir.mkdir(parents=True)
@@ -446,16 +447,16 @@ class TestClaudeSessionEvidence(unittest.TestCase):
 
     def test_zero_new_files_returns_none(self):
         with tempfile.TemporaryDirectory() as tmp:
-            state_home = Path(tmp)
-            driver = ClaudeDriver(state_home=state_home)
+            sessions_root = Path(tmp)
+            driver = ClaudeDriver(sessions_root=sessions_root)
             baseline = driver.capture_before(Path("/repo"))
             after = driver.capture_after(baseline)
             self.assertIsNone(driver.discover_session_id(after))
 
     def test_multiple_new_files_returns_none(self):
         with tempfile.TemporaryDirectory() as tmp:
-            state_home = Path(tmp)
-            driver = ClaudeDriver(state_home=state_home)
+            sessions_root = Path(tmp)
+            driver = ClaudeDriver(sessions_root=sessions_root)
             baseline = driver.capture_before(Path("/repo"))
             baseline.scan_root.mkdir(parents=True)
             (baseline.scan_root / "aaaa.jsonl").write_text("{}\n")
@@ -463,6 +464,47 @@ class TestClaudeSessionEvidence(unittest.TestCase):
             after = driver.capture_after(baseline)
             self.assertIsNone(driver.discover_session_id(after))
 
+
+
+class TestNoHostDefaultScanRoot(unittest.TestCase):
+    """Sem `sessions_root`, nenhum driver le o diretorio de estado do HOST,
+    mesmo quando ele existe e ganha um arquivo novo durante a captura."""
+
+    def _fake_home(self, tmp: str):
+        home = Path(tmp) / "home"
+        return home, mock.patch.dict(
+            "os.environ", {"HOME": str(home), "CODEX_HOME": str(home / ".codex")})
+
+    def test_codex_without_sessions_root_ignores_host_codex_home(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home, env = self._fake_home(tmp)
+            sessions = home / ".codex" / "sessions" / "2026" / "09" / "17"
+            sessions.mkdir(parents=True)
+            with env, mock.patch("pathlib.Path.home", return_value=home):
+                driver = CodexDriver()
+                baseline = driver.capture_before(Path("/repo"))
+                (sessions / "rollout-host.jsonl").write_text(
+                    json.dumps({"type": "session_meta",
+                                "payload": {"id": "host-session"}}) + "\n")
+                after = driver.capture_after(baseline)
+            self.assertIsNone(baseline.scan_root)
+            self.assertEqual(after.new_paths, frozenset())
+            self.assertIsNone(driver.discover_session_id(after))
+
+    def test_claude_without_sessions_root_ignores_host_claude_projects(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            home, env = self._fake_home(tmp)
+            project_dir = home / ".claude" / "projects" / "-repo"
+            project_dir.mkdir(parents=True)
+            with env, mock.patch("pathlib.Path.home", return_value=home):
+                driver = ClaudeDriver()
+                baseline = driver.capture_before(Path("/repo"))
+                (project_dir / "00000000-0000-4000-8000-000000000009.jsonl"
+                 ).write_text("{}\n")
+                after = driver.capture_after(baseline)
+            self.assertIsNone(baseline.scan_root)
+            self.assertEqual(after.new_paths, frozenset())
+            self.assertIsNone(driver.discover_session_id(after))
 
 if __name__ == "__main__":
     unittest.main()

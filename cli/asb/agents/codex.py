@@ -1,15 +1,20 @@
 """cli/asb/agents/codex.py — driver do Codex CLI.
 
 Fonte do session-id comprovada em
-docs/validation/2026-09-17-agent-session-contracts.md: exatamente um novo
-arquivo `.jsonl` sob `$CODEX_HOME/sessions/**` cuja primeira linha e um
-registro `{"type": "session_meta", "payload": {"id": "...", ...}}`. So a
-primeira linha e lida (metadado de sessao, nunca conteudo de transcript).
+docs/validation/2026-09-17-agent-session-contracts.md (medida no host):
+exatamente um novo arquivo `.jsonl` sob `$CODEX_HOME/sessions/**` cuja
+primeira linha e um registro
+`{"type": "session_meta", "payload": {"id": "...", ...}}`. So a primeira
+linha e lida (metadado de sessao, nunca conteudo de transcript).
+
+Dentro do sandbox, `$HOME/.codex/sessions` e o subpath `codex-sessions` do
+volume de sessao do workspace; o driver o le PELO HOST, pelo mountpoint do
+volume, via `sessions_root`. Sem `sessions_root` nao ha varredura: o
+`~/.codex` do operador nunca e lido.
 """
 from __future__ import annotations
 
 import json
-import os
 import re
 from pathlib import Path
 from typing import Iterable
@@ -27,10 +32,7 @@ class CodexDriver(AgentDriver):
     session_id_provable = True
 
     def _scan_root(self, cwd: Path) -> Path | None:
-        if self._state_home is not None:
-            return self._state_home / "sessions"
-        home = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
-        return home / "sessions"
+        return self._sessions_root
 
     def _list_paths(self, root: Path) -> Iterable[Path]:
         return root.rglob("*.jsonl")

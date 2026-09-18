@@ -100,14 +100,17 @@ class AgentDriver(ABC):
     resume_option_pattern: ClassVar[re.Pattern[str]]
     session_id_provable: ClassVar[bool] = True
 
-    def __init__(self, state_home: Path | None = None) -> None:
+    def __init__(self, sessions_root: Path | None = None) -> None:
         # Otimista ate que probe() prove o contrario: os testes do brief
         # constroem um driver novo e chamam resume() sem prober antes.
         self._resume_confirmed = True
-        # Injecao de teste: substitui o diretorio de estado do provedor
-        # (por padrao, `$CODEX_HOME`/`~/.claude`) para que os testes de
-        # unidade nunca leiam o estado real do operador.
-        self._state_home = state_home
+        # Diretorio de sessoes do provedor COMO CAMINHO DO HOST: o subpath
+        # do volume de sessao do workspace que o container monta sobre o
+        # diretorio do provedor (ver `lifecycle.SESSION_STATE_DIRS`). Sem
+        # padrao no host: `None` significa "nenhuma evidencia", nunca o
+        # `~/.codex`/`~/.claude` do operador, cuja sessao pessoal viraria o
+        # id de uma sessao do sandbox.
+        self._sessions_root = sessions_root
 
     # -- comandos (nunca executados aqui) --------------------------------
 
@@ -200,7 +203,8 @@ class AgentDriver(ABC):
 
     def _scan_root(self, cwd: Path) -> Path | None:
         """`None` quando o provedor nao tem um local de estado comprovado
-        neste host (ver docs/validation/2026-09-17-agent-session-contracts.md)."""
+        (ver docs/validation/2026-09-17-agent-session-contracts.md) ou
+        quando o driver foi construido sem `sessions_root`."""
         return None
 
     def _scan(self, root: Path | None) -> frozenset[Path]:

@@ -35,7 +35,9 @@ from asb.checkouts.model import (  # noqa: E402
 from asb.projects.model import Project, ProjectId  # noqa: E402
 from asb.projects.registry import CheckoutBinding, ProjectRegistry  # noqa: E402
 from asb.runtime.connection import ConnectionInfo, resolve_connection  # noqa: E402
-from asb.runtime.sandbox import SandboxRuntime  # noqa: E402
+from asb.runtime.sandbox import (  # noqa: E402
+    SandboxRuntime, session_volume_mountpoint,
+)
 from asb.workspace import Layout  # noqa: E402
 
 
@@ -565,6 +567,28 @@ class TestSandboxRuntimeDiscover(unittest.TestCase):
 
             self.assertEqual(found, [(alive, live_info)])
 
+
+
+class TestSessionVolumeMountpoint(unittest.TestCase):
+    """Podman inteiramente mockado: nenhum volume real e inspecionado."""
+
+    def test_inspects_the_workspace_session_volume(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch("asb.podman.out", return_value=tmp) as out, \
+                 mock.patch("asb.podman.run") as run:
+                self.assertEqual(session_volume_mountpoint("ws1"), Path(tmp))
+        out.assert_called_once_with(
+            "volume", "inspect", "asb-ws1-session",
+            "--format", "{{.Mountpoint}}")
+        run.assert_not_called()
+
+    def test_missing_volume_raises_without_creating_it(self):
+        with mock.patch("asb.podman.out",
+                        side_effect=podman.PodmanError("no such volume")), \
+             mock.patch("asb.podman.run") as run:
+            with self.assertRaises(podman.PodmanError):
+                session_volume_mountpoint("ws1")
+        run.assert_not_called()
 
 if __name__ == "__main__":
     unittest.main()

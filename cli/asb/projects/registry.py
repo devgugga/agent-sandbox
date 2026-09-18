@@ -34,6 +34,7 @@ from asb.projects.model import Project, ProjectId
 from asb.workspace import _sanitize, workspace_id
 
 _SCHEMA_VERSION = 1
+_GIT_TIMEOUT_SECONDS = 10.0
 _T = TypeVar("_T")
 
 # (project, checkouts-do-projeto) na ordem em que aparecem no arquivo.
@@ -58,10 +59,12 @@ def _git_common_dir(path: Path) -> Path:
     """Diretorio `.git` comum e canonico de `path`, ou levanta o erro do módulo."""
     try:
         completed = subprocess.run(
-            ["git", "rev-parse", "--path-format=absolute", "--git-common-dir"],
-            cwd=str(path), shell=False, capture_output=True, text=True,
+            ["git", "-C", str(path), "rev-parse", "--path-format=absolute",
+             "--git-common-dir"],
+            shell=False, capture_output=True, text=True,
+            timeout=_GIT_TIMEOUT_SECONDS, stdin=subprocess.DEVNULL,
         )
-    except OSError as exc:
+    except (OSError, subprocess.SubprocessError) as exc:
         raise ProjectRegistryError(
             f"could not invoke git in {path}: {exc}") from exc
     if completed.returncode != 0:

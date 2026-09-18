@@ -19,13 +19,21 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "cli"))
 
-from asb.checkouts.git import BranchInfo  # noqa: E402
-from asb.checkouts.model import CheckoutId  # noqa: E402
+from asb.checkouts.git import BranchInfo, Worktree  # noqa: E402
+from asb.checkouts.manager import (  # noqa: E402
+    CheckoutError, CheckoutManager, CreateCheckout, CreatePreview,
+    ListedCheckout,
+)
+from asb.checkouts.model import (  # noqa: E402
+    Checkout, CheckoutId, CheckoutKind, CheckoutState,
+)
 from asb.interfaces import sessions, tui  # noqa: E402
 from asb.interfaces.tui_model import RowKind  # noqa: E402
 from asb.podman import PodmanError  # noqa: E402
 from asb.projects.model import Project, ProjectId  # noqa: E402
-from asb.projects.registry import CheckoutBinding, ProjectRegistry  # noqa: E402
+from asb.projects.registry import (  # noqa: E402
+    CheckoutBinding, ProjectRegistry, ProjectRegistryError,
+)
 from asb.runtime.connection import ConnectionInfo  # noqa: E402
 from asb.runtime.sandbox import (  # noqa: E402
     WorkspaceDiscovery, WorkspaceStatus,
@@ -155,6 +163,11 @@ class _Case(unittest.TestCase):
         self.manager.reconcile.side_effect = lambda cid: [
             s for s in self.store.list() if s.checkout_id == cid]
         self.manager_for = mock.Mock(return_value=self.manager)
+        self.checkouts = mock.MagicMock(spec=CheckoutManager)
+        self.checkouts.list.return_value = []
+        self.checkouts.default_path.side_effect = (
+            lambda project, branch:
+            project.worktree_root / branch.replace("/", "-"))
         self.branch_reads: list[Path] = []
         self.events: list = []
         self.child_error: BaseException | None = None
@@ -182,7 +195,8 @@ class _Case(unittest.TestCase):
 
     def controller(self, refresh=True) -> tui.TuiController:
         ctl = tui.TuiController(self.services(), read_branch=self.read_branch,
-                                run_child=self.run_child)
+                                run_child=self.run_child,
+                                checkouts=self.checkouts)
         ctl.terminal = FakeTerminal(self.events)
         if refresh:
             ctl.refresh()
@@ -449,16 +463,14 @@ class TestActions(_Case):
         self.assertEqual(self.store.get(record.id).state,
                          SessionState.COMPLETED)
 
-    def test_w_and_f_are_reserved_and_change_nothing(self):
+    def test_f_is_reserved_and_changes_nothing(self):
         self.stored(C_PRI)
         ctl = self.controller()
         self.select(ctl, "c:c-pri")
         before = (list(self.registry.mock_calls), list(self.runtime.mock_calls),
                   list(self.manager.mock_calls), self.store.list(), ctl.rows)
-        for key in "wf":
-            with self.subTest(key=key):
-                tui.handle_key(ctl, ord(key))
-                self.assertIn("not available yet", ctl.message)
+        tui.handle_key(ctl, ord("f"))
+        self.assertIn("not available yet", ctl.message)
         self.assertEqual(
             (list(self.registry.mock_calls), list(self.runtime.mock_calls),
              list(self.manager.mock_calls), self.store.list(), ctl.rows),
@@ -469,6 +481,261 @@ class TestActions(_Case):
         self.runtime.discover.reset_mock()
         tui.handle_key(ctl, ord("r"))
         self.runtime.discover.assert_called_once()
+
+
+# -- worktrees: listagem e `w` ------------------------------------------------------
+
+EXTERNAL = Path("/src/alpha-worktrees/external")
+DETACHED = Path("/src/alpha-worktrees/detached")
+C_NEW = CheckoutId("c-new")
+BASE_COMMIT = "0123456789abcdef0123456789abcdef01234567"
+
+
+def _type(ctl: tui.TuiController, text: str) -> None:
+    for ch in text:
+        tui.handle_key(ctl, ord(ch))
+
+
+class TestWorktreeListing(_Case):
+    def test_unregistered_and_missing_worktrees_are_marked_not_hidden(self):
+        self.checkouts.list.return_value = [
+            ListedCheckout(PRIMARY, self.bindings[C_PRI], None, False),
+            ListedCheckout(WORKTREE, self.bindings[C_WT], None, True),
+            ListedCheckout(EXTERNAL, None, Worktree(
+                EXTERNAL, "abc", "external", False, False), False),
+            ListedCheckout(DETACHED, None, Worktree(
+                DETACHED, "0123456789", None, True, False, prunable=True),
+                True),
+            ListedCheckout(Path("/src/bare.git"), None, Worktree(
+                Path("/src/bare.git"), None, None, False, False, bare=True),
+                False),
+        ]
+        ctl = self.controller()
+        self.checkouts.list.assert_called_once_with(PROJECT)
+        rows = {row.key: row for row in ctl.rows}
+        self.assertNotIn("bare.git", " ".join(row.text for row in ctl.rows))
+        self.assertIn("(detached 0123456)  unregistered",
+                      rows[f"u:p-alpha:{DETACHED}"].text)
+        self.assertTrue(rows[f"u:p-alpha:{DETACHED}"].text.endswith(
+            "missing  prunable"))
+        self.assertNotIn("missing", rows["c:c-pri"].text)
+        self.assertIn("missing", rows["c:c-wt"].text)
+        loose = rows[f"u:p-alpha:{EXTERNAL}"]
+        self.assertIn("unregistered", loose.text)
+        self.assertIn("external", loose.text)
+        self.registry.register_checkout.assert_not_called()
+
+    def test_a_failing_listing_marks_the_project_and_keeps_its_checkouts(self):
+        self.checkouts.list.side_effect = CheckoutError("git\nquebrou")
+        ctl = self.controller()
+        rows = {row.key: row for row in ctl.rows}
+        self.assertTrue(rows["p:p-alpha"].text.endswith("!! git"))
+        self.assertIn("c:c-wt", rows)
+
+    def test_n_on_an_unregistered_worktree_registers_it_then_starts(self):
+        self.checkouts.list.return_value = [ListedCheckout(
+            EXTERNAL, None,
+            Worktree(EXTERNAL, "abc", "external", False, False), False)]
+        binding = CheckoutBinding(C_NEW, PROJECT, EXTERNAL, "ws-new")
+        self.bindings[C_NEW] = binding
+        self.registry.register_checkout.return_value = binding
+        self.manager.start.side_effect = lambda request: self.store.insert(
+            AgentSession.new(request.checkout_id, request.agent, request.cwd,
+                             request.title)).with_state(SessionState.RUNNING)
+        ctl = self.controller()
+        self.select(ctl, f"u:p-alpha:{EXTERNAL}")
+
+        tui.handle_key(ctl, ord("n"))
+        self.registry.register_checkout.assert_not_called()  # so na escolha
+        tui.handle_key(ctl, ord("1"))
+
+        self.registry.register_checkout.assert_called_once_with(PROJECT,
+                                                                EXTERNAL)
+        self.runtime.ensure.assert_called_once_with(binding)
+        self.assertEqual(self.manager.start.call_args.args[0].checkout_id,
+                         C_NEW)
+
+    def test_a_refused_registration_starts_nothing(self):
+        self.checkouts.list.return_value = [ListedCheckout(
+            EXTERNAL, None,
+            Worktree(EXTERNAL, "abc", "external", False, False), False)]
+        self.registry.register_checkout.side_effect = ProjectRegistryError(
+            "another repository")
+        ctl = self.controller()
+        self.select(ctl, f"u:p-alpha:{EXTERNAL}")
+        tui.handle_key(ctl, ord("n"))
+        tui.handle_key(ctl, ord("1"))
+        self.assertIn("another repository", ctl.message)
+        self.runtime.ensure.assert_not_called()
+
+
+class TestNewWorktree(_Case):
+    def setUp(self) -> None:
+        super().setUp()
+        self.project = self.projects[0]
+        self.checkouts.preview.side_effect = lambda request: CreatePreview(
+            project=self.project, branch=request.branch, base=request.base,
+            base_commit=BASE_COMMIT, path=request.path)
+        self.checkouts.create.side_effect = lambda request: Checkout(
+            C_NEW, PROJECT, request.path, CheckoutKind.WORKTREE,
+            request.branch, CheckoutState.CLEAN, "ws-new")
+
+    def open_confirmation(self, row="c:c-pri", base_key="1",
+                          branch="feat/x") -> tui.TuiController:
+        ctl = self.controller()
+        self.select(ctl, row)
+        tui.handle_key(ctl, ord("w"))
+        self.assertIn("new branch", ctl.prompt.text)
+        _type(ctl, branch + "\n")
+        self.assertIn("base", ctl.prompt.text)
+        tui.handle_key(ctl, ord(base_key))
+        self.assertIn("path", ctl.prompt.text)
+        self.assertEqual(ctl.prompt.value, "/src/wts/feat-x")
+        tui.handle_key(ctl, 10)
+        return ctl
+
+    def test_the_preview_shows_everything_and_y_creates_once(self):
+        ctl = self.open_confirmation()
+        request = CreateCheckout(PROJECT, "feat/x", "main",
+                                 Path("/src/wts/feat-x"))
+        self.checkouts.preview.assert_called_once_with(request)
+        detail = "\n".join(ctl.prompt.detail)
+        for needle in (str(PRIMARY), "main", BASE_COMMIT[:12], "feat/x",
+                       "/src/wts/feat-x", "creates branch: yes"):
+            self.assertIn(needle, detail)
+        self.checkouts.create.assert_not_called()
+        self.runtime.discover.reset_mock()
+
+        tui.handle_key(ctl, ord("y"))
+
+        self.checkouts.create.assert_called_once_with(request)
+        self.runtime.discover.assert_called_once()  # refresh depois
+        self.runtime.ensure.assert_not_called()  # runtime continua preguicoso
+        self.assertIsNone(ctl.prompt)
+        self.assertIn("created feat/x", ctl.message)
+
+    def test_any_key_but_y_cancels_without_side_effects(self):
+        for key in (ord("n"), ord("Y"), 10, 27, ord("q")):
+            with self.subTest(key=key):
+                ctl = self.open_confirmation()
+                before = (list(self.registry.mock_calls),
+                          list(self.runtime.mock_calls),
+                          list(self.manager.mock_calls), self.store.list(),
+                          ctl.rows)
+                tui.handle_key(ctl, key)
+                self.assertIsNone(ctl.prompt)
+                self.assertEqual(ctl.message, "cancelled")
+                self.assertTrue(ctl.running)
+                self.assertEqual(
+                    (list(self.registry.mock_calls),
+                     list(self.runtime.mock_calls),
+                     list(self.manager.mock_calls), self.store.list(),
+                     ctl.rows), before)
+        self.checkouts.create.assert_not_called()
+
+    def test_escape_or_an_empty_answer_cancels_the_text_steps(self):
+        ctl = self.controller()
+        self.select(ctl, "c:c-pri")
+        for keys in ([27], [10], [ord("x"), 27]):
+            with self.subTest(keys=keys):
+                tui.handle_key(ctl, ord("w"))
+                for key in keys:
+                    tui.handle_key(ctl, key)
+                self.assertIsNone(ctl.prompt)
+                self.assertEqual(ctl.message, "cancelled")
+        self.checkouts.preview.assert_not_called()
+
+    def test_the_path_is_editable(self):
+        ctl = self.controller()
+        self.select(ctl, "p:p-alpha")
+        tui.handle_key(ctl, ord("w"))
+        _type(ctl, "topic\n1")
+        for _ in "topic":
+            tui.handle_key(ctl, curses.KEY_BACKSPACE)
+        tui.handle_key(ctl, 127)  # outro codigo de backspace
+        tui.handle_key(ctl, curses.KEY_LEFT)  # ignorada
+        _type(ctl, "/other dir")
+        screen = FakeScreen(height=12, width=100)
+        tui.render(screen, ctl)
+        self.assertIn("path (Enter preview, Esc cancels): /src/wts/other dir_",
+                      screen.lines[11])
+        tui.handle_key(ctl, 10)
+        self.checkouts.preview.assert_called_once_with(CreateCheckout(
+            PROJECT, "topic", "main", Path("/src/wts/other dir")))
+
+    def test_the_selected_checkout_branch_is_an_explicit_second_choice(self):
+        ctl = self.open_confirmation(row="c:c-wt", base_key="2")
+        self.assertEqual(self.branch_reads[-1], WORKTREE)
+        self.assertEqual(self.checkouts.preview.call_args.args[0].base,
+                         "br-topic")
+        tui.handle_key(ctl, ord("y"))
+        self.assertEqual(self.checkouts.create.call_args.args[0].base,
+                         "br-topic")
+
+    def test_a_project_row_offers_only_the_integration_branch(self):
+        ctl = self.controller()
+        self.select(ctl, "p:p-alpha")
+        tui.handle_key(ctl, ord("w"))
+        _type(ctl, "feat/x\n")
+        self.assertIn("1 main", ctl.prompt.text)
+        self.assertNotIn("2 ", ctl.prompt.text)
+        tui.handle_key(ctl, ord("2"))
+        self.assertEqual(ctl.message, "cancelled")
+
+    def test_a_refused_preview_is_a_message_and_no_confirmation(self):
+        self.checkouts.preview.side_effect = CheckoutError(
+            "base 'main' does not resolve; choose a base explicitly")
+        ctl = self.open_confirmation()
+        self.assertIsNone(ctl.prompt)
+        self.assertIn("choose a base explicitly", ctl.message)
+        self.checkouts.create.assert_not_called()
+
+    def test_a_failed_creation_shows_every_leftover(self):
+        self.checkouts.create.side_effect = CheckoutError(
+            "disk full; could not remove it (dirty); left worktree "
+            "/src/wts/feat-x and branch feat/x for manual recovery")
+        ctl = self.open_confirmation()
+        tui.handle_key(ctl, ord("y"))
+        self.assertIn("worktree failed", ctl.message)
+        notice = "\n".join(ctl.notice)
+        self.assertIn("left worktree /src/wts/feat-x and branch feat/x",
+                      notice)
+        screen = FakeScreen(height=12, width=100)
+        tui.render(screen, ctl)
+        self.assertIn("left worktree /src/wts/feat-x", screen.text())
+        tui.handle_key(ctl, ord("j"))  # a proxima tecla dispensa o aviso
+        self.assertEqual(ctl.notice, ())
+
+    def test_the_default_checkout_manager_uses_the_session_registry(self):
+        with mock.patch.object(tui, "CheckoutManager") as manager:
+            ctl = tui.TuiController(self.services())
+        manager.assert_called_once_with(self.registry)
+        self.assertIs(ctl.checkouts, manager.return_value)
+
+    def test_w_needs_a_project_or_checkout(self):
+        record = self.stored(C_PRI)
+        ctl = self.controller()
+        self.select(ctl, f"s:{record.id}")
+        tui.handle_key(ctl, ord("w"))
+        self.assertIsNone(ctl.prompt)
+        self.assertIn("project or checkout", ctl.message)
+
+    def test_the_confirmation_is_drawn_above_the_status_line(self):
+        ctl = self.open_confirmation()
+        screen = FakeScreen(height=12, width=100)
+        tui.render(screen, ctl)
+        self.assertIn("creates branch: yes", screen.text())
+        self.assertIn("y create", screen.lines[11])
+
+    def test_a_short_terminal_keeps_one_tree_row_and_the_last_detail(self):
+        ctl = self.open_confirmation()
+        screen = FakeScreen(height=6, width=100)
+        tui.render(screen, ctl)
+        self.assertIn("[primary]", screen.lines[1])
+        self.assertEqual([screen.lines[y] for y in (2, 3, 4)],
+                         ["new branch: feat/x", "path: /src/wts/feat-x",
+                          "creates branch: yes"])
+        self.assertIn("y create", screen.lines[5])
 
 
 # -- desenho ---------------------------------------------------------------------

@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "cli"))
 
 from asb.checkouts.model import CheckoutId, CheckoutKind  # noqa: E402
 from asb.interfaces.tui_model import (  # noqa: E402
-    CheckoutView, RowKind, TreeRow, build_tree, sanitize,
+    CheckoutView, RowKind, TreeRow, UnregisteredView, build_tree, sanitize,
 )
 from asb.projects.model import Project, ProjectId  # noqa: E402
 from asb.runtime.sandbox import WorkspaceStatus  # noqa: E402
@@ -213,6 +213,53 @@ class TestStateAndStability(unittest.TestCase):
         self.assertIsInstance(row, TreeRow)
         with self.assertRaises(Exception):
             row.text = "x"  # type: ignore[misc]
+
+
+class TestWorktreeMarkers(unittest.TestCase):
+    """Contexto §G: worktree criado fora da TUI e checkout sumido aparecem,
+    marcados, em vez de sumir da arvore."""
+
+    def test_an_unregistered_worktree_follows_the_registered_ones(self):
+        loose = UnregisteredView(P_ALPHA, Path("/src/alpha-worktrees/ext\n"),
+                                 "ext")
+        rows = build_tree(
+            [_project(P_ALPHA, "/src/alpha")],
+            [_checkout("c-a", P_ALPHA, "/src/alpha")], [],
+            unregistered=[loose])
+        row = rows[-1]
+        self.assertEqual(row.key, "u:p-alpha:/src/alpha-worktrees/ext\n")
+        self.assertIs(row.kind, RowKind.CHECKOUT)
+        self.assertIsNone(row.checkout_id)
+        self.assertEqual(row.project_id, P_ALPHA)
+        self.assertEqual(row.source_path, loose.path)
+        self.assertEqual(row.text,
+                         "[worktree]  ext  unregistered  "
+                         "/src/alpha-worktrees/ext?")
+        self.assertEqual(rows[1].source_path, Path("/src/alpha"))
+
+    def test_an_unregistered_worktree_alone_is_not_no_checkouts(self):
+        rows = build_tree(
+            [_project(P_ALPHA, "/src/alpha")], [], [],
+            unregistered=[UnregisteredView(P_ALPHA, Path("/w/x"), None,
+                                           missing=True, prunable=True)])
+        self.assertEqual(_keys(rows), ["p:p-alpha", "u:p-alpha:/w/x"])
+        self.assertIn("(branch ?)", rows[1].text)
+        self.assertTrue(rows[1].text.endswith("missing  prunable"))
+
+    def test_a_detached_unregistered_worktree(self):
+        [_, row] = build_tree(
+            [_project(P_ALPHA, "/src/alpha")], [], [],
+            unregistered=[UnregisteredView(P_ALPHA, Path("/w/x"), "abc1234",
+                                           detached=True)])
+        self.assertIn("(detached abc1234)", row.text)
+
+    def test_a_registered_checkout_whose_path_is_gone_is_missing(self):
+        view = CheckoutView(
+            checkout_id=CheckoutId("c-a"), project_id=P_ALPHA,
+            source_path=Path("/w/gone"), workspace="ws", kind=CheckoutKind.WORKTREE,
+            status=WorkspaceStatus.ABSENT, branch=None, missing=True)
+        [_, row] = build_tree([_project(P_ALPHA, "/src/alpha")], [view], [])
+        self.assertTrue(row.text.endswith("/w/gone  missing"))
 
 
 class TestSanitize(unittest.TestCase):

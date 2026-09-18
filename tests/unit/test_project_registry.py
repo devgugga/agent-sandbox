@@ -500,6 +500,20 @@ class CheckoutBindingTests(ProjectRegistryTestCase):
         self.assertEqual(registry.bindings(project.id), [primary, worktree])
         self.assertEqual(worktree.source_path, linked.resolve())
 
+    def test_a_hung_git_is_a_registry_error_and_writes_nothing(self):
+        registry = self.registry()
+        project = registry.add(self.repo, "main", self.worktree_root)
+        before = self.registry_path.read_text(encoding="utf-8")
+        with patch("asb.projects.registry.subprocess.run",
+                   side_effect=subprocess.TimeoutExpired("git", 10)) as run, \
+                self.assertRaises(ProjectRegistryError):
+            registry.register_checkout(project.id, self.repo)
+        argv = run.call_args.args[0]
+        self.assertEqual(argv[:3], ["git", "-C", str(self.repo)])
+        self.assertGreater(run.call_args.kwargs["timeout"], 0)
+        self.assertEqual(self.registry_path.read_text(encoding="utf-8"),
+                         before)
+
     def test_a_record_without_common_dir_is_checked_against_the_primary(self):
         registry = self.registry()
         project = registry.add(self.repo, "main", self.worktree_root)

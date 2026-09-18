@@ -5,14 +5,20 @@ Duas camadas:
 
 - `TuiController` guarda o estado (linhas, selecao, mensagem, prompt) e faz
   as acoes pelos MESMOS servicos do CLI da Tarefa 9 (`session_start`,
-  `session_attach`, `session_stop`). `refresh()` e o unico lugar que le
-  registro, workspaces, Git e sessoes, e so roda no inicio, em `r` e
-  depois de um attach: nunca a cada desenho, nunca em segundo plano;
+  `session_attach`, `session_stop`) e, para worktrees, pelo
+  `CheckoutManager` (Tarefa 11). `refresh()` le registro, workspaces, Git
+  e sessoes, e so roda no inicio, em `r` e depois de uma acao: nunca a
+  cada desenho, nunca em segundo plano;
 - a camada curses (`render`, `handle_key`, `run`) so desenha linhas ja
   calculadas e mapeia teclas. `curses.wrapper()` e dono do setup/teardown.
 
 `q` so sai: nunca para, suspende nem mata nada. O attach roda como processo
 FILHO (nao `exec`), com o curses suspenso e restaurado num `finally`.
+
+`w` cria um worktree: branch novo -> base (o branch de integracao, ou o
+branch do checkout selecionado como escolha explicita) -> caminho editavel
+-> previa (projeto, base e commit, branch, caminho, "creates branch") ->
+so `y` cria. Qualquer outra tecla cancela sem efeito.
 """
 from __future__ import annotations
 
@@ -26,6 +32,7 @@ from pathlib import Path
 from typing import TextIO
 
 from ..checkouts.git import BranchInfo, GitRepository
+from ..checkouts.manager import CheckoutManager, CreateCheckout, CreatePreview
 from ..checkouts.model import CheckoutKind
 from ..projects.model import Project, ProjectId
 from ..runtime.sandbox import WorkspaceDiscovery, WorkspaceStatus
@@ -34,8 +41,8 @@ from .sessions import (
     SessionServices, session_attach, session_start, session_stop,
 )
 from .tui_model import (
-    CheckoutView, RowKind, TreeRow, build_tree, checkout_key, project_key,
-    sanitize,
+    CheckoutView, RowKind, TreeRow, UnregisteredView, build_tree,
+    checkout_key, project_key, sanitize,
 )
 
 MIN_WIDTH = 40
@@ -47,6 +54,8 @@ _NOT_ATTACHABLE = frozenset({SessionState.RECOVERY_REQUIRED,
                              SessionState.COMPLETED, SessionState.FAILED})
 _FINAL = frozenset({SessionState.COMPLETED, SessionState.FAILED})
 _ENTER_KEYS = frozenset({10, 13, curses.KEY_ENTER})
+_ESCAPE = 27
+_BACKSPACE_KEYS = frozenset({8, 127, curses.KEY_BACKSPACE})
 HELP = ("j/k move  Enter open  n new  d stop  w worktree  f finish  "
         "r refresh  q quit")
 
@@ -85,6 +94,19 @@ class Prompt:
 
     text: str
     choices: dict[str, Callable[[], None]]
+    # Linhas desenhadas acima da linha de status enquanto o prompt esta
+    # aberto (a previa de um worktree).
+    detail: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class TextPrompt:
+    """Entrada de texto na linha de status: Enter envia, Esc cancela,
+    Backspace apaga; so ASCII imprimivel entra no valor."""
+
+    text: str
+    value: str
+    submit: Callable[[str], None]
 
 
 class _NoTerminal:
@@ -101,20 +123,27 @@ class _NoTerminal:
 class TuiController:
     def __init__(self, services: SessionServices, *,
                  read_branch: Callable[[Path], BranchInfo | None] = read_branch,
-                 run_child: Callable[[list[str]], int] = run_child) -> None:
+                 run_child: Callable[[list[str]], int] = run_child,
+                 checkouts: CheckoutManager | None = None) -> None:
         self._services = services
         self._read_branch = read_branch
         self._run_child = run_child
+        self.checkouts = (checkouts if checkouts is not None
+                          else CheckoutManager(services.registry))
         # Substituido pela camada curses (`run`); testes injetam um falso.
         self.terminal = _NoTerminal()
         self.rows: tuple[TreeRow, ...] = ()
         self.selected = 0
         self.message = ""
-        self.prompt: Prompt | None = None
+        self.prompt: Prompt | TextPrompt | None = None
+        # Aviso de varias linhas (o que sobrou de uma criacao que falhou);
+        # a proxima tecla o dispensa.
+        self.notice: tuple[str, ...] = ()
         self.running = True
         self._collapsed: set[str] = set()
         self._projects: list[Project] = []
         self._views: list[CheckoutView] = []
+        self._unregistered: list[UnregisteredView] = []
         self._sessions: list[AgentSession] = []
         self._project_errors: dict[ProjectId, str] = {}
 
@@ -133,7 +162,8 @@ class TuiController:
         old_index = self.selected
         self.rows = build_tree(self._projects, self._views, self._sessions,
                                collapsed=frozenset(self._collapsed),
-                               project_errors=self._project_errors)
+                               project_errors=self._project_errors,
+                               unregistered=self._unregistered)
         index = {row.key: i for i, row in enumerate(self.rows)}
         if previous is not None:
             candidates = [previous.key]
@@ -156,6 +186,7 @@ class TuiController:
         services = self._services
         self._project_errors = {}
         self._views = []
+        self._unregistered = []
         self._sessions = []
         try:
             self._projects = list(services.registry.list())
@@ -179,15 +210,45 @@ class TuiController:
             except Exception as error:
                 self._project_errors[project.id] = _reason(error)
                 continue
+            missing = self._worktrees(project)
             for found in discovered:
                 view, sessions = self._checkout(
                     project, found,
                     by_checkout.get(found.binding.checkout_id, []))
                 if store_error is not None:
                     view = _with_error(view, store_error)
+                if found.binding.checkout_id in missing:
+                    view = replace(view, missing=True)
                 self._views.append(view)
                 self._sessions.extend(sessions)
         self._rebuild(previous)
+
+    def _worktrees(self, project: Project) -> set[str]:
+        """Le a lista do Git (nunca grava): guarda os worktrees fora do
+        registro e devolve os checkouts registrados que sumiram. Uma falha
+        marca o projeto e nao esconde os checkouts registrados."""
+        try:
+            listed = self.checkouts.list(project.id)
+        except Exception as error:
+            self._project_errors[project.id] = _reason(error)
+            return set()
+        missing: set[str] = set()
+        for entry in listed:
+            if entry.binding is not None:
+                if entry.missing:
+                    missing.add(entry.binding.checkout_id)
+                continue
+            # Sem vinculo, a entrada sempre vem do Git; um repositorio bare
+            # nao tem checkout onde abrir sessao.
+            wt = entry.worktree
+            if wt is None or wt.bare:
+                continue
+            self._unregistered.append(UnregisteredView(
+                project_id=project.id, path=entry.path,
+                branch=wt.branch or (wt.head[:7] if wt.head else None),
+                detached=wt.detached, missing=entry.missing,
+                prunable=wt.prunable))
+        return missing
 
     def _checkout(self, project: Project, found: WorkspaceDiscovery,
                   sessions: list[AgentSession]
@@ -303,7 +364,13 @@ class TuiController:
         self.terminal.redraw()
         out = io.StringIO()
         try:
-            session_start(row.checkout_id, kind.value, None,
+            checkout_id = row.checkout_id
+            if checkout_id is None:
+                # Worktree criado fora da TUI: registrar (idempotente, com a
+                # checagem de repositorio) so agora, na escolha do agente.
+                checkout_id = self._services.registry.register_checkout(
+                    row.project_id, row.source_path).checkout_id
+            session_start(checkout_id, kind.value, None,
                           services=self._services, out=out)
         except Exception as error:
             message = f"start failed: {_reason(error)}"
@@ -340,6 +407,91 @@ class TuiController:
         self.refresh()
         self.message = sanitize(message)
 
+    # -- worktree (`w`) ----------------------------------------------------------
+
+    def new_worktree(self) -> None:
+        row = self.selected_row
+        if row is None or row.kind not in (RowKind.PROJECT, RowKind.CHECKOUT):
+            self.message = "select a project or checkout to create a worktree"
+            return
+        project = next(p for p in self._projects if p.id == row.project_id)
+        self.prompt = TextPrompt(
+            "new branch (Enter next, Esc cancels)", "",
+            lambda branch: self._worktree_base(row, project, branch))
+
+    def _worktree_base(self, row: TreeRow, project: Project,
+                       branch: str) -> None:
+        if not branch:
+            self.message = "cancelled"
+            return
+        bases = [project.integration_branch]
+        # O branch do checkout selecionado so entra como escolha explicita:
+        # nunca e o default, para nao empilhar branches sem querer.
+        if row.kind is RowKind.CHECKOUT and row.source_path is not None:
+            info = self._read_branch(row.source_path)
+            if info is not None and not info.detached \
+                    and info.name not in bases:
+                bases.append(info.name)
+        choices = {str(i): (lambda base=base:
+                            self._worktree_path(project, branch, base))
+                   for i, base in enumerate(bases, start=1)}
+        labels = "  ".join(f"{i} {base}" for i, base in enumerate(bases, 1))
+        self.prompt = Prompt(sanitize(f"base: {labels}  (other key cancels)"),
+                             choices)
+
+    def _worktree_path(self, project: Project, branch: str, base: str) -> None:
+        default = str(self.checkouts.default_path(project, branch))
+        self.prompt = TextPrompt(
+            "path (Enter preview, Esc cancels)", default,
+            lambda path: self._worktree_preview(
+                CreateCheckout(project.id, branch, base, Path(path))))
+
+    def _worktree_preview(self, request: CreateCheckout) -> None:
+        if not str(request.path) or str(request.path) == ".":
+            self.message = "cancelled"
+            return
+        try:
+            preview = self.checkouts.preview(request)
+        except Exception as error:
+            self.message = f"worktree refused: {_reason(error)}"
+            return
+        self.prompt = Prompt(
+            "create this worktree? y create  (other key cancels)",
+            {"y": lambda: self._worktree_create(request)},
+            detail=_preview_lines(preview))
+
+    def _worktree_create(self, request: CreateCheckout) -> None:
+        self.message = "creating worktree..."
+        self.terminal.redraw()
+        notice: tuple[str, ...] = ()
+        try:
+            checkout = self.checkouts.create(request)
+        except Exception as error:
+            message = f"worktree failed: {_reason(error)}"
+            notice = tuple(sanitize(part.strip())
+                           for part in str(error).split(";") if part.strip())
+        else:
+            message = f"created {checkout.branch} at {checkout.path}"
+        self.refresh()
+        self.message = sanitize(message)
+        self.notice = notice
+
+    def edit(self, key: int) -> None:
+        """Uma tecla para o `TextPrompt` aberto."""
+        prompt = self.prompt
+        if not isinstance(prompt, TextPrompt):
+            return
+        if key in _ENTER_KEYS:
+            self.prompt = None
+            prompt.submit(prompt.value.strip())
+        elif key == _ESCAPE:
+            self.prompt = None
+            self.message = "cancelled"
+        elif key in _BACKSPACE_KEYS:
+            self.prompt = replace(prompt, value=prompt.value[:-1])
+        elif 32 <= key < 127:
+            self.prompt = replace(prompt, value=prompt.value + chr(key))
+
     def reserved(self, action: str) -> None:
         self.message = f"{action} is not available yet"
 
@@ -353,6 +505,16 @@ class TuiController:
             self.message = "cancelled"
             return
         action()
+
+
+def _preview_lines(preview: CreatePreview) -> tuple[str, ...]:
+    return tuple(sanitize(line) for line in (
+        f"project: {preview.project.primary}",
+        f"base: {preview.base} at {preview.base_commit[:12]}",
+        f"new branch: {preview.branch}",
+        f"path: {preview.path}",
+        f"creates branch: {'yes' if preview.creates_branch else 'no'}",
+    ))
 
 
 def _with_error(view: CheckoutView, error: str) -> CheckoutView:
@@ -369,6 +531,10 @@ def handle_key(controller: TuiController, key: int) -> None:
     aberto."""
     if key == curses.KEY_RESIZE:
         return
+    controller.notice = ()
+    if isinstance(controller.prompt, TextPrompt):
+        controller.edit(key)
+        return
     if controller.prompt is not None:
         controller.answer(chr(key) if 0 <= key < 0x110000 else "")
         return
@@ -383,7 +549,7 @@ def handle_key(controller: TuiController, key: int) -> None:
     elif key == ord("d"):
         controller.session_menu()
     elif key == ord("w"):
-        controller.reserved("new worktree")
+        controller.new_worktree()
     elif key == ord("f"):
         controller.reserved("finish")
     elif key == ord("r"):
@@ -406,7 +572,8 @@ def _put(screen, y: int, text: str, width: int, attr: int = 0) -> None:
 
 def render(screen, controller: TuiController) -> None:
     """Desenha o estado do controlador. So le `rows`, `selected`,
-    `message` e `prompt`: nenhum servico, Git, Podman, SSH ou tmux."""
+    `message`, `prompt` e `notice`: nenhum servico, Git, Podman, SSH ou
+    tmux."""
     height, width = screen.getmaxyx()
     screen.erase()
     if width < MIN_WIDTH or height < MIN_HEIGHT:
@@ -415,13 +582,26 @@ def render(screen, controller: TuiController) -> None:
         _refresh(screen)
         return
     _put(screen, 0, f"asb-agent  {HELP}", width)
-    body = height - 2
+    prompt = controller.prompt
+    detail = prompt.detail if isinstance(prompt, Prompt) else controller.notice
+    # A previa/aviso ocupa o fim do corpo; o cabecalho e uma linha de
+    # arvore ficam sempre visiveis.
+    keep = max(0, height - 3)
+    detail = detail[len(detail) - keep:] if len(detail) > keep else detail
+    body = height - 2 - len(detail)
     top = max(0, controller.selected - body + 1)
     for offset, row in enumerate(controller.rows[top:top + body]):
         index = top + offset
         attr = curses.A_REVERSE if index == controller.selected else 0
         _put(screen, 1 + offset, "  " * row.depth + row.text, width, attr)
-    status = controller.prompt.text if controller.prompt else controller.message
+    for offset, line in enumerate(detail):
+        _put(screen, 1 + body + offset, line, width)
+    if isinstance(prompt, TextPrompt):
+        status = f"{prompt.text}: {prompt.value}_"
+    elif prompt is not None:
+        status = prompt.text
+    else:
+        status = controller.message
     _put(screen, height - 1, status, width)
     _refresh(screen)
 

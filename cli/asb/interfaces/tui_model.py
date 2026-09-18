@@ -56,6 +56,21 @@ class CheckoutView:
     host_branch: bool = False
     reason: str | None = None
     error: str | None = None
+    missing: bool = False
+
+
+@dataclass(frozen=True)
+class UnregisteredView:
+    """Um worktree que o Git lista mas o registro nao conhece (criado fora
+    da TUI). `missing`: o caminho nao existe; `prunable`: o Git o marca
+    assim."""
+
+    project_id: ProjectId
+    path: Path
+    branch: str | None
+    detached: bool = False
+    missing: bool = False
+    prunable: bool = False
 
 
 @dataclass(frozen=True)
@@ -72,6 +87,9 @@ class TreeRow:
     checkout_id: CheckoutId | None = None
     session_id: SessionId | None = None
     session_state: SessionState | None = None
+    # Caminho do checkout do operador; numa linha "unregistered" e a unica
+    # identidade que existe (nao ha `checkout_id`).
+    source_path: Path | None = None
 
     @property
     def selectable(self) -> bool:
@@ -88,6 +106,10 @@ def checkout_key(checkout_id: str) -> str:
 
 def session_key(session_id: str) -> str:
     return f"s:{session_id}"
+
+
+def unregistered_key(project_id: str, path: Path) -> str:
+    return f"u:{project_id}:{path}"
 
 
 def _fold(expanded: bool) -> str:
@@ -115,20 +137,42 @@ def _checkout_text(view: CheckoutView, expanded: bool) -> str:
              _status_label(view)]
     if view.kind is CheckoutKind.WORKTREE:
         parts.append(str(view.source_path))
+    if view.missing:
+        parts.append("missing")
     text = "  ".join(parts)
     return f"{text}  !! {view.error}" if view.error else text
+
+
+def _unregistered_text(view: UnregisteredView) -> str:
+    if view.branch is None:
+        branch = "(branch ?)"
+    elif view.detached:
+        branch = f"(detached {view.branch})"
+    else:
+        branch = view.branch
+    parts = ["[worktree]", branch, "unregistered", str(view.path)]
+    if view.missing:
+        parts.append("missing")
+    if view.prunable:
+        parts.append("prunable")
+    return "  ".join(parts)
 
 
 def build_tree(projects: Iterable[Project], checkouts: Iterable[CheckoutView],
                sessions: Iterable[AgentSession], *,
                collapsed: frozenset[str] = frozenset(),
-               project_errors: Mapping[ProjectId, str] | None = None
+               project_errors: Mapping[ProjectId, str] | None = None,
+               unregistered: Iterable[UnregisteredView] = ()
                ) -> tuple[TreeRow, ...]:
     """Projetos por caminho primario; em cada um, o primario e depois os
-    worktrees por caminho; em cada checkout, as sessoes por titulo. Uma
-    sessao de checkout desconhecido nao aparece. `collapsed` guarda as
-    chaves dos nos recolhidos."""
+    worktrees por caminho; em cada checkout, as sessoes por titulo; por
+    ultimo, os worktrees nao registrados, por caminho. Uma sessao de
+    checkout desconhecido nao aparece. `collapsed` guarda as chaves dos nos
+    recolhidos."""
     project_errors = project_errors or {}
+    foreign: dict[ProjectId, list[UnregisteredView]] = {}
+    for loose in unregistered:
+        foreign.setdefault(loose.project_id, []).append(loose)
     by_project: dict[ProjectId, list[CheckoutView]] = {}
     for view in checkouts:
         by_project.setdefault(view.project_id, []).append(view)
@@ -150,7 +194,9 @@ def build_tree(projects: Iterable[Project], checkouts: Iterable[CheckoutView],
         views = sorted(by_project.get(project.id, []),
                        key=lambda v: (v.kind is not CheckoutKind.PRIMARY,
                                       str(v.source_path), v.checkout_id))
-        if not views:
+        loose_views = sorted(foreign.get(project.id, []),
+                             key=lambda v: str(v.path))
+        if not views and not loose_views:
             rows.append(TreeRow(f"n:{project.id}", RowKind.NOTE, 1,
                                 "(no checkouts)", project_id=project.id))
         for view in views:
@@ -159,7 +205,8 @@ def build_tree(projects: Iterable[Project], checkouts: Iterable[CheckoutView],
             rows.append(TreeRow(
                 ckey, RowKind.CHECKOUT, 1,
                 sanitize(_checkout_text(view, cexpanded)), cexpanded,
-                project_id=project.id, checkout_id=view.checkout_id))
+                project_id=project.id, checkout_id=view.checkout_id,
+                source_path=view.source_path))
             if not cexpanded:
                 continue
             for session in sorted(by_checkout.get(view.checkout_id, []),
@@ -170,4 +217,9 @@ def build_tree(projects: Iterable[Project], checkouts: Iterable[CheckoutView],
                              f"{session.title}"),
                     project_id=project.id, checkout_id=view.checkout_id,
                     session_id=session.id, session_state=session.state))
+        for loose in loose_views:
+            rows.append(TreeRow(
+                unregistered_key(project.id, loose.path), RowKind.CHECKOUT, 1,
+                sanitize(_unregistered_text(loose)),
+                project_id=project.id, source_path=loose.path))
     return tuple(rows)

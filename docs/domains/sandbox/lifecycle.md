@@ -70,7 +70,7 @@ with no operator present; enable it only as an explicit decision.
 | `reload-allowlist --workspace <id>` | Re-renders `squid.conf` from the operator's checkout and runs `systemctl --user try-restart` on the proxy unit; a suspended workspace picks it up on `resume` | agent container, SSH port |
 | `down --workspace <id>` | Removes units, containers, networks and the nested-containers volume | clone under `~/asb-agent/…`, git branches, the session volume |
 | `connect --workspace <id>` | Read-only: resolves the live connection and replaces the host process with `ssh` into a login shell (see §4) | everything |
-| `purge --workspace <id> --yes` | `down` plus the clone, workspace state and session volume | shared credentials |
+| `purge --workspace <id> --yes` | `down` plus the clone, workspace state and session volume, and the project folder itself if it becomes empty | shared credentials |
 
 `up` and `resume` print JSON on stdout only after every probe passes; any
 failure exits non-zero with an empty stdout. `up` is transactional: a failed

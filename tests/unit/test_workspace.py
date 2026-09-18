@@ -1,15 +1,19 @@
 """Testes de cli/asb/workspace.py — identidade, layout e clone."""
 
 import asb_test_isolation  # noqa: F401  (guarda de isolamento da suite: nenhum volume real)
+import errno
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "cli"))
 
-from asb.workspace import layout_for, prepare_clone, workspace_id  # noqa: E402
+from asb.workspace import (  # noqa: E402
+    Layout, layout_for, prepare_clone, remove_workspace, workspace_id,
+)
 
 
 def git(*args, cwd):
@@ -135,6 +139,69 @@ class TestClone(unittest.TestCase):
         git("commit", "-m", "trabalho", cwd=layout.project_root)
         prepare_clone(self.origin, layout)
         self.assertTrue((layout.project_root / "novo.txt").is_file())
+
+
+class TestRemoveWorkspace(unittest.TestCase):
+    """`purge` remove o mount do workspace e, quando ela fica vazia, tambem
+    a pasta do projeto — mas nunca `~/asb-agent` em si (guarda dupla:
+    `layout.project` nao vazio E `mount.parent.name == layout.project`)."""
+
+    def setUp(self):
+        self.home = Path(tempfile.mkdtemp())
+
+    def test_purging_the_only_workspace_removes_the_project_folder(self):
+        layout = layout_for(Path("/x/hexmed-stack"), "mvp", self.home)
+        layout.mount.mkdir(parents=True)
+        layout.state.mkdir(parents=True)
+
+        remove_workspace(layout)
+
+        self.assertFalse(layout.mount.exists())
+        self.assertFalse(layout.mount.parent.exists())
+
+    def test_a_sibling_workspace_survives_and_keeps_the_project_folder(self):
+        layout = layout_for(Path("/x/hexmed-stack"), "mvp", self.home)
+        sibling = layout_for(Path("/x/hexmed-stack"), "other", self.home)
+        layout.mount.mkdir(parents=True)
+        layout.state.mkdir(parents=True)
+        sibling.mount.mkdir(parents=True)
+        sibling.state.mkdir(parents=True)
+
+        remove_workspace(layout)
+
+        self.assertFalse(layout.mount.exists())
+        self.assertTrue(sibling.mount.exists())
+        self.assertTrue(layout.mount.parent.exists())
+
+    def test_empty_project_never_touches_the_asb_agent_root(self):
+        """`_sanitize()` pode devolver "" para um basename so de caracteres
+        inseguros; `Layout(project="")` colapsaria `mount.parent` para
+        `home/asb-agent`. A guarda dupla tem que impedir o rmdir ali mesmo
+        quando essa pasta-mae ficou vazia."""
+        asb_agent_root = self.home / "asb-agent"
+        mount = asb_agent_root / "ws"
+        mount.mkdir(parents=True)
+        state = self.home / ".local" / "state" / "agent-sandbox" / "ws"
+        state.mkdir(parents=True)
+        layout = Layout(ws="ws", project="", mount=mount,
+                        project_root=mount / "ws", state=state)
+
+        remove_workspace(layout)
+
+        self.assertFalse(mount.exists())
+        self.assertTrue(asb_agent_root.exists())
+
+    def test_unexpected_rmdir_error_propagates(self):
+        layout = layout_for(Path("/x/hexmed-stack"), "mvp", self.home)
+        layout.mount.mkdir(parents=True)
+        layout.state.mkdir(parents=True)
+        denied = OSError(errno.EACCES, "Permission denied")
+
+        with mock.patch("os.rmdir", side_effect=denied):
+            with self.assertRaises(OSError) as ctx:
+                remove_workspace(layout)
+
+        self.assertEqual(ctx.exception.errno, errno.EACCES)
 
 
 if __name__ == "__main__":

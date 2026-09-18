@@ -10,7 +10,9 @@ Duas regras carregam este modulo inteiro:
 """
 from __future__ import annotations
 
+import errno
 import hashlib
+import os
 import re
 import shutil
 import subprocess
@@ -117,6 +119,25 @@ def remove_state(layout: Layout) -> None:
 
 
 def remove_workspace(layout: Layout) -> None:
-    """Chamado por `purge`, so apos confirmacao explicita do operador."""
+    """Chamado por `purge`, so apos confirmacao explicita do operador.
+
+    Depois de remover o mount, remove tambem a pasta do projeto
+    (`layout.mount.parent`) SE ela ficou vazia — mas so quando
+    `layout.project` nao e vazio E `layout.mount.parent.name == layout.project`.
+    Sem essa guarda dupla, um `_sanitize()` que devolveu string vazia (repo
+    cujo basename e so caracteres inseguros) faz `mount.parent` colapsar para
+    `~/asb-agent`, e um `os.rmdir` ali apagaria a pasta-mae de TODOS os
+    projetos. `os.rmdir` recusa atomicamente uma pasta nao-vazia, entao nunca
+    listamos o diretorio antes de tentar remove-lo.
+    """
     remove_state(layout)
     shutil.rmtree(layout.mount, ignore_errors=True)
+
+    project_dir = layout.mount.parent
+    if not layout.project or project_dir.name != layout.project:
+        return
+    try:
+        os.rmdir(project_dir)
+    except OSError as exc:
+        if exc.errno not in (errno.ENOTEMPTY, errno.EEXIST, errno.ENOENT):
+            raise

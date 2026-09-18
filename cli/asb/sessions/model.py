@@ -101,4 +101,8 @@ class AgentSession:
         terminal_id = changes.get("terminal_id")
         if terminal_id is not None and not isinstance(terminal_id, TerminalId):
             changes["terminal_id"] = TerminalId(terminal_id)
+        provider_session_id = changes.get("provider_session_id")
+        if provider_session_id is not None \
+                and not isinstance(provider_session_id, ProviderSessionId):
+            changes["provider_session_id"] = ProviderSessionId(provider_session_id)
         return replace(self, state=state, **changes)

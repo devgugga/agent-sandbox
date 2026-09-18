@@ -105,6 +105,21 @@ class TestDomainRelationships(unittest.TestCase):
         self.assertIsNone(session.terminal_id)
         self.assertEqual(session.state, SessionState.STARTING)
 
+    def test_with_state_wraps_a_raw_provider_session_id(self):
+        session = AgentSession.new(CheckoutId("c-1"), AgentKind.CODEX,
+                                   Path("/repo"), "Plan work")
+        changed = session.with_state(SessionState.RUNNING,
+                                     provider_session_id="raw-provider-id")
+        self.assertIsInstance(changed.provider_session_id, ProviderSessionId)
+        self.assertEqual(changed.provider_session_id, "raw-provider-id")
+        self.assertIsNone(session.provider_session_id)
+
+    def test_with_state_rejects_an_invalid_provider_session_id(self):
+        session = AgentSession.new(CheckoutId("c-1"), AgentKind.CODEX,
+                                   Path("/repo"), "Plan work")
+        with self.assertRaises(ValueError):
+            session.with_state(SessionState.RUNNING, provider_session_id="x;rm")
+
 
 if __name__ == "__main__":
     unittest.main()

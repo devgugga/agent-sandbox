@@ -31,9 +31,11 @@ from test_checkout_git import git, init_repo, isolate_git  # noqa: E402
 
 from asb import podman  # noqa: E402
 from asb.checkouts.git import GitRepository  # noqa: E402
-from asb.checkouts.manager import CheckoutManager, CreateCheckout  # noqa: E402
+from asb.checkouts.manager import (  # noqa: E402
+    CheckoutError, CheckoutManager, CreateCheckout, FinishPreview,
+)
 from asb.checkouts.model import (  # noqa: E402
-    FinishCheckout, FinishResult, FinishState,
+    CheckoutId, FinishCheckout, FinishResult, FinishState,
 )
 from asb.projects.registry import (  # noqa: E402
     ProjectRegistry, ProjectRegistryError,
@@ -752,6 +754,46 @@ class TestCleanupWithoutMerge(_Case):
     def test_cleanup_to_an_invalid_target_is_blocked(self):
         result = self.manager().cleanup(self.checkout_id, "bad..name")
         self.assert_preserved(result, FinishState.BLOCKED)
+
+
+# -- previa da confirmacao da TUI -------------------------------------------------
+
+
+class TestFinishPreview(_Case):
+    def test_preview_names_the_source_commit_and_the_clean_target(self):
+        before = list(self.calls)
+        preview = self.manager().finish_preview(self.checkout_id, "main")
+        self.assertEqual(preview, FinishPreview(
+            self.worktree, "topic", git(self.worktree, "rev-parse", "HEAD"),
+            self.ws, "main", self.repo))
+        written = [c for c in self.calls[len(before):]
+                   if c[3] in ("merge", "fetch", "worktree", "branch")
+                   and c[3:5] != ["worktree", "list"]]
+        self.assertEqual(written, [])
+
+    def test_cleanup_preview_needs_no_clean_target_checkout(self):
+        git(self.repo, "branch", "release")
+        preview = self.manager().finish_preview(self.checkout_id, "release",
+                                                merge=False)
+        self.assertIsNone(preview.target_path)
+        (self.repo / "wip.txt").write_text("wip", encoding="utf-8")
+        preview = self.manager().finish_preview(self.checkout_id, "main",
+                                                merge=False)
+        self.assertEqual(preview.target_path, self.repo)
+
+    def test_preview_refuses_what_finish_refuses(self):
+        (self.worktree / "scratch.txt").write_text("x", encoding="utf-8")
+        with self.assertRaisesRegex(CheckoutError, "uncommitted"):
+            self.manager().finish_preview(self.checkout_id, "main")
+
+    def test_preview_of_an_unknown_checkout_is_a_checkout_error(self):
+        with self.assertRaisesRegex(CheckoutError, "unknown checkout"):
+            self.manager().finish_preview(CheckoutId("c-unknown"), "main")
+
+    def test_preview_with_an_unreadable_head_is_a_checkout_error(self):
+        self.faults[("rev-parse", "--verify", "--quiet", "HEAD^{commit}")] = 1
+        with self.assertRaisesRegex(CheckoutError, "could not read HEAD"):
+            self.manager().finish_preview(self.checkout_id, "main")
 
 
 if __name__ == "__main__":

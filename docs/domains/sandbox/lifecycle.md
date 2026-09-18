@@ -178,3 +178,77 @@ one-line message and exit code 2, without launching anything. `start`
 exits 2 when the terminal did not confirm a running session, and `resume`
 exits 2 when the session is not live afterwards. Registry, session-store
 and driver errors print one line on stderr and exit 2.
+
+---
+
+## 6. Finishing a worktree
+
+`f` in the TUI (`asb-agent tui`) on a worktree row integrates its work and,
+only with positive evidence, cleans it up. The primary checkout is never
+finished. Nothing is removed without proof that its work is integrated;
+absence of an error is not evidence.
+
+### Confirmation
+
+`f` asks for the target branch (default: the project's integration
+branch), then shows the worktree's path, branch and commit, the target
+branch and the clean checkout where the merge runs, and two explicit
+toggles that both default to **no**: `c` cleanup after merge and `b`
+delete the local branch (`git branch -d`, after cleanup only). Only `y`
+proceeds. There is no remote action: remote branches are never touched
+and no remote Git command runs.
+
+A worktree row shows `merged / cleanup available` only when a fresh
+check at that refresh proves the worktree HEAD and every exported
+sandbox ref (`refs/asb/<workspace>/...`, at least one) are ancestors of
+the integration branch, for example after a manual `asb-agent pull` and
+`git merge`. `f` on such a row offers the cleanup directly.
+
+### Evidence before mutation (fixed order)
+
+1. The source worktree is present, listed by Git, clean and on a branch.
+2. Every session of the checkout is `completed`/`failed` or its tmux
+   probes DEAD. ALIVE or UNKNOWN (including a session with no terminal)
+   blocks; finish never stops a session. A sandbox that is positively
+   absent has no process to probe.
+3. The target branch is valid, exists locally and is already checked
+   out in a clean checkout other than the source. No checkout's branch
+   is ever switched.
+4. Export: the sandbox branch (a detached sandbox HEAD blocks) is
+   validated with `git check-ref-format --branch` and fetched by full
+   ref into `refs/asb/<workspace>/<branch>` in the operator repository
+   (`fetch --no-tags --no-write-fetch-head -- <sandbox> +refs/heads/<b>:<ref>`);
+   the fetched ref must equal the commit resolved before the fetch.
+   `asb-agent pull` is not used.
+5. `git merge --no-edit <ref>` in the target checkout. A conflict keeps
+   Git's conflict state and reports the paths and the recovery
+   (`git -C <target> merge --abort`, or resolve and commit).
+6. Both the exported sandbox commit and the worktree's own HEAD must be
+   ancestors of the new target HEAD; otherwise the result is
+   `cleanup_pending` ("integration is not proven").
+
+### Cleanup and retry
+
+With cleanup enabled, in order: purge the bound sandbox, remove the
+worktree (`git worktree remove`, never `--force`), optionally delete the
+local branch (`git branch -d`, a refusal is reported), and remove the
+registry binding. Before the purge the sandbox must prove that nothing
+in it would be lost: a clean checkout (`git status` runs inside the
+sandbox, so an agent-set `core.fsmonitor` or filter never runs on the
+host), HEAD still equal to the export, every branch tip and `refs/stash`
+present in the operator repository and integrated, and no extra sandbox
+worktree. The purge runs `asb-agent purge --workspace <ws> --yes` and is
+accepted only when the sandbox is then absent.
+
+| Result | Meaning |
+| :--- | :--- |
+| `merged` | Merge proven; nothing removed; cleanup available |
+| `conflict` | Conflict state left in the target checkout; nothing removed |
+| `blocked` | Refused before any removal; the message says why |
+| `cleanup_pending` | Some step could not be proven or failed; the message lists what was done and what remains |
+| `cleaned` | Sandbox, worktree, optional branch and registry binding are gone; the source commit is reachable from the target |
+
+A retry re-inspects what remains and resumes at the first missing step:
+an absent sandbox skips the purge, and a worktree Git already removed is
+reconciled only after its export refs prove integration. A missing
+worktree without that evidence is `blocked` and needs manual recovery.

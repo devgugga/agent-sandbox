@@ -77,6 +77,21 @@ class CreatePreview:
 
 
 @dataclass(frozen=True)
+class FinishPreview:
+    """O que a confirmacao do finish mostra. `source_commit` e o HEAD do
+    worktree do operador; o commit do sandbox so e conhecido no export.
+    `target_path`: o checkout limpo onde o merge roda (`None` numa previa
+    de limpeza sem checkout no alvo)."""
+
+    source_path: Path
+    source_branch: str
+    source_commit: str
+    workspace: str
+    target_branch: str
+    target_path: Path | None
+
+
+@dataclass(frozen=True)
 class ListedCheckout:
     """Um worktree que o Git lista (`worktree`) e o vinculo do registro
     (`binding`, `None` quando criado fora da TUI), ou um vinculo que o Git
@@ -352,6 +367,29 @@ class CheckoutManager:
         except (CheckoutError, GitError, SandboxError,
                 ProjectRegistryError) as exc:
             return FinishResult.blocked(str(exc))
+
+    def finish_preview(self, checkout_id: CheckoutId, target_branch: str, *,
+                       merge: bool = True) -> FinishPreview:
+        """As mesmas recusas de `finish` (checkout e, com `merge`, o
+        checkout alvo limpo), sem escrever nada. Levanta `CheckoutError`."""
+        try:
+            binding = self._registry.checkout(checkout_id)
+            project = self._registry.get(binding.project_id)
+            source = self._finishable(binding)
+            commit = self._repository(source.path).commit("HEAD")
+            if commit is None:
+                raise CheckoutError(f"could not read HEAD of {source.path}")
+            primary = self._repository(project.primary)
+            if merge:
+                target = self._clean_target(project, target_branch,
+                                            source.path)
+            else:
+                self._target_commit(primary, target_branch)
+                target = self._checkout_on(primary, target_branch)
+        except (GitError, ProjectRegistryError) as exc:
+            raise CheckoutError(str(exc)) from exc
+        return FinishPreview(source.path, source.branch, commit,
+                             binding.workspace, target_branch, target)
 
     def merged(self, checkout_id: CheckoutId,
                target_branch: str | None = None) -> bool:

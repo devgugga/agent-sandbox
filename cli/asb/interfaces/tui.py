@@ -19,6 +19,13 @@ FILHO (nao `exec`), com o curses suspenso e restaurado num `finally`.
 branch do checkout selecionado como escolha explicita) -> caminho editavel
 -> previa (projeto, base e commit, branch, caminho, "creates branch") ->
 so `y` cria. Qualquer outra tecla cancela sem efeito.
+
+`f` finaliza um worktree: branch alvo (default: o de integracao) ->
+confirmacao (commit de origem, branch e checkout alvo, limpeza depois do
+merge e remocao do branch local, ambas NAO por padrao e alternadas com `c`
+e `b`) -> so `y` roda `CheckoutManager.finish`. Numa linha marcada
+`merged / cleanup available` (prova fresca do refresh), `f` oferece a
+limpeza direto. Nao existe acao de remocao remota.
 """
 from __future__ import annotations
 
@@ -31,13 +38,18 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TextIO
 
+from .. import podman
 from ..checkouts.git import BranchInfo, GitRepository
 from ..checkouts.manager import (
-    CheckoutManager, CreateCheckout, CreatePreview, checkout_kind,
+    CheckoutManager, CreateCheckout, CreatePreview, FinishPreview,
+    checkout_kind,
 )
+from ..checkouts.model import CheckoutKind, FinishCheckout, FinishResult
 from ..projects.model import Project, ProjectId
+from ..projects.registry import CheckoutBinding
 from ..runtime.sandbox import WorkspaceDiscovery, WorkspaceStatus
 from ..sessions.model import AgentKind, AgentSession, SessionState
+from ..sessions.terminal import Liveness, TmuxTerminal
 from .sessions import (
     SessionServices, session_attach, session_start, session_stop,
 )
@@ -73,6 +85,29 @@ def read_branch(path: Path) -> BranchInfo | None:
 def run_child(argv: list[str]) -> int:
     """Roda o attach como processo filho, sem shell; devolve o exit code."""
     return subprocess.run(argv, check=False).returncode
+
+
+def session_liveness(services: SessionServices
+                     ) -> Callable[[CheckoutBinding, AgentSession], Liveness]:
+    """Sonda do tmux da sessao pela conexao viva do workspace, sem nunca
+    subir nada; uma conexao que nao resolve e `UNKNOWN`."""
+    def probe(binding: CheckoutBinding, session: AgentSession) -> Liveness:
+        try:
+            connection = services.resolve(binding.workspace)
+        except (podman.PodmanError, OSError, subprocess.SubprocessError):
+            return Liveness.UNKNOWN
+        return TmuxTerminal(connection).probe(session.terminal_id)
+    return probe
+
+
+def default_checkouts(services: SessionServices) -> CheckoutManager:
+    """O `CheckoutManager` da TUI, com o que `finish` precisa: o runtime,
+    as sessoes do store e a sonda de liveness."""
+    return CheckoutManager(
+        services.registry, runtime=services.runtime,
+        sessions=lambda checkout_id: [s for s in services.store.list()
+                                      if s.checkout_id == checkout_id],
+        liveness=session_liveness(services))
 
 
 def _reason(error: BaseException) -> str:
@@ -130,7 +165,7 @@ class TuiController:
         self._read_branch = read_branch
         self._run_child = run_child
         self.checkouts = (checkouts if checkouts is not None
-                          else CheckoutManager(services.registry))
+                          else default_checkouts(services))
         # Substituido pela camada curses (`run`); testes injetam um falso.
         self.terminal = _NoTerminal()
         self.rows: tuple[TreeRow, ...] = ()
@@ -220,6 +255,10 @@ class TuiController:
                     view = _with_error(view, store_error)
                 if found.binding.checkout_id in missing:
                     view = replace(view, missing=True)
+                if view.kind is CheckoutKind.WORKTREE and not view.missing:
+                    # Prova fresca a cada refresh, nunca guardada.
+                    view = replace(view, merged=self.checkouts.merged(
+                        view.checkout_id, project.integration_branch))
                 self._views.append(view)
                 self._sessions.extend(sessions)
         self._rebuild(previous)
@@ -478,6 +517,94 @@ class TuiController:
         self.message = sanitize(message)
         self.notice = notice
 
+    # -- finish (`f`) -------------------------------------------------------------
+
+    def finish(self) -> None:
+        row = self.selected_row
+        view = next((v for v in self._views
+                     if row is not None and v.checkout_id == row.checkout_id),
+                    None)
+        if view is None or row.kind is not RowKind.CHECKOUT:
+            self.message = "select a registered worktree to finish"
+            return
+        if view.kind is CheckoutKind.PRIMARY:
+            self.message = "the primary checkout is never finished"
+            return
+        project = next(p for p in self._projects if p.id == view.project_id)
+        if view.merged:
+            self._cleanup_confirm(view.checkout_id, project.integration_branch,
+                                  delete=False)
+            return
+        self.prompt = TextPrompt(
+            "target branch (Enter next, Esc cancels)",
+            project.integration_branch,
+            lambda target: self._finish_confirm(
+                FinishCheckout(view.checkout_id, target)))
+
+    def _finish_confirm(self, request: FinishCheckout) -> None:
+        if not request.target_branch:
+            self.message = "cancelled"
+            return
+        try:
+            preview = self.checkouts.finish_preview(request.checkout_id,
+                                                    request.target_branch)
+        except Exception as error:
+            self.message = f"finish refused: {_reason(error)}"
+            return
+        cleanup = request.cleanup_after_merge
+        delete = request.delete_merged_branch
+        self.prompt = Prompt(
+            "finish? y finish  c cleanup  b branch  (other key cancels)",
+            {"y": lambda: self._finish_run(request),
+             "c": lambda: self._finish_confirm(
+                 replace(request, cleanup_after_merge=not cleanup)),
+             "b": lambda: self._finish_confirm(
+                 replace(request, delete_merged_branch=not delete))},
+            detail=_finish_lines(preview, cleanup=cleanup, delete=delete))
+
+    def _finish_run(self, request: FinishCheckout) -> None:
+        self.message = "finishing..."
+        self.terminal.redraw()
+        self._show_result(lambda: self.checkouts.finish(request), "finish")
+
+    def _cleanup_confirm(self, checkout_id, target: str, *,
+                         delete: bool) -> None:
+        try:
+            preview = self.checkouts.finish_preview(checkout_id, target,
+                                                    merge=False)
+        except Exception as error:
+            self.message = f"cleanup refused: {_reason(error)}"
+            return
+        self.prompt = Prompt(
+            "clean up? y clean up  b branch  (other key cancels)",
+            {"y": lambda: self._cleanup_run(checkout_id, target, delete),
+             "b": lambda: self._cleanup_confirm(checkout_id, target,
+                                                delete=not delete)},
+            detail=_cleanup_lines(preview, delete=delete))
+
+    def _cleanup_run(self, checkout_id, target: str, delete: bool) -> None:
+        self.message = "cleaning up..."
+        self.terminal.redraw()
+        self._show_result(
+            lambda: self.checkouts.cleanup(checkout_id, target, delete),
+            "cleanup")
+
+    def _show_result(self, action: Callable[[], FinishResult],
+                     name: str) -> None:
+        notice: tuple[str, ...] = ()
+        try:
+            result = action()
+        except Exception as error:
+            message = f"{name} failed: {_reason(error)}"
+        else:
+            message = f"{name}: {result.state}"
+            notice = tuple(sanitize(part.strip())
+                           for part in result.message.split(";")
+                           if part.strip())
+        self.refresh()
+        self.message = sanitize(message)
+        self.notice = notice
+
     def edit(self, key: int) -> None:
         """Uma tecla para o `TextPrompt` aberto."""
         prompt = self.prompt
@@ -493,9 +620,6 @@ class TuiController:
             self.prompt = replace(prompt, value=prompt.value[:-1])
         elif 32 <= key < 127:
             self.prompt = replace(prompt, value=prompt.value + chr(key))
-
-    def reserved(self, action: str) -> None:
-        self.message = f"{action} is not available yet"
 
     def answer(self, key: str) -> None:
         """Responde o prompt aberto; tecla fora das opcoes cancela."""
@@ -516,6 +640,41 @@ def _preview_lines(preview: CreatePreview) -> tuple[str, ...]:
         f"new branch: {preview.branch}",
         f"path: {preview.path}",
         f"creates branch: {'yes' if preview.creates_branch else 'no'}",
+    ))
+
+
+def _yes(flag: bool) -> str:
+    return "yes" if flag else "no"
+
+
+def _source_line(preview: FinishPreview) -> str:
+    return (f"source: {preview.source_path} ({preview.source_branch}) at "
+            f"{preview.source_commit[:12]}")
+
+
+def _finish_lines(preview: FinishPreview, *, cleanup: bool,
+                  delete: bool) -> tuple[str, ...]:
+    return tuple(sanitize(line) for line in (
+        _source_line(preview),
+        f"merges: the sandbox branch HEAD of {preview.workspace}, exported "
+        "on confirm",
+        f"target: {preview.target_branch} in {preview.target_path}",
+        f"cleanup after merge: {_yes(cleanup)} (c toggles; purges the "
+        "sandbox, removes the worktree)",
+        f"delete local branch: {_yes(delete)} (b toggles; git branch -d, "
+        "after cleanup only; remote branches are never touched)",
+    ))
+
+
+def _cleanup_lines(preview: FinishPreview, *,
+                   delete: bool) -> tuple[str, ...]:
+    where = preview.target_path if preview.target_path is not None else "-"
+    return tuple(sanitize(line) for line in (
+        _source_line(preview),
+        f"integrated into: {preview.target_branch} (checkout: {where})",
+        f"cleanup: purges sandbox {preview.workspace}, removes the worktree",
+        f"delete local branch: {_yes(delete)} (b toggles; git branch -d; "
+        "remote branches are never touched)",
     ))
 
 
@@ -553,7 +712,7 @@ def handle_key(controller: TuiController, key: int) -> None:
     elif key == ord("w"):
         controller.new_worktree()
     elif key == ord("f"):
-        controller.reserved("finish")
+        controller.finish()
     elif key == ord("r"):
         controller.refresh()
     elif key == ord("q"):

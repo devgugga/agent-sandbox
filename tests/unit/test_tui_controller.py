@@ -23,10 +23,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "cli"))
 from asb.checkouts.git import BranchInfo, Worktree  # noqa: E402
 from asb.checkouts.manager import (  # noqa: E402
     CheckoutError, CheckoutManager, CreateCheckout, CreatePreview,
-    ListedCheckout,
+    FinishPreview, ListedCheckout,
 )
 from asb.checkouts.model import (  # noqa: E402
-    Checkout, CheckoutId, CheckoutKind, CheckoutState,
+    Checkout, CheckoutId, CheckoutKind, CheckoutState, FinishCheckout,
+    FinishResult, FinishState,
 )
 from asb.interfaces import sessions, tui  # noqa: E402
 from asb.interfaces.tui_model import RowKind  # noqa: E402
@@ -166,6 +167,7 @@ class _Case(unittest.TestCase):
         self.manager_for = mock.Mock(return_value=self.manager)
         self.checkouts = mock.MagicMock(spec=CheckoutManager)
         self.checkouts.list.return_value = []
+        self.checkouts.merged.return_value = False
         self.checkouts.default_path.side_effect = (
             lambda project, branch:
             project.worktree_root / branch.replace("/", "-"))
@@ -479,19 +481,6 @@ class TestActions(_Case):
         self.assertEqual(self.store.get(record.id).state,
                          SessionState.COMPLETED)
 
-    def test_f_is_reserved_and_changes_nothing(self):
-        self.stored(C_PRI)
-        ctl = self.controller()
-        self.select(ctl, "c:c-pri")
-        before = (list(self.registry.mock_calls), list(self.runtime.mock_calls),
-                  list(self.manager.mock_calls), self.store.list(), ctl.rows)
-        tui.handle_key(ctl, ord("f"))
-        self.assertIn("not available yet", ctl.message)
-        self.assertEqual(
-            (list(self.registry.mock_calls), list(self.runtime.mock_calls),
-             list(self.manager.mock_calls), self.store.list(), ctl.rows),
-            before)
-
     def test_r_refreshes(self):
         ctl = self.controller()
         self.runtime.discover.reset_mock()
@@ -724,11 +713,29 @@ class TestNewWorktree(_Case):
         tui.handle_key(ctl, ord("j"))  # a proxima tecla dispensa o aviso
         self.assertEqual(ctl.notice, ())
 
-    def test_the_default_checkout_manager_uses_the_session_registry(self):
+    def test_the_default_checkout_manager_uses_the_session_services(self):
         with mock.patch.object(tui, "CheckoutManager") as manager:
             ctl = tui.TuiController(self.services())
-        manager.assert_called_once_with(self.registry)
         self.assertIs(ctl.checkouts, manager.return_value)
+        [call] = manager.call_args_list
+        self.assertEqual(call.args, (self.registry,))
+        self.assertIs(call.kwargs["runtime"], self.runtime)
+        # As sessoes do checkout vem do store; a liveness, do tmux pela
+        # conexao viva, e UNKNOWN quando ela nao resolve.
+        mine = self.stored(C_WT)
+        self.stored(C_PRI)
+        self.assertEqual(call.kwargs["sessions"](C_WT), [mine])
+        liveness = call.kwargs["liveness"]
+        with mock.patch.object(tui, "TmuxTerminal") as terminal:
+            terminal.return_value.probe.return_value = tui.Liveness.DEAD
+            self.assertIs(liveness(self.bindings[C_WT], mine),
+                          tui.Liveness.DEAD)
+        terminal.assert_called_once_with(_info())
+        terminal.return_value.probe.assert_called_once_with(mine.terminal_id)
+        self.resolve.assert_called_once_with("ws-wt")
+        self.resolve.side_effect = PodmanError("container parado")
+        self.assertIs(liveness(self.bindings[C_WT], mine),
+                      tui.Liveness.UNKNOWN)
 
     def test_w_needs_a_project_or_checkout(self):
         record = self.stored(C_PRI)
@@ -757,6 +764,161 @@ class TestNewWorktree(_Case):
 
 
 # -- desenho ---------------------------------------------------------------------
+
+
+SOURCE_COMMIT = "fedcba9876543210fedcba9876543210fedcba98"
+
+
+class TestFinish(_Case):
+    """`f`: alvo -> confirmacao com toggles explicitos -> so `y` roda. Os
+    servicos de checkout sao falsos; so o fluxo da TUI e testado aqui."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.checkouts.finish_preview.side_effect = (
+            lambda checkout_id, target, merge=True: FinishPreview(
+                WORKTREE, "topic", SOURCE_COMMIT, "ws-wt", target,
+                PRIMARY if merge else None))
+        self.checkouts.finish.return_value = FinishResult(
+            FinishState.CLEANED, SOURCE_COMMIT, BASE_COMMIT,
+            "merged refs/asb/ws-wt/topic into main; purged sandbox ws-wt")
+        self.checkouts.cleanup.return_value = FinishResult(
+            FinishState.CLEANED, SOURCE_COMMIT, BASE_COMMIT, "done")
+
+    def open_confirmation(self, target="") -> tui.TuiController:
+        ctl = self.controller()
+        self.select(ctl, "c:c-wt")
+        tui.handle_key(ctl, ord("f"))
+        self.assertIn("target branch", ctl.prompt.text)
+        self.assertEqual(ctl.prompt.value, "main")
+        _type(ctl, target + "\n")
+        return ctl
+
+    def test_the_confirmation_shows_everything_and_both_toggles_default_no(self):
+        ctl = self.open_confirmation()
+        self.checkouts.finish_preview.assert_called_once_with(C_WT, "main")
+        detail = "\n".join(ctl.prompt.detail)
+        for needle in (str(WORKTREE), SOURCE_COMMIT[:12], "target: main in "
+                       f"{PRIMARY}", "cleanup after merge: no",
+                       "delete local branch: no", "git branch -d",
+                       "remote branches are never touched"):
+            self.assertIn(needle, detail)
+        self.checkouts.finish.assert_not_called()
+
+    def test_y_finishes_once_with_the_chosen_toggles(self):
+        ctl = self.open_confirmation()
+        tui.handle_key(ctl, ord("c"))
+        self.assertIn("cleanup after merge: yes", "\n".join(ctl.prompt.detail))
+        tui.handle_key(ctl, ord("b"))
+        self.assertIn("delete local branch: yes", "\n".join(ctl.prompt.detail))
+        self.runtime.discover.reset_mock()
+        tui.handle_key(ctl, ord("y"))
+        self.checkouts.finish.assert_called_once_with(
+            FinishCheckout(C_WT, "main", cleanup_after_merge=True,
+                           delete_merged_branch=True))
+        self.runtime.discover.assert_called_once()  # refresh depois
+        self.assertEqual(ctl.message, "finish: cleaned")
+        self.assertIn("purged sandbox ws-wt", ctl.notice)
+
+    def test_the_target_branch_is_editable(self):
+        ctl = self.controller()
+        self.select(ctl, "c:c-wt")
+        tui.handle_key(ctl, ord("f"))
+        for _ in "main":
+            tui.handle_key(ctl, 127)
+        _type(ctl, "release\n")
+        self.checkouts.finish_preview.assert_called_once_with(C_WT, "release")
+
+    def test_any_other_key_or_an_empty_target_cancels(self):
+        ctl = self.open_confirmation()
+        tui.handle_key(ctl, ord("n"))
+        self.assertEqual(ctl.message, "cancelled")
+        ctl = self.controller()
+        self.select(ctl, "c:c-wt")
+        tui.handle_key(ctl, ord("f"))
+        for _ in "main":
+            tui.handle_key(ctl, 127)
+        tui.handle_key(ctl, 10)
+        self.assertEqual(ctl.message, "cancelled")
+        self.checkouts.finish.assert_not_called()
+
+    def test_a_refused_preview_is_a_message(self):
+        self.checkouts.finish_preview.side_effect = CheckoutError(
+            "target checkout /src/alpha has uncommitted changes")
+        ctl = self.open_confirmation()
+        self.assertIsNone(ctl.prompt)
+        self.assertIn("finish refused: target checkout", ctl.message)
+
+    def test_a_finish_that_raises_is_a_message(self):
+        self.checkouts.finish.side_effect = RuntimeError("boom")
+        ctl = self.open_confirmation()
+        tui.handle_key(ctl, ord("y"))
+        self.assertEqual(ctl.message, "finish failed: boom")
+
+    def test_f_refuses_the_primary_and_non_checkout_rows(self):
+        self.stored(C_PRI)
+        ctl = self.controller()
+        self.select(ctl, "c:c-pri")
+        tui.handle_key(ctl, ord("f"))
+        self.assertIsNone(ctl.prompt)
+        self.assertIn("primary checkout is never finished", ctl.message)
+        self.select(ctl, f"p:{PROJECT}")
+        tui.handle_key(ctl, ord("f"))
+        self.assertIn("select a registered worktree", ctl.message)
+        session_row = next(r for r in ctl.rows if r.kind is RowKind.SESSION)
+        self.select(ctl, session_row.key)
+        tui.handle_key(ctl, ord("f"))
+        self.assertIn("select a registered worktree", ctl.message)
+        self.checkouts.finish_preview.assert_not_called()
+
+    def test_the_merged_label_is_fresh_and_only_for_worktrees(self):
+        self.checkouts.merged.return_value = True
+        ctl = self.controller()
+        rows = {row.key: row for row in ctl.rows}
+        self.assertIn("merged / cleanup available", rows["c:c-wt"].text)
+        self.assertNotIn("merged", rows["c:c-pri"].text)
+        self.checkouts.merged.assert_called_once_with(C_WT, "main")
+        ctl.refresh()
+        self.assertEqual(self.checkouts.merged.call_count, 2)
+
+    def test_a_missing_worktree_is_never_labelled_merged(self):
+        self.checkouts.list.return_value = [
+            ListedCheckout(WORKTREE, self.bindings[C_WT], None, True)]
+        self.checkouts.merged.return_value = True
+        ctl = self.controller()
+        self.checkouts.merged.assert_not_called()
+        rows = {row.key: row for row in ctl.rows}
+        self.assertNotIn("merged", rows["c:c-wt"].text)
+
+    def test_f_on_a_merged_row_offers_cleanup_directly(self):
+        self.checkouts.merged.return_value = True
+        ctl = self.controller()
+        self.select(ctl, "c:c-wt")
+        tui.handle_key(ctl, ord("f"))
+        self.checkouts.finish_preview.assert_called_once_with(
+            C_WT, "main", merge=False)
+        detail = "\n".join(ctl.prompt.detail)
+        for needle in (SOURCE_COMMIT[:12], "integrated into: main",
+                       "purges sandbox ws-wt", "delete local branch: no",
+                       "remote branches are never touched"):
+            self.assertIn(needle, detail)
+        tui.handle_key(ctl, ord("b"))
+        self.assertIn("delete local branch: yes",
+                      "\n".join(ctl.prompt.detail))
+        tui.handle_key(ctl, ord("y"))
+        self.checkouts.cleanup.assert_called_once_with(C_WT, "main", True)
+        self.checkouts.finish.assert_not_called()
+        self.assertEqual(ctl.message, "cleanup: cleaned")
+
+    def test_a_refused_cleanup_preview_is_a_message(self):
+        self.checkouts.merged.return_value = True
+        self.checkouts.finish_preview.side_effect = CheckoutError("dirty")
+        ctl = self.controller()
+        self.select(ctl, "c:c-wt")
+        tui.handle_key(ctl, ord("f"))
+        self.assertIsNone(ctl.prompt)
+        self.assertEqual(ctl.message, "cleanup refused: dirty")
+        self.checkouts.cleanup.assert_not_called()
 
 
 class TestRender(_Case):

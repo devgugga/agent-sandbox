@@ -57,6 +57,12 @@ class CheckoutView:
     reason: str | None = None
     error: str | None = None
     missing: bool = False
+    # Prova fresca (deste refresh) de que o trabalho ja esta no branch de
+    # integracao: `CheckoutManager.merged`.
+    merged: bool = False
+
+
+MERGED_LABEL = "merged / cleanup available"
 
 
 @dataclass(frozen=True)
@@ -139,6 +145,8 @@ def _checkout_text(view: CheckoutView, expanded: bool) -> str:
         parts.append(str(view.source_path))
     if view.missing:
         parts.append("missing")
+    if view.merged:
+        parts.append(MERGED_LABEL)
     text = "  ".join(parts)
     return f"{text}  !! {view.error}" if view.error else text
 

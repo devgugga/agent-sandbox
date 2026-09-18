@@ -10,6 +10,7 @@ import asb_test_isolation  # noqa: F401  (guarda de isolamento da suite: nenhum 
 
 import sys
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "cli"))
@@ -260,6 +261,19 @@ class TestWorktreeMarkers(unittest.TestCase):
             status=WorkspaceStatus.ABSENT, branch=None, missing=True)
         [_, row] = build_tree([_project(P_ALPHA, "/src/alpha")], [view], [])
         self.assertTrue(row.text.endswith("/w/gone  missing"))
+
+    def test_a_merged_worktree_offers_cleanup(self):
+        view = CheckoutView(
+            checkout_id=CheckoutId("c-a"), project_id=P_ALPHA,
+            source_path=Path("/w/done"), workspace="ws",
+            kind=CheckoutKind.WORKTREE, status=WorkspaceStatus.ABSENT,
+            branch="topic", merged=True)
+        [_, row] = build_tree([_project(P_ALPHA, "/src/alpha")], [view], [])
+        self.assertTrue(row.text.endswith(
+            "/w/done  merged / cleanup available"))
+        [_, plain] = build_tree([_project(P_ALPHA, "/src/alpha")],
+                                [replace(view, merged=False)], [])
+        self.assertNotIn("merged", plain.text)
 
 
 class TestSanitize(unittest.TestCase):

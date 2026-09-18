@@ -60,12 +60,18 @@ class AgentAvailability:
     resume foi observada no `--help` do binario instalado E o driver tem
     uma fonte de session-id comprovada (`session_id_provable`). Um driver
     nunca anuncia uma capacidade que nao provou.
+
+    `probed_fully` e `True` so quando as DUAS chamadas (`--version` e
+    `--help`) completaram sem levantar: e o unico resultado definitivo o
+    bastante para ser guardado em cache. Uma falha ao executar qualquer
+    delas pode ser transitoria.
     """
 
     available: bool
     version: str | None
     resume_supported: bool
     reason: str
+    probed_fully: bool = False
 
 
 @dataclass(frozen=True)
@@ -184,7 +190,7 @@ class AgentDriver(ABC):
                        f"fonte do session-id nao esta comprovada")
         return AgentAvailability(available=True, version=version,
                                   resume_supported=resume_supported,
-                                  reason=reason)
+                                  reason=reason, probed_fully=True)
 
     # -- evidencia de sessao (caminhos e metadados, nunca transcript) ----
 

@@ -236,7 +236,7 @@ class TestProbeCleanRun(unittest.TestCase):
         availability = CodexDriver().probe(run)
         self.assertEqual(availability, AgentAvailability(
             available=True, version="0.154.0", resume_supported=True,
-            reason="ok"))
+            reason="ok", probed_fully=True))
 
     def test_claude_probe_confirms_resume_when_option_present(self):
         run = _FakeRun({
@@ -246,6 +246,36 @@ class TestProbeCleanRun(unittest.TestCase):
         availability = ClaudeDriver().probe(run)
         self.assertTrue(availability.resume_supported)
         self.assertEqual(availability.version, "2.1.275")
+
+
+class TestProbedFully(unittest.TestCase):
+    """`probed_fully` so e True quando `--version` e `--help` responderam."""
+
+    def test_complete_probes_are_probed_fully(self):
+        cases = (
+            (CodexDriver(), "codex-cli 0.154.0",
+             "Commands:\n  resume  Resume a previous session\n"),
+            (CodexDriver(), "codex-cli 0.154.0", "Commands:\n  login\n"),
+            (AntigravityDriver(), "1.2.5", "  --conversation   Resume\n"),
+        )
+        for driver, version, help_text in cases:
+            with self.subTest(driver=driver.kind, help_text=help_text):
+                availability = driver.probe(
+                    _FakeRun({"--version": version, "--help": help_text}))
+                self.assertTrue(availability.probed_fully)
+
+    def test_each_failure_branch_is_not_probed_fully(self):
+        timeout = subprocess.TimeoutExpired(cmd=["codex"], timeout=5.0)
+        cases = {
+            "version raises": {"--version": FileNotFoundError(2, "nope")},
+            "version unrecognized": {"--version": "not a version"},
+            "help raises": {"--version": "codex-cli 0.154.0",
+                            "--help": timeout},
+        }
+        for name, outputs in cases.items():
+            with self.subTest(name):
+                availability = CodexDriver().probe(_FakeRun(outputs))
+                self.assertFalse(availability.probed_fully)
 
 
 class TestAntigravitySessionIdUnproven(unittest.TestCase):

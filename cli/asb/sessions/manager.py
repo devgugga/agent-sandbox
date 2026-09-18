@@ -252,15 +252,17 @@ class SessionManager:
 
     def _can_resume(self, record: AgentSession) -> bool:
         """Id do provedor presente E resume confirmado pelo binario do
-        sandbox, sondado uma vez por tipo de agente."""
+        sandbox. O resultado so fica em cache, por tipo de agente, quando
+        o binario respondeu `--version` e `--help`; senao a proxima
+        chamada sonda de novo."""
         if record.provider_session_id is None:
             return False
         availability = self._availability.get(record.agent)
         if availability is None:
             availability = self._drivers[record.agent].probe(self._remote_run)
-            if availability.available:
-                # So um binario que respondeu --version e --help e resultado
-                # definitivo; uma falha ao executar vale so para esta chamada.
+            if availability.probed_fully:
+                # Uma falha ao executar --version ou --help pode ser
+                # transitoria: vale so para esta chamada.
                 self._availability[record.agent] = availability
         return availability.resume_supported
 

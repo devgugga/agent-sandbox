@@ -113,9 +113,12 @@ class FakeDriver:
     def __init__(self, kind: AgentKind = AgentKind.CODEX,
                  discoveries=(None,), resume_supported: bool = True,
                  launch_env=None, resume_env=None,
-                 available=(True,)) -> None:
+                 probes=("full",)) -> None:
+        # Resultado de cada `probe()`, em ordem (o ultimo se repete):
+        # "full" (--version e --help responderam), "help_failed" (--help
+        # falhou ao executar) ou "unavailable" (--version falhou).
         self.kind = kind
-        self.available = list(available)
+        self.probes = list(probes)
         self.discoveries = list(discoveries)
         self.resume_supported = resume_supported
         self.launch_env = launch_env or {}
@@ -137,12 +140,14 @@ class FakeDriver:
 
     def probe(self, run) -> AgentAvailability:
         self.probe_runs.append(run)
-        available = self.available.pop(0) if len(self.available) > 1 \
-            else self.available[0]
+        outcome = self.probes.pop(0) if len(self.probes) > 1 \
+            else self.probes[0]
+        full = outcome == "full"
         return AgentAvailability(
-            available=available, version="1.0" if available else None,
-            resume_supported=available and self.resume_supported,
-            reason="fake")
+            available=outcome != "unavailable",
+            version=None if outcome == "unavailable" else "1.0",
+            resume_supported=full and self.resume_supported,
+            reason=f"fake {outcome}", probed_fully=full)
 
     def capture_before(self, cwd: Path) -> SessionEvidence:
         self.capture_before_cwds.append(cwd)
@@ -553,20 +558,23 @@ class TestResume(ManagerCase):
         self.assertEqual(terminal.names("start"), [])
 
     def test_transient_probe_failure_is_not_cached(self):
-        record = self.seed(SessionState.DETACHED)
-        # 1a chamada: sonda DEAD, probe do driver falha, sem lancamento.
-        # 2a chamada: sonda DEAD, probe ok, resume, sonda ALIVE.
-        terminal = self.terminal(probes=[Liveness.DEAD, Liveness.DEAD,
-                                         Liveness.ALIVE])
-        driver = FakeDriver(available=[False, True])
-        manager = self.make(terminal, driver)
-        first = manager.resume(record.id)
-        self.assertFalse(first.launched)
-        self.assertEqual(first.session.state, SessionState.RECOVERY_REQUIRED)
-        second = manager.resume(record.id)
-        self.assertTrue(second.launched)
-        self.assertEqual(second.session.state, SessionState.RUNNING)
-        self.assertEqual(len(driver.probe_runs), 2)
+        for failure in ("unavailable", "help_failed"):
+            with self.subTest(failure=failure):
+                record = self.seed(SessionState.DETACHED)
+                # 1a chamada: sonda DEAD, probe do driver falha, sem
+                # lancamento. 2a: sonda DEAD, probe completo, resume, ALIVE.
+                terminal = self.terminal(probes=[Liveness.DEAD, Liveness.DEAD,
+                                                 Liveness.ALIVE])
+                driver = FakeDriver(probes=[failure, "full"])
+                manager = self.make(terminal, driver)
+                first = manager.resume(record.id)
+                self.assertFalse(first.launched)
+                self.assertEqual(first.session.state,
+                                 SessionState.RECOVERY_REQUIRED)
+                second = manager.resume(record.id)
+                self.assertTrue(second.launched)
+                self.assertEqual(second.session.state, SessionState.RUNNING)
+                self.assertEqual(len(driver.probe_runs), 2)
 
     def test_availability_is_probed_once_per_agent_kind(self):
         codex = FakeDriver(AgentKind.CODEX)

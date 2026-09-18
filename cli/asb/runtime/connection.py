@@ -39,7 +39,9 @@ class ConnectionInfo:
             raise ValueError(f"porta SSH invalida: {self.port!r}")
         argv = [
             "ssh", "-tt", "-o", "IdentitiesOnly=yes", "-o",
-            "StrictHostKeyChecking=accept-new",
+            "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "LogLevel=ERROR",
             "-i", str(self.identity_file),
             "-p", str(self.port),
             "--", f"{self.username}@{self.host}",

@@ -54,7 +54,8 @@ class TestSshArgvContract(unittest.TestCase):
         info = _info()
         self.assertEqual(info.ssh_argv(("pwd",)), [
             "ssh", "-tt", "-o", "IdentitiesOnly=yes", "-o",
-            "StrictHostKeyChecking=accept-new", "-i", "/keys/id_ed25519",
+            "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "LogLevel=ERROR", "-i", "/keys/id_ed25519",
             "-p", "2222", "--", "v@127.0.0.1", "pwd",
         ])
 
@@ -62,7 +63,8 @@ class TestSshArgvContract(unittest.TestCase):
         info = _info()
         self.assertEqual(info.ssh_argv(), [
             "ssh", "-tt", "-o", "IdentitiesOnly=yes", "-o",
-            "StrictHostKeyChecking=accept-new", "-i", "/keys/id_ed25519",
+            "StrictHostKeyChecking=no", "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "LogLevel=ERROR", "-i", "/keys/id_ed25519",
             "-p", "2222", "--", "v@127.0.0.1",
         ])
 
@@ -71,7 +73,16 @@ class TestSshArgvContract(unittest.TestCase):
         argv = info.ssh_argv(("ls", "-la", "/tmp"))
         self.assertEqual(argv[-1], "ls -la /tmp")
         self.assertEqual(argv[-2], "v@127.0.0.1")
-        self.assertEqual(len(argv), 13)
+        self.assertEqual(len(argv), 17)
+
+    def test_accept_new_is_never_present(self):
+        # O operador substituiu `accept-new` pela politica que
+        # `readiness.py`/`auth.py` ja usam para este mesmo loopback:
+        # host keys sao compartilhadas por build de imagem e portas sao
+        # efemeras, entao `accept-new` falha apos rebuild ou porta reusada.
+        info = _info()
+        argv = info.ssh_argv(("pwd",))
+        self.assertTrue(all("accept-new" not in arg for arg in argv))
 
     def test_destination_is_preceded_by_a_bare_double_dash(self):
         info = _info()

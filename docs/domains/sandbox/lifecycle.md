@@ -120,3 +120,10 @@ surfaces unchanged as a `PodmanError`, exit code 2, same as the rest of
 this CLI. A workspace that was never created names `up` in that message; a
 missing SSH key names `resume`; a suspended (stopped) workspace surfaces
 the raw `podman port` failure — the fix is still `asb-agent resume`.
+
+`connect` does not verify or record the host key, matching the policy
+`readiness.py` and `auth.py` already use for this same loopback SSH: host
+keys are baked into the image once per build and shared by every
+workspace, and the published port is ephemeral and reused, so pinning a
+host key per `[127.0.0.1]:<port>` would hard-fail after a rebuild or a
+reused port. `connect` writes nothing to `~/.ssh/known_hosts`.

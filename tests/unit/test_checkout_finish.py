@@ -756,6 +756,75 @@ class TestCleanupWithoutMerge(_Case):
         self.assert_preserved(result, FinishState.BLOCKED)
 
 
+# -- ramos defensivos: leituras que falham no meio do caminho -------------------------
+
+
+class TestUnreadableEvidence(_Case):
+    def setUp(self) -> None:
+        super().setUp()
+        self.agent_commit = self.commit_on(self.sandbox, "agent.txt")
+
+    def test_a_git_that_cannot_run_during_the_export_blocks(self):
+        self.faults[("fetch",)] = OSError
+        result = self.finish(cleanup=True)
+        self.assert_preserved(result, FinishState.BLOCKED)
+        self.assertIn("could not run git", result.message)
+
+    def test_an_unreadable_worktree_head_blocks_before_the_merge(self):
+        self.faults[("rev-parse", "--verify", "--quiet", "HEAD^{commit}")] = 1
+        result = self.finish(cleanup=True)
+        self.assert_preserved(result, FinishState.BLOCKED)
+        self.assertIn("could not read HEAD", result.message)
+        self.assertFalse(self.reachable(self.agent_commit))
+
+    def test_an_unreadable_target_head_after_the_merge_is_not_proof(self):
+        self.after[("merge",)] = lambda: self.faults.__setitem__(
+            ("rev-parse", "--verify", "--quiet", "HEAD^{commit}"), 1)
+        result = self.finish(cleanup=True)
+        self.assert_preserved(result, FinishState.CLEANUP_PENDING)
+        self.assertIn("integration is not proven", result.message)
+
+    def test_cleanup_with_an_unreadable_worktree_head_is_blocked(self):
+        self.faults[("rev-parse", "--verify", "--quiet", "HEAD^{commit}")] = 1
+        result = self.manager().cleanup(self.checkout_id)
+        self.assert_preserved(result, FinishState.BLOCKED)
+        self.assertIn("could not read HEAD", result.message)
+
+    def test_purge_failure_without_stderr_still_names_the_code(self):
+        self.purge_code = 3
+        runtime = self.runtime()
+        runtime.runner = lambda argv: subprocess.CompletedProcess(argv, 3,
+                                                                  "", "")
+        result = self.finish(cleanup=True, runtime=runtime)
+        self.assertIs(result.state, FinishState.CLEANUP_PENDING)
+        self.assertIn("failed for", result.message)
+        self.assertIn("(code 3)", result.message)
+        self.assertTrue(self.worktree.is_dir())
+
+    def test_merged_is_false_once_the_worktree_path_is_gone(self):
+        manager = self.manager()
+        ref = f"refs/asb/{self.ws}/topic"
+        git(self.repo, "fetch", "-q", str(self.sandbox),
+            f"refs/heads/topic:{ref}")
+        git(self.repo, "merge", "-q", "--no-edit", ref)
+        self.assertTrue(manager.merged(self.checkout_id))
+        shutil.rmtree(self.worktree)
+        self.assertFalse(manager.merged(self.checkout_id))
+
+    def test_cleanup_into_a_branch_nobody_has_checked_out_uses_the_primary(self):
+        ref = f"refs/asb/{self.ws}/topic"
+        git(self.repo, "fetch", "-q", str(self.sandbox),
+            f"refs/heads/topic:{ref}")
+        git(self.repo, "merge", "-q", "--no-edit", ref)
+        git(self.repo, "branch", "release", "main")
+        result = self.manager().cleanup(self.checkout_id, "release",
+                                        delete_merged_branch=True)
+        self.assert_cleaned(result, self.agent_commit)
+        [delete] = [c for c in self.calls if c[3:4] == ["branch"]]
+        self.assertEqual(delete, ["git", "-C", str(self.repo), "branch", "-d",
+                                  "topic"])
+
+
 # -- previa da confirmacao da TUI -------------------------------------------------
 
 

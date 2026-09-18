@@ -18,6 +18,7 @@ from asb.auth import login as auth_login  # noqa: E402
 from asb.auth import status as auth_status  # noqa: E402
 from asb.auth import verify as auth_verify  # noqa: E402
 from asb.doctor import doctor  # noqa: E402
+from asb.interfaces import cli  # noqa: E402
 from asb.podman import PodmanError  # noqa: E402
 from asb.profile import ProfileError  # noqa: E402
 from asb.workspace import WorkspaceError  # noqa: E402
@@ -44,6 +45,8 @@ def build_parser() -> argparse.ArgumentParser:
     workspace_command("resume", "religa os containers do workspace")
     workspace_command("reload-allowlist", "recarrega a allowlist do proxy sem tocar no agente")
     workspace_command("pull", "traz o branch do workspace para o checkout")
+    workspace_command(
+        "connect", "abre um shell SSH direto no workspace, sem o Orca")
 
     purge = workspace_command("purge", "remove tambem os arquivos do workspace")
     purge.add_argument("--yes", action="store_true",
@@ -114,6 +117,8 @@ def main() -> int:
             return lifecycle.reload_allowlist(ROOT, args.workspace)
         if args.command == "pull":
             return lifecycle.pull(args.workspace)
+        if args.command == "connect":
+            return cli.connect(args.workspace)
         if args.command == "purge":
             return lifecycle.purge(args.workspace, confirmed=args.yes)
         if args.command == "login":

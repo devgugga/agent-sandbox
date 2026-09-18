@@ -68,6 +68,7 @@ with no operator present; enable it only as an explicit decision.
 | `suspend --workspace <id>` | Stops and **disables** the target: a suspended workspace stays stopped across reboots | everything |
 | `resume --workspace <id>` | Checks host connectivity (30 s), enables and starts the target, probes readiness, prints the same connection JSON | container IDs, SSH port, uncommitted work |
 | `reload-allowlist --workspace <id>` | Re-renders `squid.conf` from the operator's checkout and runs `systemctl --user try-restart` on the proxy unit; a suspended workspace picks it up on `resume` | agent container, SSH port |
+| `connect --workspace <id>` | Read-only: resolves the live connection and replaces the host process with `ssh` into a login shell (see §4) | everything |
 | `down --workspace <id>` | Removes units, containers, networks and the nested-containers volume | clone under `~/asb-agent/…`, git branches, the session volume |
 | `purge --workspace <id> --yes` | `down` plus the clone, workspace state and session volume | shared credentials |
 
@@ -98,3 +99,24 @@ infrastructure problems are never fixed by logging in again — see
 
 Deleting credentials, resetting Podman globally or running
 `podman unshare --rootless-netns` are not recovery steps.
+
+---
+
+## 4. Direct SSH access without Orca
+
+`connect --workspace <id>` opens an interactive shell on a workspace that is
+already running, without going through Orca. It resolves the live
+connection with the same read-only lookup `resolve_connection` already does
+for `discover`/`ensure` (container, published port, SSH key) and then
+replaces the host process with `ssh` (`os.execvp`), so there is no wrapper
+process left behind. The remote side runs `sh -lc 'cd -- <project_root> &&
+exec ${SHELL:-/bin/bash} -l'`, landing the operator in a login shell inside
+the checkout.
+
+`connect` never starts, resumes, rebuilds or otherwise mutates a workspace.
+Any failure `resolve_connection` already raises for every other caller
+(container never created, origin lost, port unreadable, SSH key missing)
+surfaces unchanged as a `PodmanError`, exit code 2, same as the rest of
+this CLI. A workspace that was never created names `up` in that message; a
+missing SSH key names `resume`; a suspended (stopped) workspace surfaces
+the raw `podman port` failure — the fix is still `asb-agent resume`.

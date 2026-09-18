@@ -98,6 +98,14 @@ class TestCliParserDispatchParity(unittest.TestCase):
             unreachable, [],
             f"subcomando registrado sem despacho em main(): {unreachable}")
 
+    def test_connect_is_registered_and_dispatched(self):
+        """Tarefa 4: `connect` e um subcomando de topo como qualquer outro
+        (registrado no parser E despachado em `main()`) — a paridade acima
+        ja cobre isso de forma generica, mas um assert explicito documenta
+        a intencao para quem le so este arquivo."""
+        self.assertIn("connect", self.registered)
+        self.assertIn("connect", self.dispatched)
+
     def test_login_is_registered_without_a_workspace_argument(self):
         """`lifecycle.login(ROOT)` nao recebe workspace: registrar `login`
         via o helper `workspace_command` exigiria `--workspace` e quebraria

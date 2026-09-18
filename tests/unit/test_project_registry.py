@@ -21,6 +21,7 @@ import tempfile
 import threading
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "cli"))
 
@@ -100,6 +101,59 @@ class DiscoveryAndDeduplicationTests(ProjectRegistryTestCase):
         registry = self.registry()
         with self.assertRaises(ProjectRegistryError):
             registry.add(self.tmp / "does-not-exist", "main", self.worktree_root)
+
+
+class IntegrationBranchDiscoveryTests(ProjectRegistryTestCase):
+    """§4.2: an unconfigured branch is discovered narrowly or refused —
+    never silently guessed."""
+
+    def _set_unambiguous_origin_head(self, repo: Path, branch: str) -> None:
+        # No network needed: fabricate a remote-tracking ref and point
+        # origin/HEAD at it, exactly as `git remote set-head` would leave
+        # things after a real clone.
+        _run_git(["update-ref", f"refs/remotes/origin/{branch}", "HEAD"], repo)
+        _run_git(["symbolic-ref", "refs/remotes/origin/HEAD",
+                 f"refs/remotes/origin/{branch}"], repo)
+
+    def test_explicit_branch_is_stored_verbatim_without_discovery(self):
+        registry = self.registry()
+        with patch("asb.projects.registry.subprocess.run",
+                   wraps=subprocess.run) as run:
+            project = registry.add(self.repo, "release", self.worktree_root)
+        self.assertEqual(project.integration_branch, "release")
+
+        def argv_of(call):
+            return call.args[0] if call.args else call.kwargs.get("args", [])
+
+        symbolic_ref_calls = [call for call in run.call_args_list
+                              if "symbolic-ref" in argv_of(call)]
+        self.assertEqual(symbolic_ref_calls, [])
+
+    def test_discovers_unambiguous_origin_head_branch(self):
+        # A distinctive name: a silent "main" default would fail this.
+        self._set_unambiguous_origin_head(self.repo, "trunk")
+        registry = self.registry()
+        project = registry.add(self.repo, None, self.worktree_root)
+        self.assertEqual(project.integration_branch, "trunk")
+
+    def test_missing_origin_head_raises_and_writes_nothing(self):
+        # self.repo has no `origin` remote at all: refs/remotes/origin/HEAD
+        # cannot resolve.
+        registry = self.registry()
+        with self.assertRaises(ProjectRegistryError):
+            registry.add(self.repo, None, self.worktree_root)
+        self.assertFalse(self.registry_path.exists())
+
+    def test_origin_head_pointing_outside_origin_raises_and_writes_nothing(self):
+        # `symbolic-ref --short` succeeds but resolves to a ref that is not
+        # under `refs/remotes/origin/`, so the "origin/" prefix strip yields
+        # an empty branch name: must raise, not silently accept it.
+        _run_git(["symbolic-ref", "refs/remotes/origin/HEAD",
+                 "refs/heads/master"], self.repo)
+        registry = self.registry()
+        with self.assertRaises(ProjectRegistryError):
+            registry.add(self.repo, None, self.worktree_root)
+        self.assertFalse(self.registry_path.exists())
 
 
 class PersistenceShapeTests(ProjectRegistryTestCase):
@@ -209,11 +263,6 @@ class LookupAndIdempotencyTests(ProjectRegistryTestCase):
         registry = self.registry()
         with self.assertRaises(ProjectRegistryError):
             registry.get(ProjectId("p-0000000000000000"))
-
-    def test_add_with_no_integration_branch_defaults_to_main(self):
-        registry = self.registry()
-        project = registry.add(self.repo, None, self.worktree_root)
-        self.assertEqual(project.integration_branch, "main")
 
     def test_add_is_idempotent_for_the_same_project(self):
         registry = self.registry()

@@ -78,6 +78,40 @@ def _project_id_for(common_dir: Path) -> ProjectId:
     return ProjectId(f"p-{digest[:16]}")
 
 
+def _discover_integration_branch(path: Path) -> str:
+    """Integration branch from `refs/remotes/origin/HEAD`, or raises.
+
+    Only ever called when the caller did not supply an explicit branch.
+    `git symbolic-ref --short` fails (non-zero exit) when the ref is
+    missing, unreadable, or ambiguous, instead of guessing — so any
+    failure here is turned into a `ProjectRegistryError` that demands an
+    explicit choice, rather than a silent default.
+    """
+    try:
+        completed = subprocess.run(
+            ["git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD"],
+            cwd=str(path), shell=False, capture_output=True, text=True,
+        )
+    except OSError as exc:
+        raise ProjectRegistryError(
+            "could not invoke git to discover the integration branch for "
+            f"{path}: {exc}") from exc
+    if completed.returncode != 0:
+        raise ProjectRegistryError(
+            f"no integration branch configured for {path} and "
+            "refs/remotes/origin/HEAD could not be resolved "
+            f"({completed.stderr.strip()}); supply integration_branch "
+            "explicitly")
+    ref = completed.stdout.strip()
+    branch = ref[len("origin/"):] if ref.startswith("origin/") else ""
+    if not branch:
+        raise ProjectRegistryError(
+            f"no integration branch configured for {path}: "
+            f"refs/remotes/origin/HEAD resolved to unexpected ref {ref!r}; "
+            "supply integration_branch explicitly")
+    return branch
+
+
 class ProjectRegistry:
     """Registro atomico, sem estado em memoria, de projetos e checkouts.
 
@@ -115,7 +149,8 @@ class ProjectRegistry:
         primary = Path(primary).resolve()
         common_dir = _git_common_dir(primary)
         project_id = _project_id_for(common_dir)
-        branch = integration_branch or "main"
+        branch = (integration_branch if integration_branch
+                 else _discover_integration_branch(primary))
         worktree_root = Path(worktree_root).resolve()
 
         def mutate(entries: list[_ProjectEntry]) -> Project:

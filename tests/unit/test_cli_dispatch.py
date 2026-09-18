@@ -137,6 +137,26 @@ class TestCliParserDispatchParity(unittest.TestCase):
             self.assertIn(name, self.registered)
             self.assertIn(name, self.dispatched)
 
+    def test_tui_is_registered_and_dispatched_without_arguments(self):
+        """Tarefa 10: `tui` e um comando de topo sem subcomandos nem
+        argumentos; as acoes vivem nas teclas da TUI."""
+        self.assertIn("tui", self.registered)
+        self.assertIn("tui", self.dispatched)
+        args = self.module.build_parser().parse_args(["tui"])
+        self.assertEqual(vars(args), {"command": "tui"})
+
+    def test_tui_dispatch_hands_the_session_services_to_the_tui(self):
+        from unittest import mock
+        services = object()
+        with mock.patch.object(self.module.sys, "argv", ["asb-agent", "tui"]), \
+                mock.patch.object(self.module.session_cli, "session_services",
+                                  return_value=services) as build, \
+                mock.patch.object(self.module.tui, "run_tui",
+                                  return_value=0) as run_tui:
+            self.assertEqual(self.module.main(), 0)
+        build.assert_called_once_with(self.module.ROOT)
+        run_tui.assert_called_once_with(services)
+
     def test_login_is_registered_without_a_workspace_argument(self):
         """`lifecycle.login(ROOT)` nao recebe workspace: registrar `login`
         via o helper `workspace_command` exigiria `--workspace` e quebraria

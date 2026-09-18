@@ -21,6 +21,7 @@ from asb.doctor import doctor  # noqa: E402
 from asb.agents.base import ResumeUnsupported  # noqa: E402
 from asb.interfaces import cli  # noqa: E402
 from asb.interfaces import sessions as session_cli  # noqa: E402
+from asb.interfaces import tui  # noqa: E402
 from asb.podman import PodmanError  # noqa: E402
 from asb.profile import ProfileError  # noqa: E402
 from asb.projects.registry import ProjectRegistryError  # noqa: E402
@@ -125,6 +126,9 @@ def build_parser() -> argparse.ArgumentParser:
             ("resume", "retoma a sessao nativamente")):
         session_sub.add_parser(name, help=help_text).add_argument("session_id")
 
+    sub.add_parser(
+        "tui", help="navega projetos, checkouts e sessoes (q sai sem parar nada)")
+
     return parser
 
 
@@ -193,6 +197,8 @@ def main() -> int:
             if args.session_command == "resume":
                 return session_cli.session_resume(
                     args.session_id, services=services)
+        if args.command == "tui":
+            return tui.run_tui(session_cli.session_services(ROOT))
     except (ValueError, FileNotFoundError, RuntimeError) as error:
         print(f"asb-agent: {error}", file=sys.stderr)
         return 2

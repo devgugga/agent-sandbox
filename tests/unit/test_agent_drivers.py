@@ -22,7 +22,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "cli"))
 
 from asb.agents.antigravity import AntigravityDriver  # noqa: E402
 from asb.agents.base import (  # noqa: E402
-    AgentAvailability, LaunchCommand, ResumeUnsupported, SessionEvidence,
+    AgentAvailability, LaunchCommand, Lifetime, ResumeUnsupported,
+    SessionEvidence,
 )
 from asb.agents.claude import ClaudeDriver  # noqa: E402
 from asb.agents.codex import CodexDriver  # noqa: E402
@@ -360,10 +361,10 @@ class TestCodexSessionEvidence(unittest.TestCase):
             baseline = driver.capture_before(Path("/repo"))
             (sessions / "rollout-a.jsonl").write_text(
                 json.dumps({"type": "session_meta",
-                            "payload": {"cwd": "/repo", "source": "cli", "id": "id-a"}}) + "\n")
+                            "payload": {"cwd": "/repo", "source": "cli", "thread_source": "user", "id": "id-a"}}) + "\n")
             (sessions / "rollout-b.jsonl").write_text(
                 json.dumps({"type": "session_meta",
-                            "payload": {"cwd": "/repo", "source": "cli", "id": "id-b"}}) + "\n")
+                            "payload": {"cwd": "/repo", "source": "cli", "thread_source": "user", "id": "id-b"}}) + "\n")
             after = driver.capture_after(baseline)
             self.assertIsNone(driver.discover_session_id(after))
 
@@ -377,7 +378,7 @@ class TestCodexSessionEvidence(unittest.TestCase):
             new_file = sessions / "rollout-2026-09-17T00-00-00-abc.jsonl"
             new_file.write_text(
                 json.dumps({"type": "session_meta",
-                            "payload": {"cwd": "/repo", "source": "cli", "id": "session-meta-id"}}) + "\n"
+                            "payload": {"cwd": "/repo", "source": "cli", "thread_source": "user", "id": "session-meta-id"}}) + "\n"
                 + json.dumps({"type": "response_item"}) + "\n")
             after = driver.capture_after(baseline)
             self.assertEqual(after.new_paths, frozenset({new_file}))
@@ -460,7 +461,7 @@ class TestCodexSessionEvidence(unittest.TestCase):
             new_file = sessions / "rollout-unreadable.jsonl"
             new_file.write_text(
                 json.dumps({"type": "session_meta",
-                            "payload": {"cwd": "/repo", "source": "cli", "id": "session-meta-id"}}) + "\n")
+                            "payload": {"cwd": "/repo", "source": "cli", "thread_source": "user", "id": "session-meta-id"}}) + "\n")
             after = driver.capture_after(baseline)
             new_file.unlink()  # o candidato existia na varredura, mas sumiu
             self.assertIsNone(driver.discover_session_id(after))
@@ -472,7 +473,7 @@ class TestCodexSessionEvidence(unittest.TestCase):
             sessions.mkdir(parents=True)
             (sessions / "rollout-pre-existing.jsonl").write_text(
                 json.dumps({"type": "session_meta",
-                            "payload": {"cwd": "/repo", "source": "cli", "id": "pre-existing"}}) + "\n")
+                            "payload": {"cwd": "/repo", "source": "cli", "thread_source": "user", "id": "pre-existing"}}) + "\n")
             driver = self._driver(sessions_root)
             baseline = driver.capture_before(Path("/repo"))
             after = driver.capture_after(baseline)
@@ -483,7 +484,7 @@ class TestCodexSessionEvidence(unittest.TestCase):
         # Um thread do usuario (`source` string) salvo quando o teste diz
         # outra coisa: a rejeicao testada e a do campo que o teste varia.
         if isinstance(payload, dict):
-            payload = {"source": "cli", **payload}
+            payload = {"source": "cli", "thread_source": "user", **payload}
         path.write_text(json.dumps({"type": "session_meta",
                                     "payload": payload}) + "\n")
 
@@ -616,11 +617,11 @@ class _CodexCase(unittest.TestCase):
         return self.driver.discover_session_id(
             self.driver.capture_after(self._baseline))
 
-    def discover_since(self, not_before=STARTED,
-                       claimed=frozenset()) -> str | None:
+    def discover_since(self, not_before=STARTED, claimed=frozenset(),
+                       contended=()) -> str | None:
         """Descoberta preguicosa: todo arquivo atual, sem baseline."""
         return self.driver.discover_session_id(self.driver.capture_since(
-            Path("/repo"), not_before, claimed))
+            Path("/repo"), not_before, claimed, contended))
 
 
 class TestCodexIgnoresSubagentThreads(_CodexCase):
@@ -643,6 +644,19 @@ class TestCodexIgnoresSubagentThreads(_CodexCase):
         self.write("subagent", _subagent_meta())
         self.assertIsNone(self.discover_new())
 
+    def test_only_a_user_thread_source_counts(self):
+        # `codex exec` grava `source: "exec"`; so `thread_source: "user"`
+        # (o que os 23 threads nao-subagente do host tem) passa.
+        exec_run = {k: v for k, v in _user_meta().items()
+                    if k != "thread_source"}
+        for payload in ({**exec_run, "source": "exec"}, exec_run,
+                        {**_user_meta(), "thread_source": "exec"},
+                        {**_user_meta(), "thread_source": None}):
+            with self.subTest(payload=payload):
+                path = self.write("x", payload)
+                self.assertIsNone(self.discover_new())
+                path.unlink()
+
     def test_either_subagent_marker_alone_rejects(self):
         dict_source = {**_user_meta(), "source": {"subagent": "x"}}
         with_parent = {**_user_meta(), "parent_thread_id": SUBAGENT_ID}
@@ -663,12 +677,14 @@ class TestCodexLazyDiscovery(_CodexCase):
 
     def test_capture_since_sees_files_that_existed_before(self):
         self.write("user", _user_meta())
-        evidence = self.driver.capture_since(Path("/repo"), STARTED,
-                                             frozenset({"x"}))
+        evidence = self.driver.capture_since(
+            Path("/repo"), STARTED, frozenset({"x"}),
+            (Lifetime(None, None),))
         self.assertEqual(len(evidence.new_paths), 1)
         self.assertEqual(evidence.cwd, Path("/repo"))
         self.assertEqual(evidence.not_before, STARTED)
         self.assertEqual(evidence.claimed_ids, frozenset({"x"}))
+        self.assertEqual(evidence.contended, (Lifetime(None, None),))
         self.assertEqual(self.discover_since(), USER_ID)
 
     def test_user_thread_at_or_after_the_start_is_accepted(self):
@@ -697,6 +713,29 @@ class TestCodexLazyDiscovery(_CodexCase):
                 path = self.write("user", _user_meta(timestamp=timestamp))
                 self.assertIsNone(self.discover_since())
                 path.unlink()
+
+    def test_a_candidate_inside_a_sibling_lifetime_yields_nothing(self):
+        self.write("user", _user_meta(timestamp="2026-09-19T14:36:19Z"))
+        t = datetime(2026, 9, 19, 14, 36, 19, tzinfo=timezone.utc)
+        for window in (Lifetime(STARTED, None), Lifetime(STARTED, t),
+                       Lifetime(t, t), Lifetime(None, None)):
+            with self.subTest(window=window):
+                self.assertIsNone(self.discover_since(contended=(window,)))
+
+    def test_a_candidate_outside_every_sibling_lifetime_is_accepted(self):
+        self.write("user", _user_meta(timestamp="2026-09-19T14:36:19Z"))
+        before = datetime(2026, 9, 19, 14, 30, tzinfo=timezone.utc)
+        after = datetime(2026, 9, 19, 14, 40, tzinfo=timezone.utc)
+        self.assertEqual(self.discover_since(contended=(
+            Lifetime(before, STARTED), Lifetime(after, None))), USER_ID)
+
+    def test_contended_evidence_requires_a_timestamp(self):
+        self.write("user", _user_meta(timestamp=None))
+        evidence = SessionEvidence(
+            scan_root=self.root, cwd=Path("/repo"),
+            new_paths=frozenset(self.root.rglob("*.jsonl")),
+            contended=(Lifetime(STARTED, STARTED),))
+        self.assertIsNone(self.driver.discover_session_id(evidence))
 
     def test_other_checkout_is_still_rejected(self):
         self.write("user", _user_meta(cwd="/other"))
@@ -741,7 +780,7 @@ class TestHostileSessionVolume(unittest.TestCase):
     levantam. Nenhum teste le `/dev/zero`; o FIFO so e aberto numa thread
     daemon com prazo, destravada pelo proprio teste."""
 
-    META = {"type": "session_meta", "payload": {"cwd": "/repo", "source": "cli", "id": "evil"}}
+    META = {"type": "session_meta", "payload": {"cwd": "/repo", "source": "cli", "thread_source": "user", "id": "evil"}}
 
     def _codex(self, tmp: str) -> tuple[Path, Path, CodexDriver]:
         root = Path(tmp) / "codex-sessions"
@@ -826,7 +865,7 @@ class TestHostileSessionVolume(unittest.TestCase):
             root, _outside, driver = self._codex(tmp)
             baseline = driver.capture_before(Path("/repo"))
             record = {"type": "session_meta",
-                      "payload": {"cwd": "/repo", "source": "cli", "id": "evil",
+                      "payload": {"cwd": "/repo", "source": "cli", "thread_source": "user", "id": "evil",
                                   "pad": "x" * (128 * 1024)}}
             (root / "big.jsonl").write_text(json.dumps(record) + "\n")
             after = driver.capture_after(baseline)

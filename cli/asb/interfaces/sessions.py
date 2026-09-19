@@ -142,6 +142,7 @@ def _session_json(session: AgentSession) -> dict[str, object]:
     """Exatamente os campos de relacionamento que o store grava."""
     healthy = session.last_healthy_at
     started = session.started_at
+    ended = session.ended_at
     return {
         "id": str(session.id),
         "checkoutId": str(session.checkout_id),
@@ -159,6 +160,8 @@ def _session_json(session: AgentSession) -> dict[str, object]:
         "revision": session.revision,
         "startedAt": (started.strftime("%Y-%m-%dT%H:%M:%SZ")
                       if started is not None else None),
+        "endedAt": (ended.strftime("%Y-%m-%dT%H:%M:%SZ")
+                    if ended is not None else None),
     }
 
 

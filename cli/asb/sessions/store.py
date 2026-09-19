@@ -26,7 +26,7 @@ import json
 import os
 import secrets
 from dataclasses import replace as _dataclass_replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, TypeVar
 
@@ -37,6 +37,7 @@ from asb.sessions.model import (
 )
 
 _SCHEMA_VERSION = 1
+_FINAL = frozenset({SessionState.COMPLETED, SessionState.FAILED})
 _T = TypeVar("_T")
 
 
@@ -57,8 +58,10 @@ class SessionStore:
     para o mesmo `path` nunca perdem a escrita uma da outra.
     """
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *,
+                 clock: Callable[[], datetime] | None = None) -> None:
         self.path = Path(path)
+        self._clock = clock or (lambda: datetime.now(timezone.utc))
 
     # -- leitura ------------------------------------------------------------
 
@@ -109,17 +112,23 @@ class SessionStore:
         return self._transact(mutate)
 
     def _normalize(self, session: AgentSession) -> AgentSession:
-        """Valida e normaliza `last_healthy_at` e `started_at` antes de
-        gravar.
+        """Valida e normaliza `last_healthy_at`, `started_at` e `ended_at`
+        antes de gravar; carimba `ended_at` (relogio do store, arredondado
+        PARA CIMA ao segundo) na primeira escrita de um estado final, por
+        qualquer caminho — a vida registrada nunca termina antes da real.
 
         Recusa um datetime naive cedo, sem tocar lock nem arquivo, e trunca
         para precisao de segundos (o que o disco guarda), para que o
         registro devolvido por `insert()`/`replace()` seja igual ao que uma
         leitura subsequente por `get()` devolveria."""
+        if session.state in _FINAL and session.ended_at is None:
+            session = _dataclass_replace(
+                session, ended_at=ceil_second(self._clock()))
         return _dataclass_replace(
             session,
             last_healthy_at=_to_stored_utc(session, "last_healthy_at"),
-            started_at=_to_stored_utc(session, "started_at"))
+            started_at=_to_stored_utc(session, "started_at"),
+            ended_at=_to_stored_utc(session, "ended_at"))
 
     def remove(self, session_id: SessionId) -> None:
         def mutate(sessions: list[AgentSession]) -> None:
@@ -208,6 +217,7 @@ class SessionStore:
         last_healthy_at = self._decode_last_healthy_at(raw)
         revision = self._decode_revision(raw)
         started_at = self._decode_started_at(raw)
+        ended_at = self._decode_utc(raw.get("endedAt"), "endedAt")
         return AgentSession(
             id=session_id,
             checkout_id=checkout_id,
@@ -220,6 +230,7 @@ class SessionStore:
             last_healthy_at=last_healthy_at,
             revision=revision,
             started_at=started_at,
+            ended_at=ended_at,
         )
 
     def _required_str(self, raw: dict, key: str) -> str:
@@ -348,7 +359,16 @@ class SessionStore:
             "lastHealthyAt": _encode_utc(session, "last_healthy_at"),
             "revision": session.revision,
             "startedAt": _encode_utc(session, "started_at"),
+            "endedAt": _encode_utc(session, "ended_at"),
         }
+
+
+def ceil_second(moment: datetime) -> datetime:
+    """`moment` arredondado PARA CIMA ao segundo inteiro (o que o disco
+    guarda sem perder a ordem em relacao ao instante real)."""
+    if moment.microsecond == 0:
+        return moment
+    return moment.replace(microsecond=0) + timedelta(seconds=1)
 
 
 def _to_stored_utc(session: AgentSession, field: str) -> datetime | None:

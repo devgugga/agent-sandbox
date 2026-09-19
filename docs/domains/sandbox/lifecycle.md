@@ -217,20 +217,25 @@ sandbox is the isolation boundary. Antigravity gets no bypass flag.
 The Codex provider session id is discovered from the workspace's session
 volume. Only the user thread counts: a rollout whose `session_meta` has a
 `parent_thread_id` or an object `source` is a subagent (for example the
-`guardian_review` thread `approvals_reviewer = "auto_review"` opens) and is
-ignored. Discovery runs after launch (five polls, one second apart), and
-again, lazily, whenever a session without an id probes alive (refresh,
-`attach`) or dead without exit status 0 (before it is classified). Codex
-writes its rollout on the first message, usually after the launch window,
-so the lazy attempt is what finds it. A lazy candidate must also carry a
-`session_meta` timestamp at or after the session's recorded `startedAt`,
-and no other stored session may already hold its id. Exactly one
+`guardian_review` thread `approvals_reviewer = "auto_review"` opens), and
+one without `thread_source: "user"` (a `codex exec` run) is not the
+session; both are ignored. Discovery runs after launch (five polls, one
+second apart), again, lazily, whenever a session without an id probes
+alive (refresh, `attach`) or dead, and one last time just before the
+session is recorded `completed`, so it can claim its own rollout before
+its lifetime closes. Codex writes its rollout on the first message,
+usually after the launch window, so the lazy attempt is what finds it.
+Every attempt, the launch window included, accepts a candidate only if
+its `session_meta` timestamp is at or after the session's `startedAt`
+(recorded rounded up to the whole second), falls inside no lifetime of
+another session of the same agent and checkout path that has no id,
+live or final (from one second before its `startedAt` to its `endedAt`,
+open while it has none; a record without `startedAt` covers every
+instant), and is not already held by another stored session. `endedAt`
+is stamped, rounded up, on the first write of a final state. Exactly one
 candidate is stored, in the same write as the classification; zero or
 several store nothing, and the session cannot be resumed natively. A
-session recorded before `startedAt` existed never discovers lazily, and
-neither does a session while another live session of the same agent in
-the same checkout also lacks an id: one's rollout would be the other's
-only candidate.
+session recorded before `startedAt` existed never discovers lazily.
 Discovery reads only regular files, never follows a symlink, never
 blocks on a FIFO and reads at most 64 KiB of a Codex file: the session
 volume is agent-writable.

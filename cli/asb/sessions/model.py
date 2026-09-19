@@ -87,6 +87,9 @@ class AgentSession:
     # Instante do `start`. `None` em registros gravados antes do campo:
     # sem ele nao ha descoberta preguicosa do id do provedor.
     started_at: datetime | None = None
+    # Instante (arredondado para cima ao segundo) da primeira escrita num
+    # estado final; `None` enquanto viva e em registros antigos.
+    ended_at: datetime | None = None
 
     @classmethod
     def new(cls, checkout_id: CheckoutId, agent: AgentKind, cwd: Path,

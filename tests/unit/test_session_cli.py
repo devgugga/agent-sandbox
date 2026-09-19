@@ -261,7 +261,8 @@ class TestSessionDispatch(unittest.TestCase):
 
 STORED_KEYS = sorted(["id", "checkoutId", "agent", "title", "cwd",
                       "terminalId", "providerSessionId", "state",
-                      "lastHealthyAt", "revision", "startedAt"])
+                      "lastHealthyAt", "revision", "startedAt",
+                      "endedAt"])
 
 
 class TestSessionList(_Case):

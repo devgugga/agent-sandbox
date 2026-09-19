@@ -16,14 +16,17 @@ absoluto sem barra final) e o checkout de execucao desta sessao.
 Uma sessao Codex pode abrir SUBAGENTES com o mesmo cwd (o piloto viu um
 `guardian_review` criado por `approvals_reviewer = "auto_review"` junto com
 o thread do usuario, na primeira mensagem). So conta o thread do usuario:
-`payload` sem `parent_thread_id` e com `source` string (um `source` objeto,
-`{"subagent": ...}`, e subagente). Na historia do Codex do operador os dois
-marcadores coincidem em todos os arquivos (ver
+`payload` sem `parent_thread_id`, com `source` string (um `source` objeto,
+`{"subagent": ...}`, e subagente) e `thread_source == "user"` (um
+`codex exec` no mesmo checkout nao e a sessao). Na historia do Codex do
+operador os dois marcadores de subagente coincidem em todos os arquivos, e
+todo thread que nao e subagente tem `thread_source: "user"` (ver
 docs/validation/2026-09-17-agent-session-contracts.md, secao 4.3).
 
-Na descoberta preguicosa (`capture_since`), o `payload.timestamp` tem de
-ser um instante UTC com fuso, igual ou posterior ao inicio da sessao, e o
-id nao pode ser de outra sessao ja guardada.
+Com `not_before` ou `contended` na evidencia, o `payload.timestamp` tem de
+ser um instante com fuso, igual ou posterior a `not_before` e fora da vida
+de toda outra sessao sem id do mesmo agente e cwd (`contended`); o id nao
+pode ser de outra sessao ja guardada (`claimed_ids`).
 
 O volume tambem e gravavel pelo AGENTE: a leitura abre sem seguir symlink
 (`O_NOFOLLOW`), sem bloquear num FIFO (`O_NONBLOCK`), exige arquivo
@@ -45,7 +48,7 @@ from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Iterable
 
-from asb.agents.base import AgentDriver, SessionEvidence
+from asb.agents.base import AgentDriver, Lifetime, SessionEvidence
 from asb.sessions.model import AgentKind
 
 # Teto da leitura da primeira linha (o `session_meta` medido tem ~1 KiB).
@@ -77,17 +80,20 @@ class CodexDriver(AgentDriver):
         ids = [session_id for path in evidence.new_paths
                if path.suffix == ".jsonl"
                and (session_id := _session_id_for(
-                   path, evidence.cwd, evidence.not_before))
+                   path, evidence.cwd, evidence.not_before,
+                   evidence.contended))
                and session_id not in evidence.claimed_ids]
         return ids[0] if len(ids) == 1 else None
 
 
 def _session_id_for(path: Path, cwd: Path,
-                    not_before: datetime | None = None) -> str | None:
+                    not_before: datetime | None = None,
+                    contended: tuple[Lifetime, ...] = ()) -> str | None:
     """`payload.id` do `session_meta` na primeira linha de `path`, somente
     se `payload.cwd` e o checkout `cwd`, o thread e do usuario (nao um
-    subagente) e, com `not_before`, `payload.timestamp` nao e anterior a
-    ele; senao `None`."""
+    subagente nem um `exec`) e, com `not_before`/`contended`, o
+    `payload.timestamp` nao e anterior a `not_before` nem cai na vida de
+    outra sessao sem id; senao `None`."""
     first_line = _read_first_line(path)
     if first_line is None:
         return None
@@ -107,29 +113,35 @@ def _session_id_for(path: Path, cwd: Path,
             or PurePosixPath(session_cwd) != PurePosixPath(cwd):
         return None
     if "parent_thread_id" in payload \
-            or not isinstance(payload.get("source"), str):
+            or not isinstance(payload.get("source"), str) \
+            or payload.get("thread_source") != "user":
         return None
-    if not_before is not None and not _at_or_after(payload.get("timestamp"),
-                                                   not_before):
-        return None
+    if not_before is not None or contended:
+        moment = _aware_instant(payload.get("timestamp"))
+        if moment is None:
+            return None
+        if not_before is not None and moment < not_before:
+            return None
+        if any(lifetime.contains(moment) for lifetime in contended):
+            return None
     session_id = payload.get("id")
     if isinstance(session_id, str) and session_id:
         return session_id
     return None
 
 
-def _at_or_after(value: object, not_before: datetime) -> bool:
-    """`value` e um instante ISO-8601 COM fuso, igual ou posterior a
-    `not_before`; qualquer outra coisa nao prova a ordem."""
+def _aware_instant(value: object) -> datetime | None:
+    """`value` como instante ISO-8601 COM fuso; qualquer outra coisa nao
+    prova a ordem e vira `None`."""
     if not isinstance(value, str):
-        return False
+        return None
     try:
         moment = datetime.fromisoformat(value)
     except ValueError:
-        return False
+        return None
     if moment.tzinfo is None or moment.tzinfo.utcoffset(moment) is None:
-        return False
-    return moment >= not_before
+        return None
+    return moment
 
 
 def _read_first_line(path: Path) -> str | None:

@@ -52,6 +52,7 @@ def _make_session(
     last_healthy_at: datetime | None = None,
     revision: int = 0,
     started_at: datetime | None = None,
+    ended_at: datetime | None = None,
 ) -> AgentSession:
     return AgentSession(
         id=session_id or SessionId(f"s-{_new_id()}"),
@@ -65,6 +66,7 @@ def _make_session(
         last_healthy_at=last_healthy_at,
         revision=revision,
         started_at=started_at,
+        ended_at=ended_at,
     )
 
 
@@ -236,7 +238,7 @@ class PersistenceShapeTests(SessionStoreTestCase):
         self.assertEqual(set(entry.keys()), {
             "id", "checkoutId", "agent", "title", "cwd", "terminalId",
             "providerSessionId", "state", "lastHealthyAt", "revision",
-            "startedAt",
+            "startedAt", "endedAt",
         })
 
     def test_json_schema_version_and_top_level_revision(self):
@@ -434,6 +436,69 @@ class StartedAtTests(SessionStoreTestCase):
                     store.list()
                 with self.assertRaises(SessionStoreError):
                     store.insert(_make_session())
+                self.assertEqual(self.store_path.read_text(), before)
+
+
+class EndedAtTests(SessionStoreTestCase):
+    """`endedAt` e carimbado pelo relogio do store, arredondado PARA CIMA
+    ao segundo, na primeira escrita de um estado final; opcional na
+    leitura como `startedAt`."""
+
+    CLOCK = datetime(2026, 9, 19, 15, 0, 0, 250000, tzinfo=timezone.utc)
+    STAMP = datetime(2026, 9, 19, 15, 0, 1, tzinfo=timezone.utc)
+
+    def clocked(self) -> SessionStore:
+        return SessionStore(self.store_path, clock=lambda: self.CLOCK)
+
+    def test_a_final_write_stamps_ended_at_rounded_up(self):
+        for state in (SessionState.COMPLETED, SessionState.FAILED):
+            with self.subTest(state=state):
+                store = self.clocked()
+                live = store.insert(_make_session())
+                done = store.replace(live.with_state(state))
+                self.assertEqual(done.ended_at, self.STAMP)
+                on_disk = json.loads(self.store_path.read_text())
+                entry = next(e for e in on_disk["sessions"]
+                             if e["id"] == done.id)
+                self.assertEqual(entry["endedAt"], "2026-09-19T15:00:01Z")
+                self.assertEqual(store.get(done.id), done)
+
+    def test_a_whole_second_clock_is_not_rounded(self):
+        whole = datetime(2026, 9, 19, 15, 0, 0, tzinfo=timezone.utc)
+        store = SessionStore(self.store_path, clock=lambda: whole)
+        done = store.insert(_make_session(state=SessionState.COMPLETED))
+        self.assertEqual(done.ended_at, whole)
+
+    def test_an_existing_ended_at_is_kept(self):
+        store = self.clocked()
+        earlier = datetime(2026, 9, 19, 14, 0, tzinfo=timezone.utc)
+        done = store.insert(_make_session(state=SessionState.COMPLETED,
+                                          ended_at=earlier))
+        self.assertEqual(done.ended_at, earlier)
+        again = store.replace(done.with_state(SessionState.COMPLETED))
+        self.assertEqual(again.ended_at, earlier)
+
+    def test_a_non_final_write_leaves_it_none(self):
+        store = self.clocked()
+        for state in SessionState:
+            if state in (SessionState.COMPLETED, SessionState.FAILED):
+                continue
+            with self.subTest(state=state):
+                self.assertIsNone(store.insert(
+                    _make_session(state=state)).ended_at)
+
+    def test_a_record_without_the_key_decodes_as_none(self):
+        self._seed_sessions(_valid_raw_session(state="completed"))
+        [session] = self.store().list()
+        self.assertIsNone(session.ended_at)
+
+    def test_invalid_ended_at_raises_and_leaves_file_unchanged(self):
+        for value in ("2026-09-19 15:00:00", 7, "garbageZ"):
+            with self.subTest(value=value):
+                before = self._seed_sessions(
+                    _valid_raw_session(endedAt=value))
+                with self.assertRaises(SessionStoreError):
+                    self.store().list()
                 self.assertEqual(self.store_path.read_text(), before)
 
 

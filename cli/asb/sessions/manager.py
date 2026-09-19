@@ -17,9 +17,12 @@ Regras que cada ramo abaixo respeita:
 - `TerminalError` de `start()` e ambiguo (a sessao PODE existir): sonda
   antes de concluir, nunca re-tenta as cegas;
 - uma sessao sem id do provedor tenta de novo a descoberta quando sonda
-  ALIVE ou DEAD (sem exit 0): o Codex cria o rollout na primeira mensagem,
-  depois da janela do `start`. Exatamente um candidato e gravado, na MESMA
-  escrita da classificacao; zero ou varios, nada;
+  ALIVE ou DEAD, e uma ultima vez logo antes de virar `completed`: o Codex
+  cria o rollout na primeira mensagem, depois da janela do `start`.
+  Exatamente um candidato e gravado, na MESMA escrita da classificacao;
+  zero ou varios, nada. Um candidato so vale se cai na vida desta sessao e
+  na de NENHUMA outra sessao sem id do mesmo agente e cwd (viva ou final),
+  e se nenhuma outra sessao guardada ja tem o id;
 - so `TerminalError` e capturado; cancelamento (`KeyboardInterrupt`...)
   sempre chega ao chamador.
 """
@@ -30,19 +33,20 @@ import functools
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
 from asb.agents.base import (
-    AgentAvailability, AgentDriver, LaunchCommand, RunFn, SessionEvidence,
+    AgentAvailability, AgentDriver, LaunchCommand, Lifetime, RunFn,
+    SessionEvidence,
 )
 from asb.checkouts.model import CheckoutId
 from asb.sessions.model import (
     AgentKind, AgentSession, ProviderSessionId, SessionId, SessionState,
     TerminalId,
 )
-from asb.sessions.store import SessionStore, StaleRevisionError
+from asb.sessions.store import SessionStore, StaleRevisionError, ceil_second
 from asb.sessions.terminal import Liveness, TerminalError, TmuxTerminal
 
 # Descoberta do id do provedor: ate 5 tentativas, 1 s entre elas.
@@ -142,7 +146,9 @@ class SessionManager:
         argv = _argv_only(driver.launch(request.cwd, assigned))
         record = self._store.insert(AgentSession.new(
             request.checkout_id, request.agent, request.cwd, request.title,
-            started_at=self._clock()))
+            # Para cima: o store guarda segundos inteiros, e um rollout do
+            # mesmo segundo, anterior ao inicio real, nao pode passar.
+            started_at=ceil_second(self._clock())))
         record = self._store.replace(record.with_state(
             SessionState.STARTING, terminal_id=terminal_name(record.id),
             provider_session_id=assigned))
@@ -155,7 +161,7 @@ class SessionManager:
             return self._store.replace(
                 record.with_state(SessionState.RECOVERY_REQUIRED))
         provider_session_id = (assigned if baseline is None
-                               else self._discover(driver, baseline))
+                               else self._discover(driver, baseline, record))
         return self._store.replace(record.with_state(
             SessionState.RUNNING,
             provider_session_id=provider_session_id,
@@ -214,8 +220,8 @@ class SessionManager:
         if record.terminal_id is None:
             # O terminal_id e gravado ANTES de qualquer lancamento: sem ele,
             # nenhum processo chegou a existir.
-            return self._store.replace(
-                record.with_state(SessionState.COMPLETED))
+            return self._store.replace(record.with_state(
+                SessionState.COMPLETED, **self._last_discovery(record)))
         try:
             return self._kill(record, SessionState.COMPLETED)
         except StaleRevisionError:
@@ -237,7 +243,8 @@ class SessionManager:
             raise SessionManagerError(
                 f"sessao {fresh.id} foi relancada durante o stop "
                 f"({fresh.state}); rode o stop de novo")
-        return self._store.replace(fresh.with_state(SessionState.COMPLETED))
+        return self._store.replace(fresh.with_state(
+            SessionState.COMPLETED, **self._last_discovery(fresh)))
 
     # -- ramos internos ----------------------------------------------------------
 
@@ -257,7 +264,8 @@ class SessionManager:
             return settle(record, SessionState.RECOVERY_REQUIRED), False
         if liveness is Liveness.DEAD \
                 and self._terminal.capture_exit_status(record.terminal_id) == 0:
-            return settle(record, SessionState.COMPLETED), False
+            return self._settle(record, SessionState.COMPLETED, rewrite=True,
+                                **self._last_discovery(record)), False
         found = self._discover_lazily(record)
         if found is not None:
             # So em memoria (mesma revisao): a escrita da classificacao
@@ -331,41 +339,65 @@ class SessionManager:
         if self._terminal.probe(record.terminal_id) is not Liveness.DEAD:
             raise SessionManagerError(
                 f"terminal {record.terminal_id} nao confirmou o encerramento")
-        return self._store.replace(record.with_state(state))
+        final = (self._last_discovery(record)
+                 if state is SessionState.COMPLETED else {})
+        return self._store.replace(record.with_state(state, **final))
+
+    def _scope(self, record: AgentSession) -> dict[str, object]:
+        """Filtros de toda descoberta de `record`, relidos do store:
+        `not_before` (inicio desta sessao), `claimed_ids` (ids de TODAS as
+        outras sessoes guardadas) e `contended` (a vida de cada outra sessao
+        do mesmo agente e cwd sem id, viva ou final). A vida vai de 1 s
+        antes do `started_at` gravado (o store trunca) ao `ended_at` (aberta
+        sem ele); sem `started_at` (registro antigo) contem todo instante."""
+        others = [s for s in self._store.list() if s.id != record.id]
+        return {
+            "not_before": record.started_at,
+            "claimed_ids": frozenset(s.provider_session_id for s in others
+                                     if s.provider_session_id is not None),
+            "contended": tuple(
+                Lifetime(None if s.started_at is None
+                         else s.started_at - timedelta(seconds=1),
+                         s.ended_at)
+                for s in others
+                if s.agent is record.agent and s.cwd == record.cwd
+                and s.provider_session_id is None),
+        }
 
     def _discover_lazily(self, record: AgentSession) -> ProviderSessionId | None:
-        """Descoberta sem baseline de uma sessao que ainda nao tem id.
-        Candidatos: `session_meta` com `timestamp` >= `started_at` e id que
-        nenhuma outra sessao guardada reclama. Nunca roda sem `started_at`
-        (registro antigo), nem quando outra sessao viva do mesmo agente no
-        mesmo cwd tambem espera um id: o rollout de uma seria o candidato
-        unico da outra."""
+        """Descoberta sem baseline de uma sessao que ainda nao tem id,
+        filtrada por `_scope`. Nunca roda sem `started_at` (registro
+        antigo): sem inicio, a vida desta sessao e desconhecida."""
         if record.provider_session_id is not None or record.started_at is None:
             return None
-        others = [s for s in self._store.list() if s.id != record.id]
-        if any(s.agent is record.agent and s.cwd == record.cwd
-               and s.provider_session_id is None and s.state not in _FINAL
-               for s in others):
-            return None
         driver = self._drivers[record.agent]
-        claimed = {s.provider_session_id for s in others
-                   if s.provider_session_id is not None}
+        scope = self._scope(record)
         found = driver.discover_session_id(driver.capture_since(
-            record.cwd, record.started_at, claimed))
+            record.cwd, scope["not_before"], scope["claimed_ids"],
+            scope["contended"]))
         try:
             return ProviderSessionId(found)
         except ValueError:
             return None
 
-    def _discover(self, driver: AgentDriver,
-                  baseline: SessionEvidence) -> ProviderSessionId | None:
+    def _last_discovery(self, record: AgentSession) -> dict[str, object]:
+        """Logo antes de `completed`: uma ultima descoberta, para que a
+        sessao reclame o PROPRIO rollout antes de a sua vida fechar. Devolve
+        as mudancas a gravar junto com o estado final."""
+        found = self._discover_lazily(record)
+        return {} if found is None else {"provider_session_id": found}
+
+    def _discover(self, driver: AgentDriver, baseline: SessionEvidence,
+                  record: AgentSession) -> ProviderSessionId | None:
         """Descoberta limitada: cada tentativa compara contra o instantaneo
-        PRE-lancamento; zero, ambiguo ou invalido apos o limite nao grava
-        id — nunca o candidato "mais recente"."""
+        PRE-lancamento, com os mesmos filtros da descoberta preguicosa
+        (`_scope`); zero, ambiguo ou invalido apos o limite nao grava id —
+        nunca o candidato "mais recente"."""
         for attempt in range(_DISCOVERY_ATTEMPTS):
             if attempt:
                 self._sleep(_DISCOVERY_INTERVAL_SECONDS)
-            found = driver.discover_session_id(driver.capture_after(baseline))
+            found = driver.discover_session_id(dataclasses.replace(
+                driver.capture_after(baseline), **self._scope(record)))
             try:
                 # `None` (zero ou ambiguo) e um id malformado falham aqui.
                 return ProviderSessionId(found)

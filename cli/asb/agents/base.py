@@ -78,6 +78,22 @@ class AgentAvailability:
 
 
 @dataclass(frozen=True)
+class Lifetime:
+    """Janela `[start, end]` de uma OUTRA sessao do mesmo agente e cwd
+    sem id do provedor. `end=None`: ainda aberta. `start=None` (registro
+    antigo, inicio desconhecido): contem todo instante."""
+
+    start: datetime | None
+    end: datetime | None
+
+    def contains(self, moment: datetime) -> bool:
+        if self.start is None:
+            return True
+        return self.start <= moment and (self.end is None
+                                         or moment <= self.end)
+
+
+@dataclass(frozen=True)
 class SessionEvidence:
     """Instantaneo de CAMINHOS de estado do provedor — nunca conteudo de
     transcript. `scan_root` e o diretorio observado, ou `None` quando o
@@ -100,6 +116,7 @@ class SessionEvidence:
     cwd: Path | None = None
     not_before: datetime | None = None
     claimed_ids: frozenset[str] = frozenset()
+    contended: tuple[Lifetime, ...] = ()
 
 
 def _first_line(text: str) -> str:
@@ -233,13 +250,15 @@ class AgentDriver(ABC):
                                 new_paths=new_paths, cwd=baseline.cwd)
 
     def capture_since(self, cwd: Path, not_before: datetime,
-                      claimed_ids: Iterable[str]) -> SessionEvidence:
+                      claimed_ids: Iterable[str],
+                      contended: Iterable[Lifetime] = ()) -> SessionEvidence:
         """Evidencia para a descoberta preguicosa: sem baseline, todo
         arquivo atual e candidato; quem filtra e `discover_session_id`."""
         root = self._scan_root(cwd)
         return SessionEvidence(scan_root=root, new_paths=self._scan(root),
                                cwd=cwd, not_before=not_before,
-                               claimed_ids=frozenset(claimed_ids))
+                               claimed_ids=frozenset(claimed_ids),
+                               contended=tuple(contended))
 
     @abstractmethod
     def discover_session_id(self, evidence: SessionEvidence) -> str | None:

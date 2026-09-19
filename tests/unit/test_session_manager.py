@@ -15,13 +15,13 @@ import sys
 import tempfile
 import unittest
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "cli"))
 
 from asb.agents.base import (  # noqa: E402
-    AgentAvailability, LaunchCommand, SessionEvidence,
+    AgentAvailability, LaunchCommand, Lifetime, SessionEvidence,
 )
 from asb.checkouts.model import CheckoutId  # noqa: E402
 from asb.sessions.manager import (  # noqa: E402
@@ -39,7 +39,13 @@ CHECKOUT = CheckoutId("c-0001")
 OTHER_CHECKOUT = CheckoutId("c-0002")
 NOW = datetime(2026, 9, 18, 12, 30, 45, 123456, tzinfo=timezone.utc)
 NOW_STORED = NOW.replace(microsecond=0)
+# Relogio do store: carimba `ended_at` (arredondado PARA CIMA ao segundo)
+# quando uma sessao vira final.
+LATER = NOW + timedelta(hours=1)
+LATER_STORED = LATER.replace(microsecond=0) + timedelta(seconds=1)
 PROVIDER_ID = "0000-provider-id"
+
+AFTER_START = (NOW + timedelta(seconds=5)).isoformat()
 
 ACTIVE_STATES = (
     SessionState.STARTING, SessionState.RUNNING, SessionState.DETACHED,
@@ -135,6 +141,7 @@ class FakeDriver:
         self.capture_before_cwds: list[Path] = []
         self.capture_after_inputs: list[SessionEvidence] = []
         self.since_calls: list[tuple[Path, datetime, frozenset]] = []
+        self.contended_calls: list[tuple] = []
         self.resumed: list[tuple[Path, str]] = []
 
     def launch(self, cwd: Path, session_id: str | None = None) -> LaunchCommand:
@@ -169,11 +176,13 @@ class FakeDriver:
                                new_paths=frozenset())
 
     def capture_since(self, cwd: Path, not_before: datetime,
-                      claimed_ids) -> SessionEvidence:
+                      claimed_ids, contended=()) -> SessionEvidence:
         self.since_calls.append((cwd, not_before, frozenset(claimed_ids)))
+        self.contended_calls.append(tuple(contended))
         return SessionEvidence(scan_root=None, cwd=cwd,
                                not_before=not_before,
-                               claimed_ids=frozenset(claimed_ids))
+                               claimed_ids=frozenset(claimed_ids),
+                               contended=tuple(contended))
 
     def discover_session_id(self, evidence: SessionEvidence) -> str | None:
         if len(self.discoveries) > 1:
@@ -194,7 +203,8 @@ class ManagerCase(unittest.TestCase):
     def setUp(self) -> None:
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
-        self.store = SessionStore(Path(tmp.name) / "sessions.json")
+        self.store = SessionStore(Path(tmp.name) / "sessions.json",
+                                  clock=lambda: LATER)
         self.sleeps: list[float] = []
         self.remote_run = _FakeRemoteRun()
 
@@ -341,6 +351,8 @@ class TestStart(ManagerCase):
                     (root / f"rollout-{name}.jsonl").write_text(
                         json.dumps({"type": "session_meta",
                                     "payload": {"cwd": str(CWD), "source": "cli",
+                                                "thread_source": "user",
+                                                "timestamp": AFTER_START,
                                                 "id": f"id-{name}"}}) + "\n")
 
             terminal.start = start_and_write
@@ -364,6 +376,8 @@ class TestStart(ManagerCase):
                 (root / "rollout-mine.jsonl").write_text(
                     json.dumps({"type": "session_meta",
                                 "payload": {"cwd": str(CWD), "source": "cli",
+                                                "thread_source": "user",
+                                                "timestamp": AFTER_START,
                                             "id": PROVIDER_ID}}) + "\n")
 
             terminal.start = start_and_write
@@ -774,8 +788,12 @@ class TestLazyDiscovery(ManagerCase):
     def test_start_records_started_at(self):
         session = self.make(self.terminal()).start(StartSession(
             checkout_id=CHECKOUT, agent=AgentKind.CODEX, cwd=CWD, title="t"))
-        self.assertEqual(session.started_at, NOW_STORED)
-        self.assertEqual(self.store.get(session.id).started_at, NOW_STORED)
+        # Arredondado PARA CIMA: o store guarda segundos inteiros, e um
+        # rollout do mesmo segundo, antes do inicio real, nao pode passar.
+        self.assertEqual(session.started_at,
+                         NOW_STORED + timedelta(seconds=1))
+        self.assertEqual(self.store.get(session.id), session)
+        self.assertIsNone(session.ended_at)
 
     def test_reconcile_alive_stores_the_id_and_bumps_the_revision_once(self):
         record = self.lazy()
@@ -868,18 +886,44 @@ class TestLazyDiscovery(ManagerCase):
         self.assertEqual(result, record)
         self.assertEqual(len(driver.since_calls), 1)
 
-    def test_no_lazy_discovery_on_unknown_or_voluntary_exit(self):
-        for liveness, status in ((Liveness.UNKNOWN, None),
-                                 (Liveness.DEAD, 0)):
-            with self.subTest(liveness=liveness):
-                checkout = CheckoutId(f"c-{liveness}")
-                self.lazy(checkout=checkout)
-                driver = FakeDriver(discoveries=[PROVIDER_ID])
-                [result] = self.make(self.terminal(probes=[liveness],
-                                                   exit_status=status),
-                                     driver).reconcile(checkout)
-                self.assertIsNone(result.provider_session_id)
-                self.assertEqual(driver.since_calls, [])
+    def test_no_lazy_discovery_on_unknown(self):
+        self.lazy()
+        driver = FakeDriver(discoveries=[PROVIDER_ID])
+        [result] = self.make(self.terminal(probes=[Liveness.UNKNOWN]),
+                             driver).reconcile(CHECKOUT)
+        self.assertIsNone(result.provider_session_id)
+        self.assertEqual(driver.since_calls, [])
+
+    def test_a_voluntary_exit_runs_one_last_discovery_before_completed(self):
+        record = self.lazy()
+        driver = FakeDriver(discoveries=[PROVIDER_ID])
+        [result] = self.make(self.terminal(probes=[Liveness.DEAD],
+                                           exit_status=0),
+                             driver).reconcile(CHECKOUT)
+        self.assertEqual(result.state, SessionState.COMPLETED)
+        self.assertEqual(result.provider_session_id, PROVIDER_ID)
+        self.assertEqual(result.ended_at, LATER_STORED)
+        self.assertEqual(result.revision, record.revision + 1)
+        self.assertEqual(len(driver.since_calls), 1)
+
+    def test_stop_runs_one_last_discovery_before_completed(self):
+        record = self.lazy()
+        driver = FakeDriver(discoveries=[PROVIDER_ID])
+        stopped = self.make(self.terminal(probes=[Liveness.DEAD]), driver
+                            ).stop(record.id)
+        self.assertEqual(stopped.state, SessionState.COMPLETED)
+        self.assertEqual(stopped.provider_session_id, PROVIDER_ID)
+        self.assertEqual(stopped.ended_at, LATER_STORED)
+
+    def test_final_writes_stamp_ended_at(self):
+        failed = self.make(self.terminal(probes=[Liveness.DEAD])).start(
+            StartSession(CHECKOUT, AgentKind.CODEX, CWD, "t"))
+        self.assertEqual(failed.ended_at, LATER_STORED)
+        live = self.lazy(SessionState.RUNNING)
+        self.make(self.terminal(probes=[Liveness.ALIVE]), FakeDriver()
+                  ).reconcile(CHECKOUT)
+        self.assertEqual(self.store.get(live.id).state, SessionState.DETACHED)
+        self.assertIsNone(self.store.get(live.id).ended_at)
 
     def test_a_session_without_started_at_never_discovers_lazily(self):
         for liveness, status in ((Liveness.ALIVE, None),
@@ -916,29 +960,170 @@ class TestLazyDiscovery(ManagerCase):
         self.assertEqual(driver.since_calls, [])
         self.assertEqual(terminal.names("start"), [])
 
-    def test_another_id_less_session_in_the_same_checkout_blocks_it(self):
-        """Duas sessoes Codex sem id no mesmo cwd: o rollout de uma seria
-        o unico candidato da outra. Nenhuma recebe id (nunca o errado)."""
-        first = self.lazy()
-        second = self.lazy()
-        driver = FakeDriver(discoveries=[PROVIDER_ID])
-        results = self.make(self.terminal(probes=[Liveness.ALIVE]), driver
-                            ).reconcile(CHECKOUT)
-        self.assertEqual({r.id: r.provider_session_id for r in results},
-                         {first.id: None, second.id: None})
-        self.assertEqual(driver.since_calls, [])
-
-    def test_final_or_other_agent_sessions_do_not_block_it(self):
-        self.seed(SessionState.COMPLETED, provider_id=None, started_at=NOW)
+    def test_the_driver_gets_the_lifetimes_of_id_less_siblings(self):
+        """Irmaos do mesmo agente e cwd, sem id, vivos OU finais: a janela
+        vai do inicio (1 s antes, o store trunca) ao fim; sem fim, aberta;
+        sem inicio (registro antigo), `None` (contem todo instante)."""
+        live = self.lazy()
+        final = self.seed(SessionState.DETACHED, provider_id=None,
+                          started_at=NOW - timedelta(minutes=5))
+        self.store.replace(self.store.get(final.id).with_state(
+            SessionState.COMPLETED))
+        self.seed(SessionState.DETACHED, provider_id=None)  # sem started_at
+        self.seed(SessionState.DETACHED, provider_id="has-id",
+                  started_at=NOW)
         self.seed(SessionState.DETACHED, provider_id=None, started_at=NOW,
                   agent=AgentKind.CLAUDE)
-        record = self.lazy()
-        driver = FakeDriver(discoveries=[PROVIDER_ID])
+        mine = self.lazy()
+        driver = FakeDriver(discoveries=[None])
         claude = FakeDriver(AgentKind.CLAUDE, discoveries=[None])
-        self.make(self.terminal(probes=[Liveness.ALIVE]), driver, claude
-                  ).reconcile(CHECKOUT)
+        manager = self.make(self.terminal(probes=[Liveness.ALIVE]), driver,
+                            claude)
+        manager.attach(mine.id)
+        [contended] = driver.contended_calls
+        self.assertEqual(sorted(contended, key=repr), sorted([
+            Lifetime(NOW_STORED - timedelta(seconds=1), None),
+            Lifetime(NOW_STORED - timedelta(minutes=5, seconds=1),
+                     LATER_STORED),
+            Lifetime(None, None),
+        ], key=repr))
+        self.assertIsNone(self.store.get(live.id).ended_at)
+
+
+class TestLazyDiscoveryWithTheRealCodexDriver(ManagerCase):
+    """Cenarios da revisao, com o `CodexDriver` e o `SessionStore` reais."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.root = Path(tmp.name)
+
+    def rollout(self, name: str, session_id: str, when: datetime,
+                **payload: object) -> None:
+        import json
+
+        meta = {"cwd": str(CWD), "source": "cli", "thread_source": "user",
+                "id": session_id, "timestamp": when.isoformat()}
+        meta.update(payload)
+        (self.root / f"rollout-{name}.jsonl").write_text(json.dumps(
+            {"type": "session_meta", "payload": meta}) + "\n")
+
+    def manager(self, probes, exit_status=None):
+        from asb.agents.codex import CodexDriver
+
+        driver = CodexDriver(sessions_root=self.root)
+        driver.probe = lambda run: AgentAvailability(
+            True, "1", True, "ok", True)
+        terminal = self.terminal(probes=probes, exit_status=exit_status)
+        return self.make(terminal, driver), terminal
+
+    def id_less(self, started_at, state=SessionState.DETACHED):
+        return self.seed(state, provider_id=None, started_at=started_at)
+
+    def test_a_lone_prompted_session_gets_its_id(self):
+        record = self.id_less(NOW)
+        self.rollout("mine", "id-mine", NOW + timedelta(seconds=30))
+        manager, _ = self.manager([Liveness.ALIVE])
+        manager.reconcile(CHECKOUT)
         self.assertEqual(self.store.get(record.id).provider_session_id,
-                         PROVIDER_ID)
+                         "id-mine")
+
+    def test_a_final_sibling_rollout_is_never_taken(self):
+        """A e B no mesmo checkout; A conversa depois do inicio de B, B
+        nunca conversa; A termina sem id. O rollout de A nao pode virar o
+        id de B, nem o resume de B."""
+        a = self.id_less(NOW - timedelta(minutes=5))
+        b = self.id_less(NOW)
+        self.rollout("a", "id-of-A", NOW + timedelta(seconds=30))
+        manager, _ = self.manager([Liveness.ALIVE])
+        manager.reconcile(CHECKOUT)
+        self.assertIsNone(self.store.get(a.id).provider_session_id)
+        self.assertIsNone(self.store.get(b.id).provider_session_id)
+        self.store.replace(self.store.get(a.id).with_state(
+            SessionState.COMPLETED))
+        manager.reconcile(CHECKOUT)
+        self.assertIsNone(self.store.get(b.id).provider_session_id)
+        dead, terminal = self.manager([Liveness.DEAD, Liveness.ALIVE],
+                                      exit_status=137)
+        result = dead.attach(b.id)
+        self.assertEqual(result.session.state, SessionState.RECOVERY_REQUIRED)
+        self.assertIsNone(result.session.provider_session_id)
+        self.assertEqual(terminal.names("start"), [])
+
+    def test_the_final_state_last_discovery_claims_its_own_rollout(self):
+        a = self.id_less(NOW - timedelta(minutes=5))
+        self.rollout("a", "id-of-A", NOW - timedelta(minutes=4))
+        manager, _ = self.manager([Liveness.DEAD], exit_status=0)
+        [done] = manager.reconcile(CHECKOUT)
+        self.assertEqual(done.state, SessionState.COMPLETED)
+        self.assertEqual(done.provider_session_id, "id-of-A")
+        # Um irmao que comeca depois nao o toma: o id esta reclamado.
+        b = self.id_less(NOW)
+        self.rollout("a2", "id-of-A", NOW + timedelta(seconds=30))
+        alive, _ = self.manager([Liveness.ALIVE])
+        alive.reconcile(CHECKOUT)
+        self.assertIsNone(self.store.get(b.id).provider_session_id)
+        self.assertEqual(self.store.get(a.id).provider_session_id, "id-of-A")
+
+    def test_a_rollout_in_the_start_second_before_the_start_is_rejected(self):
+        """`NOW` tem .123456 s; o store guarda segundos inteiros. Um
+        rollout 0,1 s antes do inicio real cai no mesmo segundo gravado."""
+        manager, _ = self.manager([Liveness.ALIVE])
+        session = manager.start(StartSession(CHECKOUT, AgentKind.CODEX, CWD,
+                                             "t"))
+        self.assertIsNone(session.provider_session_id)
+        self.rollout("before", "id-before",
+                     NOW - timedelta(microseconds=100000))
+        manager.reconcile(CHECKOUT)
+        self.assertIsNone(self.store.get(session.id).provider_session_id)
+
+    def test_a_codex_exec_rollout_is_rejected(self):
+        record = self.id_less(NOW)
+        self.rollout("exec", "id-of-exec", NOW + timedelta(seconds=30),
+                     source="exec", thread_source=None)
+        manager, _ = self.manager([Liveness.ALIVE])
+        manager.reconcile(CHECKOUT)
+        self.assertIsNone(self.store.get(record.id).provider_session_id)
+
+    def test_an_old_record_without_started_at_blocks_siblings(self):
+        self.seed(SessionState.COMPLETED, provider_id=None)
+        record = self.id_less(NOW)
+        self.rollout("mine", "id-mine", NOW + timedelta(seconds=30))
+        manager, _ = self.manager([Liveness.ALIVE])
+        manager.reconcile(CHECKOUT)
+        self.assertIsNone(self.store.get(record.id).provider_session_id)
+
+    def test_other_agents_and_id_holding_siblings_do_not_block(self):
+        # Mesmo cwd; outro checkout so para o reconcile nao sonda-lo.
+        self.seed(SessionState.DETACHED, provider_id=None, started_at=NOW,
+                  agent=AgentKind.CLAUDE, checkout=OTHER_CHECKOUT)
+        self.seed(SessionState.DETACHED, provider_id="other-id",
+                  started_at=NOW)
+        record = self.id_less(NOW)
+        self.rollout("mine", "id-mine", NOW + timedelta(seconds=30))
+        manager, _ = self.manager([Liveness.ALIVE])
+        manager.reconcile(CHECKOUT)
+        self.assertEqual(self.store.get(record.id).provider_session_id,
+                         "id-mine")
+
+    def test_the_start_window_applies_claims_and_lifetimes(self):
+        for sibling_id, expected in ((None, None), ("id-new", None)):
+            with self.subTest(sibling_id=sibling_id):
+                self.store.path.unlink(missing_ok=True)
+                self.seed(SessionState.DETACHED, provider_id=sibling_id,
+                          started_at=NOW - timedelta(minutes=5))
+                manager, terminal = self.manager([Liveness.ALIVE])
+
+                def start_and_write(terminal_id, cwd, command):
+                    self.rollout("new", "id-new",
+                                 NOW + timedelta(seconds=5))
+
+                terminal.start = start_and_write
+                session = manager.start(StartSession(
+                    CHECKOUT, AgentKind.CODEX, CWD, "t"))
+                (self.root / "rollout-new.jsonl").unlink()
+                self.assertEqual(session.provider_session_id, expected)
 
 
 class TestStopAndSuspend(ManagerCase):

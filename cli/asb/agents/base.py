@@ -249,8 +249,8 @@ class AgentDriver(ABC):
         return SessionEvidence(scan_root=root, known_paths=current,
                                 new_paths=new_paths, cwd=baseline.cwd)
 
-    def capture_since(self, cwd: Path, not_before: datetime,
-                      claimed_ids: Iterable[str],
+    def capture_since(self, cwd: Path, not_before: datetime | None = None,
+                      claimed_ids: Iterable[str] = (),
                       contended: Iterable[Lifetime] = ()) -> SessionEvidence:
         """Evidencia para a descoberta preguicosa: sem baseline, todo
         arquivo atual e candidato; quem filtra e `discover_session_id`."""

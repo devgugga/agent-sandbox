@@ -657,6 +657,18 @@ class TestCodexIgnoresSubagentThreads(_CodexCase):
                 self.assertIsNone(self.discover_new())
                 path.unlink()
 
+    def test_hostile_first_lines_yield_no_id_and_never_raise(self):
+        # Abaixo do teto de 64 KiB: `[` aninhado estoura a recursao do
+        # parser (`RecursionError`) e um inteiro de 5000 digitos passa do
+        # limite de conversao (`ValueError` que nao e `JSONDecodeError`).
+        self.write("user", _user_meta())
+        for bomb in ("[" * 60000, '{"a": ' + "1" * 5000 + "}"):
+            with self.subTest(bomb=bomb[:8]):
+                path = self.root / "bomb.jsonl"
+                path.write_text(bomb + "\n")
+                self.assertEqual(self.discover_new(), USER_ID)
+                path.unlink()
+
     def test_either_subagent_marker_alone_rejects(self):
         dict_source = {**_user_meta(), "source": {"subagent": "x"}}
         with_parent = {**_user_meta(), "parent_thread_id": SUBAGENT_ID}

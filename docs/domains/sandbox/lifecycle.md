@@ -228,10 +228,14 @@ usually after the launch window, so the lazy attempt is what finds it.
 Every attempt, the launch window included, accepts a candidate only if
 its `session_meta` timestamp is at or after the session's `startedAt`
 (recorded rounded up to the whole second), falls inside no lifetime of
-another session of the same agent and checkout path that has no id,
-live or final (from one second before its `startedAt` to its `endedAt`,
-open while it has none; a record without `startedAt` covers every
-instant), and is not already held by another stored session. `endedAt`
+another session of the same agent and checkout path, live or final, with
+or without an id (a session that has one can still open a second user
+thread, as Codex `/new` does; a lifetime runs from one second before its
+`startedAt` to its `endedAt`, open while it has none, and a record
+without `startedAt` covers every instant), and is not already held by
+another stored session. The scan comes first and the stored sessions are
+read after it, and a first line the JSON parser rejects, however it
+fails, yields no id and never raises. `endedAt`
 is stamped, rounded up, on the first write of a final state. Exactly one
 candidate is stored, in the same write as the classification; zero or
 several store nothing, and the session cannot be resumed natively. A

@@ -91,33 +91,54 @@ lança: o sandbox é a fronteira de isolamento. Codex:
 `codex resume` com uma flag inexistente sai 2. Antigravity não recebe
 flag de bypass.
 
-### 4.3 Codex — thread do usuário e descoberta preguiçosa
+### 4.3 Como cada provedor obtém o id (estado atual)
 
-- No piloto, uma única sessão Codex produziu DOIS rollouts na primeira
-  mensagem, ~5 s depois da primeira escrita da sessão (fora da janela de
-  cinco tentativas), ambos com o cwd exato da sessão: o thread do usuário
-  (`source: "cli"`, `thread_source: "user"`, sem `parent_thread_id`) e um
-  subagente (`source: {"subagent": …}`, `thread_source:
-  "guardian_review"`, com `parent_thread_id` e `multi_agent_version`),
-  aberto por `approvals_reviewer = "auto_review"`.
-- Regra: um candidato só conta se o `payload` do `session_meta` NÃO tem
-  `parent_thread_id` E tem `source` string. Os demais guardas (cwd exato,
-  arquivo regular sem seguir symlink, sem bloquear em FIFO, primeira
-  linha de no máximo 64 KiB) continuam.
-- Verificação na história de HOST do operador (só leitura, só a primeira
-  linha de cada `~/.codex/sessions/**/*.jsonl`, só contagens): 167
-  arquivos, todos `session_meta`; 144 com `parent_thread_id`, 144 com
-  `source` objeto, os mesmos 144 nos dois conjuntos (0 com só um dos
-  marcadores); 23 sem nenhum, todos com `source` string e `thread_source:
-  "user"`; os 167 com `payload.timestamp` ISO-8601 com fuso.
-- Descoberta preguiçosa: além do start, tentada quando uma sessão sem id
-  sonda ALIVE (reconcile/attach) ou DEAD sem exit 0 (antes de decidir
-  `recovery_required`). Sem baseline: todo rollout atual é candidato, e o
-  filtro extra é `payload.timestamp >= startedAt` da sessão e id não
-  reclamado por outra sessão guardada. Exatamente um → gravado; zero ou
-  vários → nada. Registros sem `startedAt` (anteriores ao campo) nunca
-  fazem descoberta preguiçosa, e uma sessão não a faz enquanto outra
-  sessão viva do mesmo agente no mesmo cwd também espera um id.
+**Claude.** Nenhuma descoberta: o manager gera um UUID (`uuid4`), grava-o
+como `providerSessionId` na escrita `starting`, antes de lançar, e lança
+`claude --session-id <uuid> --dangerously-skip-permissions`; o resume é
+`claude --resume <uuid> --dangerously-skip-permissions` (ver 4.1).
+
+**Codex.** Evidência do piloto: uma única sessão produziu DOIS rollouts na
+primeira mensagem, ~5 s depois da primeira escrita da sessão (fora da
+janela de cinco tentativas), ambos com o cwd exato da sessão — o thread do
+usuário (`source: "cli"`, `thread_source: "user"`, sem
+`parent_thread_id`) e um subagente (`source: {"subagent": …}`,
+`thread_source: "guardian_review"`, com `parent_thread_id` e
+`multi_agent_version`), aberto por `approvals_reviewer = "auto_review"`.
+
+Regra de candidato (só a primeira linha, `session_meta`, é lida):
+- cwd exato da sessão; arquivo regular, sem seguir symlink, sem bloquear em
+  FIFO, primeira linha de no máximo 64 KiB; uma linha que o parser JSON
+  recusa (inclusive `[` aninhado além da recursão ou um inteiro além do
+  limite de dígitos) não dá id e nunca levanta;
+- thread do usuário: sem `parent_thread_id`, `source` string e
+  `thread_source == "user"` (um `codex exec` não é a sessão);
+- `payload.timestamp` com fuso, igual ou posterior ao `startedAt` da
+  sessão, gravado arredondado PARA CIMA ao segundo (o store guarda
+  segundos inteiros);
+- o instante não cai na vida de NENHUMA outra sessão do mesmo agente e cwd,
+  viva ou final, com ou sem id (uma sessão com id pode abrir outro thread
+  do usuário, como o `/new` do Codex). A vida vai de 1 s antes do
+  `startedAt` gravado ao `endedAt` — carimbado pelo store, arredondado para
+  cima, na primeira escrita de `completed`/`failed` —, aberta sem ele; um
+  registro sem `startedAt` contém todo instante;
+- o id não é o `providerSessionId` de outra sessão guardada.
+
+Quando: na janela do start (cinco tentativas, 1 s entre elas, contra o
+instantâneo pré-lançamento); de novo, preguiçosamente, quando uma sessão
+sem id sonda ALIVE (reconcile/attach) ou DEAD; e uma última vez logo antes
+de gravar `completed`, para que a sessão reclame o próprio rollout antes de
+a sua vida fechar. Em toda tentativa a varredura vem primeiro e as
+sessões guardadas são lidas depois. Exatamente um candidato → gravado, na
+mesma escrita da classificação; zero ou vários → nada. Um registro sem
+`startedAt` nunca faz descoberta preguiçosa.
+
+Verificação na história de HOST do operador (só leitura, só a primeira
+linha de cada `~/.codex/sessions/**/*.jsonl`, só contagens): 167 arquivos,
+todos `session_meta`; 144 com `parent_thread_id`, 144 com `source` objeto,
+os mesmos 144 nos dois conjuntos (0 com só um dos marcadores); 23 sem
+nenhum, todos com `source` string e `thread_source: "user"`; os 167 com
+`payload.timestamp` ISO-8601 com fuso.
 
 ### 4.4 Troca para mise `latest` na imagem (2026-09-19)
 

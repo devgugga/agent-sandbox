@@ -99,7 +99,11 @@ def _session_id_for(path: Path, cwd: Path,
         return None
     try:
         record = json.loads(first_line)
-    except json.JSONDecodeError:
+    except (ValueError, RecursionError):
+        # A linha e do agente: `JSONDecodeError` (um `ValueError`), um
+        # inteiro alem do limite de digitos (`ValueError`) ou `[` aninhado
+        # alem da recursao do parser. Nada disso da id nem escapa: um stop
+        # ou exit 0 roda esta descoberta DEPOIS de matar o tmux.
         return None
     if not isinstance(record, dict):
         return None

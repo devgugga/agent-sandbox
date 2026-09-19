@@ -116,6 +116,9 @@ class FakeTerminal:
         return [call for call in self.calls if call[0] == name]
 
 
+LAZY_ROOT = Path("/vol/lazy")
+
+
 class FakeDriver:
     """Driver falso com a mesma superficie que o manager usa. A descoberta
     devolve, por tentativa, o valor de `discoveries` (o ultimo se repete)."""
@@ -175,16 +178,19 @@ class FakeDriver:
                                known_paths=baseline.known_paths,
                                new_paths=frozenset())
 
-    def capture_since(self, cwd: Path, not_before: datetime,
-                      claimed_ids, contended=()) -> SessionEvidence:
-        self.since_calls.append((cwd, not_before, frozenset(claimed_ids)))
-        self.contended_calls.append(tuple(contended))
-        return SessionEvidence(scan_root=None, cwd=cwd,
+    def capture_since(self, cwd: Path, not_before: datetime | None = None,
+                      claimed_ids=(), contended=()) -> SessionEvidence:
+        return SessionEvidence(scan_root=LAZY_ROOT, cwd=cwd,
                                not_before=not_before,
                                claimed_ids=frozenset(claimed_ids),
                                contended=tuple(contended))
 
     def discover_session_id(self, evidence: SessionEvidence) -> str | None:
+        if evidence.scan_root == LAZY_ROOT:
+            # O que a descoberta preguicosa de fato recebe.
+            self.since_calls.append((evidence.cwd, evidence.not_before,
+                                     evidence.claimed_ids))
+            self.contended_calls.append(evidence.contended)
         if len(self.discoveries) > 1:
             return self.discoveries.pop(0)
         return self.discoveries[0]
@@ -971,7 +977,7 @@ class TestLazyDiscovery(ManagerCase):
             SessionState.COMPLETED))
         self.seed(SessionState.DETACHED, provider_id=None)  # sem started_at
         self.seed(SessionState.DETACHED, provider_id="has-id",
-                  started_at=NOW)
+                  started_at=NOW + timedelta(minutes=1))
         self.seed(SessionState.DETACHED, provider_id=None, started_at=NOW,
                   agent=AgentKind.CLAUDE)
         mine = self.lazy()
@@ -986,6 +992,9 @@ class TestLazyDiscovery(ManagerCase):
             Lifetime(NOW_STORED - timedelta(minutes=5, seconds=1),
                      LATER_STORED),
             Lifetime(None, None),
+            # Com id tambem conta (um `/new` nele abre outro thread).
+            Lifetime(NOW_STORED + timedelta(minutes=1) - timedelta(seconds=1),
+                     None),
         ], key=repr))
         self.assertIsNone(self.store.get(live.id).ended_at)
 
@@ -1094,18 +1103,95 @@ class TestLazyDiscoveryWithTheRealCodexDriver(ManagerCase):
         manager.reconcile(CHECKOUT)
         self.assertIsNone(self.store.get(record.id).provider_session_id)
 
-    def test_other_agents_and_id_holding_siblings_do_not_block(self):
+    def test_other_agents_do_not_block(self):
         # Mesmo cwd; outro checkout so para o reconcile nao sonda-lo.
         self.seed(SessionState.DETACHED, provider_id=None, started_at=NOW,
                   agent=AgentKind.CLAUDE, checkout=OTHER_CHECKOUT)
-        self.seed(SessionState.DETACHED, provider_id="other-id",
-                  started_at=NOW)
+        self.seed(SessionState.DETACHED, provider_id=None, started_at=NOW,
+                  agent=AgentKind.ANTIGRAVITY, checkout=OTHER_CHECKOUT)
         record = self.id_less(NOW)
         self.rollout("mine", "id-mine", NOW + timedelta(seconds=30))
         manager, _ = self.manager([Liveness.ALIVE])
         manager.reconcile(CHECKOUT)
         self.assertEqual(self.store.get(record.id).provider_session_id,
                          "id-mine")
+
+    def test_an_id_holding_same_agent_sibling_alive_at_t_blocks(self):
+        self.seed(SessionState.DETACHED, provider_id="other-id",
+                  started_at=NOW)
+        record = self.id_less(NOW)
+        self.rollout("mine", "id-mine", NOW + timedelta(seconds=30))
+        manager, _ = self.manager([Liveness.ALIVE])
+        manager.reconcile(CHECKOUT)
+        self.assertIsNone(self.store.get(record.id).provider_session_id)
+
+    def test_an_id_holding_sibling_ended_before_t_does_not_block(self):
+        sibling = self.seed(SessionState.DETACHED, provider_id="other-id",
+                            started_at=NOW - timedelta(minutes=10))
+        self.store._clock = lambda: NOW - timedelta(minutes=5)
+        self.store.replace(self.store.get(sibling.id).with_state(
+            SessionState.COMPLETED))
+        record = self.id_less(NOW)
+        self.rollout("mine", "id-mine", NOW + timedelta(seconds=30))
+        manager, _ = self.manager([Liveness.ALIVE])
+        manager.reconcile(CHECKOUT)
+        self.assertEqual(self.store.get(record.id).provider_session_id,
+                         "id-mine")
+
+    def test_a_second_thread_of_an_id_holding_sibling_is_not_taken(self):
+        """S7: A ja tem id; dentro de A o usuario roda `/new` e abre outro
+        thread do usuario no mesmo cwd, nao reclamado. B nao pode toma-lo."""
+        a = self.seed(SessionState.DETACHED, provider_id="id-A1",
+                      started_at=NOW - timedelta(minutes=5))
+        b = self.id_less(NOW)
+        self.rollout("a1", "id-A1", NOW - timedelta(minutes=4))
+        self.rollout("a2", "id-A2-new", NOW + timedelta(seconds=40))
+        manager, _ = self.manager([Liveness.ALIVE])
+        manager.reconcile(CHECKOUT)
+        self.assertIsNone(self.store.get(b.id).provider_session_id)
+        self.assertEqual(self.store.get(a.id).provider_session_id, "id-A1")
+
+    def test_a_sibling_appearing_during_the_scan_is_seen(self):
+        """S11: o escopo (irmaos, ids) e lido DEPOIS da varredura; um irmao
+        inserido, com rollout, enquanto a varredura roda nao passa."""
+        b = self.id_less(NOW)
+        manager, _ = self.manager([Liveness.ALIVE])
+        driver = manager._drivers[AgentKind.CODEX]
+        scan = driver.capture_since
+        store = self.store
+
+        def racing_scan(*args, **kwargs):
+            store.insert(AgentSession.new(
+                CHECKOUT, AgentKind.CODEX, CWD, "c",
+                started_at=NOW + timedelta(seconds=10)))
+            self.rollout("c", "id-of-C", NOW + timedelta(seconds=12))
+            return scan(*args, **kwargs)
+
+        driver.capture_since = racing_scan
+        manager._recover(self.store.get(b.id), launch=False)
+        self.assertIsNone(self.store.get(b.id).provider_session_id)
+
+    def test_hostile_first_lines_never_break_completion(self):
+        """Uma primeira linha que estoura a recursao do parser JSON, ou um
+        inteiro alem do limite de digitos, nao da id nem levanta: o stop e
+        o exit 0 ainda gravam `completed`."""
+        for bomb in ("[" * 60000, '{"a": ' + "1" * 5000 + "}"):
+            with self.subTest(bomb=bomb[:8]):
+                self.store.path.unlink(missing_ok=True)
+                (self.root / "bomb.jsonl").write_text(bomb + "\n")
+                stopped_rec = self.id_less(NOW)
+                manager, terminal = self.manager([Liveness.DEAD])
+                stopped = manager.stop(stopped_rec.id)
+                self.assertEqual(stopped.state, SessionState.COMPLETED)
+                self.assertIsNone(stopped.provider_session_id)
+                self.assertEqual(stopped.ended_at, LATER_STORED)
+                self.store.path.unlink()
+                exited = self.id_less(NOW)
+                manager, _ = self.manager([Liveness.DEAD], exit_status=0)
+                [done] = manager.reconcile(CHECKOUT)
+                self.assertEqual(done.state, SessionState.COMPLETED)
+                self.assertEqual(done.ended_at, LATER_STORED)
+                self.assertEqual(self.store.get(exited.id), done)
 
     def test_the_start_window_applies_claims_and_lifetimes(self):
         for sibling_id, expected in ((None, None), ("id-new", None)):

@@ -346,10 +346,13 @@ class SessionManager:
     def _scope(self, record: AgentSession) -> dict[str, object]:
         """Filtros de toda descoberta de `record`, relidos do store:
         `not_before` (inicio desta sessao), `claimed_ids` (ids de TODAS as
-        outras sessoes guardadas) e `contended` (a vida de cada outra sessao
-        do mesmo agente e cwd sem id, viva ou final). A vida vai de 1 s
-        antes do `started_at` gravado (o store trunca) ao `ended_at` (aberta
-        sem ele); sem `started_at` (registro antigo) contem todo instante."""
+        outras sessoes guardadas) e `contended` (a vida de CADA outra sessao
+        do mesmo agente e cwd, viva ou final, com ou sem id: uma sessao que
+        ja tem id pode abrir outro thread do usuario, como o `/new` do
+        Codex). A vida vai de 1 s antes do `started_at` gravado ao
+        `ended_at` (aberta sem ele); sem `started_at` (registro antigo)
+        contem todo instante. Lido DEPOIS da varredura, para que um irmao
+        que surge durante ela conte."""
         others = [s for s in self._store.list() if s.id != record.id]
         return {
             "not_before": record.started_at,
@@ -360,8 +363,7 @@ class SessionManager:
                          else s.started_at - timedelta(seconds=1),
                          s.ended_at)
                 for s in others
-                if s.agent is record.agent and s.cwd == record.cwd
-                and s.provider_session_id is None),
+                if s.agent is record.agent and s.cwd == record.cwd),
         }
 
     def _discover_lazily(self, record: AgentSession) -> ProviderSessionId | None:
@@ -371,10 +373,10 @@ class SessionManager:
         if record.provider_session_id is not None or record.started_at is None:
             return None
         driver = self._drivers[record.agent]
-        scope = self._scope(record)
-        found = driver.discover_session_id(driver.capture_since(
-            record.cwd, scope["not_before"], scope["claimed_ids"],
-            scope["contended"]))
+        # Varredura PRIMEIRO, escopo depois (como no `_discover` do start).
+        evidence = driver.capture_since(record.cwd)
+        found = driver.discover_session_id(dataclasses.replace(
+            evidence, **self._scope(record)))
         try:
             return ProviderSessionId(found)
         except ValueError:

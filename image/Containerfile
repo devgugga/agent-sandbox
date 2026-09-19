@@ -238,5 +238,7 @@ RUN chmod 0755 /usr/local/bin/asb-guard \
 
 COPY image/entrypoint.sh /usr/local/bin/entrypoint.sh
 COPY image/start-keyring.sh /usr/local/bin/start-keyring.sh
-RUN chmod 0755 /usr/local/bin/entrypoint.sh /usr/local/bin/start-keyring.sh
+COPY image/asb-seed-claude-state /usr/local/bin/asb-seed-claude-state
+RUN chmod 0755 /usr/local/bin/entrypoint.sh /usr/local/bin/start-keyring.sh \
+      /usr/local/bin/asb-seed-claude-state
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

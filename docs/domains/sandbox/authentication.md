@@ -61,6 +61,16 @@ history is not.
   `claude.json` and similar at the root of `asb-credentials`. The CLI warns when
   any remain; they are unused but readable by agent containers. Remove them
   only after a new login is confirmed.
+- **Claude first-run state is not a credential.** Claude Code keeps its
+  "onboarding done" flag in `~/.claude.json`, which sits in each workspace
+  container's writable layer, not in `asb-credentials`. Without it, a new
+  workspace showed "Select login method" although the credential was valid.
+  The image entrypoint now runs `asb-seed-claude-state` at every container
+  start, as the unprivileged user: it sets only `hasCompletedOnboarding: true`,
+  keeps every other key, and leaves an unparseable or non-regular file
+  untouched with a warning. It never reads or writes `~/.claude/`, so the
+  credential itself is untouched. Only workspaces created from an image built
+  with the helper get it; an existing container keeps its original image.
 - **Renewal.** Refresh tokens are written in place by the provider CLI.
   Observed for Claude on 2026-09-17: the file was rewritten with a new expiry
   and stayed `authenticated`.

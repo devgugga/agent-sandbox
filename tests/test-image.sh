@@ -76,4 +76,114 @@ for guard in asb-claude asb-codex asb-agy; do
     "$guard existe na imagem"
 done
 
+echo "== estado de primeira execucao do Claude =="
+
+# O login do Claude fica em ~/.claude/.credentials.json (volume compartilhado),
+# mas o "ja passei pelo onboarding" fica em ~/.claude.json, na camada gravavel
+# de cada container. Sem a flag, todo workspace novo abre "Select login method"
+# com a credencial valida. O helper semeia SO a flag, como o usuario comum.
+SEED=/usr/local/bin/asb-seed-claude-state
+
+assert_eq "0" "$(in_image sh -c "test -x $SEED; echo \$?")" \
+  "asb-seed-claude-state existe na imagem"
+
+# Le o caso pela entrada padrao e o roda como o usuario comum, com HOME
+# temporario. O helper recebe o caminho em $SEED.
+seed_case() {
+  podman run --rm -i --user "$HOST_USER" --entrypoint "" -e SEED="$SEED" "$IMG" \
+    bash -c 'export HOME=$(mktemp -d); cd "$HOME"; source /dev/stdin' 2>&1
+}
+# Prefixo comum: roda o helper e guarda codigo de saida e linhas de aviso.
+RUN='timeout 10 "$SEED" 2>err; rc=$?; warns=$(wc -l < err)'
+
+assert_eq '{"hasCompletedOnboarding": true}|600|0' "$(seed_case <<EOS
+$RUN
+printf '%s|%s|%s' "\$(cat .claude.json)" "\$(stat -c %a .claude.json)" "\$rc"
+EOS
+)" "ausente: cria exatamente a flag, modo 0600, sai 0"
+
+assert_eq "same|0|0" "$(seed_case <<EOS
+printf '{ "hasCompletedOnboarding":true,  "x": 1 }' > .claude.json
+touch -d @1000 .claude.json
+before=\$(stat -c '%i %Y %s' .claude.json)
+$RUN
+[ "\$before" = "\$(stat -c '%i %Y %s' .claude.json)" ] && s=same || s=changed
+printf '%s|%s|%s' "\$s" "\$rc" "\$warns"
+EOS
+)" "flag ja true: arquivo nao e reescrito, sem aviso"
+
+for initial in '' ',"hasCompletedOnboarding":false'; do
+  label=ausente; [ -n "$initial" ] && label=false
+  assert_eq "True|600|0|0|" "$(seed_case <<EOS
+printf '%s' '{"oauthAccount":{"emailAddress":"a@b.c","n":[1,2.5,null]},"s":"ação ✓","big":12345678901234567890,"t":true$initial}' > .claude.json
+chmod 0600 .claude.json
+$RUN
+ok=\$(python3 - <<'PY'
+import json
+d = json.load(open(".claude.json"))
+flag = d.pop("hasCompletedOnboarding")
+print(flag is True and d == {"oauthAccount": {"emailAddress": "a@b.c", "n": [1, 2.5, None]},
+                             "s": "ação ✓", "big": 12345678901234567890, "t": True})
+PY
+)
+printf '%s|%s|%s|%s|%s' "\$ok" "\$(stat -c %a .claude.json)" "\$rc" "\$warns" "\$(ls -A | grep -v -x -e .claude.json -e err)"
+EOS
+)" "flag $label: vira true, preserva as outras chaves e valores, 0600, sem temporario"
+done
+
+assert_eq "1|0|link|{}" "$(seed_case <<EOS
+printf '{}' > alvo.json; ln -s alvo.json .claude.json
+$RUN
+printf '%s|%s|%s|%s' "\$warns" "\$rc" "\$([ -L .claude.json ] && echo link)" "\$(cat alvo.json)"
+EOS
+)" "symlink: um aviso, link e alvo intocados, sai 0"
+
+assert_eq "1|0|dir" "$(seed_case <<EOS
+mkdir .claude.json
+$RUN
+printf '%s|%s|%s' "\$warns" "\$rc" "\$([ -d .claude.json ] && echo dir)"
+EOS
+)" "diretorio: um aviso, intocado, sai 0"
+
+assert_eq "1|0|fifo" "$(seed_case <<EOS
+mkfifo .claude.json
+$RUN
+printf '%s|%s|%s' "\$warns" "\$rc" "\$([ -p .claude.json ] && echo fifo)"
+EOS
+)" "FIFO: um aviso, sem bloquear, intocado, sai 0"
+
+for bad in '{"hasCompletedOnboarding": fal' '[1, 2]' '"texto"' 'null'; do
+  assert_eq "1|0|same" "$(seed_case <<EOS
+printf '%s' '$bad' > .claude.json; cp .claude.json orig
+$RUN
+printf '%s|%s|%s' "\$warns" "\$rc" "\$(cmp -s orig .claude.json && echo same)"
+EOS
+)" "invalido ou nao-objeto ($bad): um aviso, intocado, sai 0"
+done
+
+assert_eq "1|0|same" "$(seed_case <<EOS
+printf '{"a":1}' > .claude.json; chmod 000 .claude.json
+$RUN
+chmod 600 .claude.json
+printf '%s|%s|%s' "\$warns" "\$rc" "\$([ "\$(cat .claude.json)" = '{"a":1}' ] && echo same)"
+EOS
+)" "ilegivel: um aviso, intocado, sai 0"
+
+# ~/.claude e o diretorio da CREDENCIAL. Fechado em 000, qualquer acesso do
+# helper ali falharia; o resultado tem de ser o mesmo de um home limpo.
+assert_eq "0|0|x|True" "$(seed_case <<EOS
+mkdir .claude; printf x > .claude/.credentials.json; chmod 000 .claude
+$RUN
+chmod 700 .claude
+printf '%s|%s|%s|%s' "\$warns" "\$rc" "\$(cat .claude/.credentials.json)" \
+  "\$(python3 -c 'import json;print(json.load(open(".claude.json"))=={"hasCompletedOnboarding":True})')"
+EOS
+)" "~/.claude (credencial) nao e tocado nem atrapalha"
+
+# Ponta a ponta: o entrypoint REAL (root) semeia como o usuario comum, no home
+# dele. Sem mounts, os blocos de config/credencial/toolcache nao rodam.
+assert_eq "$HOST_USER 600 True" "$(podman run --rm "$IMG" sh -c \
+  'printf "%s " "$(stat -c "%U %a" "$HOME/.claude.json")"; python3 -c "import json,os;print(json.load(open(os.path.expanduser(\"~/.claude.json\")))[\"hasCompletedOnboarding\"] is True)"' 2>&1)" \
+  "o entrypoint semeia ~/.claude.json como o usuario comum"
+
 report

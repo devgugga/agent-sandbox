@@ -136,6 +136,14 @@ if [ -d "$ASB_HOME/.local/share/containers" ]; then
   chown -R "$ASB_USER:$ASB_USER" "$ASB_HOME/.local/share/containers"
 fi
 
+# Primeira execucao do Claude: o login esta na credencial compartilhada, mas o
+# "onboarding feito" fica em ~/.claude.json, na camada gravavel DESTE
+# container. Sem a flag, todo workspace novo abre "Select login method" com a
+# credencial valida. O helper liga SO essa flag e nao toca ~/.claude/.
+# Roda como o usuario comum (nunca root), com HOME explicito; `|| true`
+# porque nada aqui pode impedir a partida.
+runuser -u "$ASB_USER" -- env HOME="$ASB_HOME" /usr/local/bin/asb-seed-claude-state || true
+
 # O projeto continua apontando para localhost:5432. Sem pod, o agente e o
 # encaminhador estao em namespaces separados, entao um socat local recria o
 # endereco que o projeto espera. Dois saltos triviais; a alternativa seria

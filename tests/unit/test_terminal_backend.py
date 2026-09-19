@@ -51,16 +51,19 @@ PROBE_REMOTE = (f"tmux list-panes -a -f '{FILTER}' -F "
                 "'#{session_id} #{pane_dead} #{pane_dead_status}'")
 # Pilot round 1: o attach roda um script FIXO que cai para xterm-256color
 # quando a imagem nao tem o terminfo do TERM do operador (Ghostty); o alvo
-# e `$1`, argumento separado, nunca interpolado no script.
+# e `$1`, argumento separado, nunca interpolado no script. Pilot round 2:
+# `tmux -u` desenha UTF-8 mesmo sem locale na sessao SSH (o ssh do host nao
+# repassa LANG, e um cliente sem locale UTF-8 troca acentos por "_").
 ATTACH_SCRIPT = ('infocmp "$TERM" >/dev/null 2>&1 || '
                  'export TERM=xterm-256color; '
-                 'exec tmux attach-session -t "$1"')
+                 'exec tmux -u attach-session -t "$1"')
 
 
 def attach_remote(quoted_target: str) -> str:
     return ("sh -c 'infocmp \"$TERM\" >/dev/null 2>&1 || "
             "export TERM=xterm-256color; "
-            "exec tmux attach-session -t \"$1\"' asb-attach " + quoted_target)
+            "exec tmux -u attach-session -t \"$1\"' asb-attach "
+            + quoted_target)
 
 
 START_TAIL = (f"';' set-option -t ={NAME}: remain-on-exit on "

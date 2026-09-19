@@ -442,7 +442,7 @@ class TestSessionAttach(_Case):
         self.assertEqual(argv[-1], (
             "sh -c 'infocmp \"$TERM\" >/dev/null 2>&1 || "
             "export TERM=xterm-256color; "
-            "exec tmux attach-session -t \"$1\"' asb-attach '$5'"))
+            "exec tmux -u attach-session -t \"$1\"' asb-attach '$5'"))
         self.assertEqual(self.store.get(record.id).state,
                          SessionState.DETACHED)
 

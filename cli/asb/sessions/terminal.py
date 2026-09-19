@@ -65,10 +65,12 @@ _NO_SERVER = re.compile(r"^no server running on \S+$")
 # e o tmux 3.3a recusa um TERM sem terminfo na imagem ("missing or
 # unsuitable terminal: xterm-ghostty", exit 1). Sem o terminfo, cai para
 # xterm-256color. O alvo chega como `$1`, argumento separado: nenhum texto
-# e interpolado no script.
+# e interpolado no script. Piloto 2: o ssh do host nao repassa LANG, a
+# sessao SSH roda no locale C, e um cliente tmux sem locale UTF-8 troca
+# todo caractere nao-ASCII por "_"; `-u` forca UTF-8 no cliente.
 ATTACH_SCRIPT = ('infocmp "$TERM" >/dev/null 2>&1 || '
                  'export TERM=xterm-256color; '
-                 'exec tmux attach-session -t "$1"')
+                 'exec tmux -u attach-session -t "$1"')
 
 
 def _filter(name: TerminalId) -> str:

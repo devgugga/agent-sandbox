@@ -14,6 +14,7 @@ import asb_test_isolation  # noqa: F401  (guarda de isolamento da suite: nenhum 
 import sys
 import tempfile
 import unittest
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -65,6 +66,8 @@ class FakeTerminal:
         # Estado persistido no instante de cada `start`: prova a ordem
         # "persistir STARTING, depois lancar".
         self.state_at_start: list[SessionState] = []
+        # Id do provedor persistido no instante de cada `start`.
+        self.provider_at_start: list[str | None] = []
 
     def _session_for(self, terminal_id: str) -> AgentSession | None:
         for session in self._store.list():
@@ -78,6 +81,7 @@ class FakeTerminal:
         session = self._session_for(terminal_id)
         if session is not None:
             self.state_at_start.append(session.state)
+            self.provider_at_start.append(session.provider_session_id)
         if self.start_error is not None:
             raise self.start_error
 
@@ -113,11 +117,13 @@ class FakeDriver:
     def __init__(self, kind: AgentKind = AgentKind.CODEX,
                  discoveries=(None,), resume_supported: bool = True,
                  launch_env=None, resume_env=None,
-                 probes=("full",)) -> None:
+                 probes=("full",), assigns_id: bool = False) -> None:
         # Resultado de cada `probe()`, em ordem (o ultimo se repete):
         # "full" (--version e --help responderam), "help_failed" (--help
         # falhou ao executar) ou "unavailable" (--version falhou).
         self.kind = kind
+        self.assigns_session_id_at_launch = assigns_id
+        self.launch_ids: list[str | None] = []
         self.probes = list(probes)
         self.discoveries = list(discoveries)
         self.resume_supported = resume_supported
@@ -130,8 +136,10 @@ class FakeDriver:
         self.capture_after_inputs: list[SessionEvidence] = []
         self.resumed: list[tuple[Path, str]] = []
 
-    def launch(self, cwd: Path) -> LaunchCommand:
-        return LaunchCommand(argv=(str(self.kind),), env=self.launch_env)
+    def launch(self, cwd: Path, session_id: str | None = None) -> LaunchCommand:
+        self.launch_ids.append(session_id)
+        extra = () if session_id is None else ("--session-id", session_id)
+        return LaunchCommand(argv=(str(self.kind), *extra), env=self.launch_env)
 
     def resume(self, cwd: Path, session_id: str) -> LaunchCommand:
         self.resumed.append((cwd, session_id))
@@ -361,6 +369,67 @@ class TestStart(ManagerCase):
         session = self.make(self.terminal(), driver).start(self.request())
         self.assertEqual(session.state, SessionState.RUNNING)
         self.assertIsNone(session.provider_session_id)
+
+    def test_claude_start_persists_the_assigned_id_before_launch(self):
+        from asb.agents.claude import ClaudeDriver
+
+        terminal = self.terminal(probes=[Liveness.ALIVE])
+        session = self.make(terminal, ClaudeDriver()).start(
+            self.request(AgentKind.CLAUDE))
+
+        [(_, terminal_id, cwd, argv)] = terminal.names("start")
+        assigned = argv[2]
+        self.assertEqual(argv, ("claude", "--session-id", assigned,
+                                "--dangerously-skip-permissions"))
+        self.assertEqual(str(uuid.UUID(assigned)), assigned)
+        # Gravado na escrita STARTING, antes do lancamento: sobrevive
+        # mesmo que nada mais rode depois.
+        self.assertEqual(terminal.provider_at_start, [assigned])
+        self.assertEqual(session.state, SessionState.RUNNING)
+        self.assertEqual(session.provider_session_id, assigned)
+        self.assertEqual(self.store.get(session.id), session)
+        self.assertEqual(self.sleeps, [])
+
+    def test_claude_start_never_runs_discovery(self):
+        terminal = self.terminal(probes=[Liveness.ALIVE])
+        driver = FakeDriver(AgentKind.CLAUDE, assigns_id=True,
+                            discoveries=["someone-else"])
+        session = self.make(terminal, driver).start(
+            self.request(AgentKind.CLAUDE))
+        [assigned] = driver.launch_ids
+        self.assertEqual(session.provider_session_id, assigned)
+        self.assertEqual(driver.capture_before_cwds, [])
+        self.assertEqual(driver.capture_after_inputs, [])
+        self.assertEqual(self.sleeps, [])
+
+    def test_each_claude_start_gets_a_fresh_id(self):
+        driver = FakeDriver(AgentKind.CLAUDE, assigns_id=True)
+        manager = self.make(self.terminal(), driver)
+        first = manager.start(self.request(AgentKind.CLAUDE))
+        second = manager.start(self.request(AgentKind.CLAUDE))
+        self.assertNotEqual(first.provider_session_id,
+                            second.provider_session_id)
+        self.assertEqual(driver.launch_ids, [first.provider_session_id,
+                                             second.provider_session_id])
+
+    def test_claude_start_that_dies_or_is_unknown_keeps_the_assigned_id(self):
+        for after, expected in ((Liveness.DEAD, SessionState.FAILED),
+                                (Liveness.UNKNOWN,
+                                 SessionState.RECOVERY_REQUIRED)):
+            with self.subTest(after=after):
+                driver = FakeDriver(AgentKind.CLAUDE, assigns_id=True)
+                session = self.make(self.terminal(probes=[after]), driver
+                                    ).start(self.request(AgentKind.CLAUDE))
+                self.assertEqual(session.state, expected)
+                self.assertIsNotNone(session.provider_session_id)
+                self.assertEqual(session.provider_session_id,
+                                 driver.launch_ids[0])
+                self.assertEqual(self.store.get(session.id), session)
+
+    def test_codex_start_passes_no_launch_id(self):
+        driver = FakeDriver(discoveries=[PROVIDER_ID])
+        self.make(self.terminal(), driver).start(self.request())
+        self.assertEqual(driver.launch_ids, [None])
 
     def test_launch_env_raises_before_any_record_or_launch(self):
         terminal = self.terminal()

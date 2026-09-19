@@ -43,21 +43,31 @@ class _FakeRun:
         return result
 
 
+CLAUDE_UUID = "0f0e0d0c-0b0a-4000-8000-00000000abcd"
+CODEX_BYPASS = "--dangerously-bypass-approvals-and-sandbox"
+CLAUDE_BYPASS = "--dangerously-skip-permissions"
+
+
 class TestLaunchAndResumeArgv(unittest.TestCase):
-    """Amostras exatas do brief da Tarefa 5."""
+    """Argv exatos. Claude e Codex rodam sem prompts de permissao, como o
+    Orca os lanca (o sandbox e a fronteira de isolamento); Antigravity nao
+    recebe flag de bypass."""
 
     def test_codex_launch_argv(self):
-        self.assertEqual(CodexDriver().launch(Path("/repo")).argv, ("codex",))
+        self.assertEqual(CodexDriver().launch(Path("/repo")).argv,
+                         ("codex", CODEX_BYPASS))
 
     def test_codex_resume_argv(self):
+        # `codex resume [OPTIONS] [SESSION_ID]`: a flag vem antes do id.
         self.assertEqual(
             CodexDriver().resume(Path("/repo"), "abc").argv,
-            ("codex", "resume", "abc"))
+            ("codex", "resume", CODEX_BYPASS, "abc"))
 
     def test_claude_resume_argv(self):
+        # `--resume [value]` tem valor opcional: o id vem logo depois dele.
         self.assertEqual(
-            ClaudeDriver().resume(Path("/repo"), "abc").argv,
-            ("claude", "--resume", "abc"))
+            ClaudeDriver().resume(Path("/repo"), CLAUDE_UUID).argv,
+            ("claude", "--resume", CLAUDE_UUID, CLAUDE_BYPASS))
 
     def test_antigravity_resume_raises_when_session_id_unprovable(self):
         # session_id_provable=False e um fato ESTATICO da instalacao
@@ -69,15 +79,35 @@ class TestLaunchAndResumeArgv(unittest.TestCase):
         with self.assertRaises(ResumeUnsupported):
             AntigravityDriver().resume(Path("/repo"), "abc")
 
-    def test_claude_launch_argv(self):
-        self.assertEqual(ClaudeDriver().launch(Path("/repo")).argv, ("claude",))
+    def test_claude_launch_argv_carries_the_assigned_session_id(self):
+        self.assertEqual(
+            ClaudeDriver().launch(Path("/repo"), CLAUDE_UUID).argv,
+            ("claude", "--session-id", CLAUDE_UUID, CLAUDE_BYPASS))
+
+    def test_claude_launch_requires_a_canonical_uuid(self):
+        for bad in (None, "", "abc", "-rf", CLAUDE_UUID.upper(),
+                    "{" + CLAUDE_UUID + "}", CLAUDE_UUID.replace("-", ""),
+                    CLAUDE_UUID + " ", "x" + CLAUDE_UUID[1:]):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                ClaudeDriver().launch(Path("/repo"), bad)
+
+    def test_only_claude_assigns_the_session_id_at_launch(self):
+        self.assertTrue(ClaudeDriver.assigns_session_id_at_launch)
+        self.assertFalse(CodexDriver.assigns_session_id_at_launch)
+        self.assertFalse(AntigravityDriver.assigns_session_id_at_launch)
+
+    def test_drivers_without_launch_ids_refuse_one(self):
+        # Um id passado a quem nao o usa seria descartado em silencio.
+        for driver in (CodexDriver(), AntigravityDriver()):
+            with self.subTest(driver=driver.kind), \
+                    self.assertRaises(ValueError):
+                driver.launch(Path("/repo"), CLAUDE_UUID)
 
     def test_antigravity_launch_argv(self):
         self.assertEqual(AntigravityDriver().launch(Path("/repo")).argv, ("agy",))
 
     def test_launch_returns_launch_command_type(self):
         self.assertIsInstance(CodexDriver().launch(Path("/repo")), LaunchCommand)
-
 
 class TestAntigravityResumeArgvOnceProvable(unittest.TestCase):
     """A construcao do argv (`("agy", "--conversation", id)`) continua no
@@ -515,52 +545,22 @@ class TestCodexSessionEvidence(unittest.TestCase):
                 self._driver(Path(tmp)).discover_session_id(evidence))
 
 
-class TestClaudeSessionEvidence(unittest.TestCase):
-    def test_slug_replaces_slash_and_dot(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            sessions_root = Path(tmp)
-            driver = ClaudeDriver(sessions_root=sessions_root)
-            cwd = Path("/a/b/.c/d")
-            baseline = driver.capture_before(cwd)
-            expected_slug = "-a-b--c-d"
-            self.assertEqual(baseline.scan_root,
-                              sessions_root / expected_slug)
+class TestClaudeNeverDiscovers(unittest.TestCase):
+    """O id do Claude e atribuido no lancamento (`--session-id`): o driver
+    nao varre nada, nem com um `sessions_root` que ganha um arquivo novo."""
 
-    def test_exactly_one_new_jsonl_returns_its_filename_stem(self):
+    def test_new_jsonl_in_the_project_dir_is_never_a_candidate(self):
         with tempfile.TemporaryDirectory() as tmp:
             sessions_root = Path(tmp)
-            cwd = Path("/repo")
-            driver = ClaudeDriver(sessions_root=sessions_root)
-            baseline = driver.capture_before(cwd)
-            project_dir = baseline.scan_root
-            project_dir.mkdir(parents=True)
-            new_file = project_dir / "00000000-0000-4000-8000-000000000001.jsonl"
-            new_file.write_text(
-                json.dumps({"sessionId": new_file.stem,
-                            "type": "last-prompt"}) + "\n")
-            after = driver.capture_after(baseline)
-            self.assertEqual(after.new_paths, frozenset({new_file}))
-            self.assertEqual(driver.discover_session_id(after), new_file.stem)
-
-    def test_zero_new_files_returns_none(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            sessions_root = Path(tmp)
+            project_dir = sessions_root / "-repo"
+            project_dir.mkdir()
             driver = ClaudeDriver(sessions_root=sessions_root)
             baseline = driver.capture_before(Path("/repo"))
+            (project_dir / f"{CLAUDE_UUID}.jsonl").write_text("{}\n")
             after = driver.capture_after(baseline)
+            self.assertIsNone(baseline.scan_root)
+            self.assertEqual(after.new_paths, frozenset())
             self.assertIsNone(driver.discover_session_id(after))
-
-    def test_multiple_new_files_returns_none(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            sessions_root = Path(tmp)
-            driver = ClaudeDriver(sessions_root=sessions_root)
-            baseline = driver.capture_before(Path("/repo"))
-            baseline.scan_root.mkdir(parents=True)
-            (baseline.scan_root / "aaaa.jsonl").write_text("{}\n")
-            (baseline.scan_root / "bbbb.jsonl").write_text("{}\n")
-            after = driver.capture_after(baseline)
-            self.assertIsNone(driver.discover_session_id(after))
-
 
 
 class TestNoHostDefaultScanRoot(unittest.TestCase):
@@ -583,21 +583,6 @@ class TestNoHostDefaultScanRoot(unittest.TestCase):
                 (sessions / "rollout-host.jsonl").write_text(
                     json.dumps({"type": "session_meta",
                                 "payload": {"id": "host-session"}}) + "\n")
-                after = driver.capture_after(baseline)
-            self.assertIsNone(baseline.scan_root)
-            self.assertEqual(after.new_paths, frozenset())
-            self.assertIsNone(driver.discover_session_id(after))
-
-    def test_claude_without_sessions_root_ignores_host_claude_projects(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            home, env = self._fake_home(tmp)
-            project_dir = home / ".claude" / "projects" / "-repo"
-            project_dir.mkdir(parents=True)
-            with env, mock.patch("pathlib.Path.home", return_value=home):
-                driver = ClaudeDriver()
-                baseline = driver.capture_before(Path("/repo"))
-                (project_dir / "00000000-0000-4000-8000-000000000009.jsonl"
-                 ).write_text("{}\n")
                 after = driver.capture_after(baseline)
             self.assertIsNone(baseline.scan_root)
             self.assertEqual(after.new_paths, frozenset())
@@ -710,42 +695,6 @@ class TestHostileSessionVolume(unittest.TestCase):
             driver = CodexDriver(sessions_root=root)
             baseline = driver.capture_before(Path("/repo"))
             (outside / "host.jsonl").write_text(json.dumps(self.META) + "\n")
-            after = driver.capture_after(baseline)
-            self.assertEqual(after.new_paths, frozenset())
-            self.assertIsNone(driver.discover_session_id(after))
-
-    def test_claude_fifo_or_symlink_named_like_a_session_is_not_a_candidate(self):
-        import os
-        with tempfile.TemporaryDirectory() as tmp:
-            outside = Path(tmp) / "outside"
-            outside.mkdir()
-            (outside / "x.jsonl").write_text("{}\n")
-            driver = ClaudeDriver(sessions_root=Path(tmp) / "claude-projects")
-            for make in (lambda p: os.mkfifo(p),
-                         lambda p: p.symlink_to(outside / "x.jsonl")):
-                with self.subTest(make=make):
-                    baseline = driver.capture_before(Path("/repo"))
-                    baseline.scan_root.mkdir(parents=True, exist_ok=True)
-                    baseline = driver.capture_before(Path("/repo"))
-                    evil = (baseline.scan_root
-                            / "00000000-0000-4000-8000-00000000000e.jsonl")
-                    make(evil)
-                    after = driver.capture_after(baseline)
-                    self.assertEqual(after.new_paths, frozenset())
-                    self.assertIsNone(driver.discover_session_id(after))
-                    evil.unlink()
-
-    def test_claude_project_dir_that_is_a_symlink_is_not_scanned(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            outside = Path(tmp) / "outside"
-            outside.mkdir()
-            sessions_root = Path(tmp) / "claude-projects"
-            sessions_root.mkdir()
-            driver = ClaudeDriver(sessions_root=sessions_root)
-            baseline = driver.capture_before(Path("/repo"))
-            baseline.scan_root.symlink_to(outside)
-            (outside / "00000000-0000-4000-8000-00000000000f.jsonl"
-             ).write_text("{}\n")
             after = driver.capture_after(baseline)
             self.assertEqual(after.new_paths, frozenset())
             self.assertIsNone(driver.discover_session_id(after))

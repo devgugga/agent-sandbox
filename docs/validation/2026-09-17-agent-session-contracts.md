@@ -51,3 +51,42 @@ Nenhum comando além de `--version` e `--help` foi executado em qualquer um dos 
 
 - `CodexDriver` e `ClaudeDriver`: `resume_supported=True` é alcançável (opção confirmada no `--help` do binário de HOST **e** fonte de session-id comprovada **para instalação de HOST**). A fonte de session-id para um agente rodando em sandbox permanece não comprovada nesta tarefa — o volume por-workspace `asb-<ws>-session` monta o estado de sessão sob nomes de diretório diferentes dos usados no HOST (`codex-sessions/`, `claude-projects/`), então as raízes de varredura padrão dos drivers não os alcançam; a redesenho dessas raízes fica gated no checkpoint humano, com um container disponível (mesmo tratamento dado ao Antigravity abaixo). `probe()` ainda pode reportar `False` em runtime se o `--help` real não confirmar a opção (ex.: versão diferente na imagem).
 - `AntigravityDriver`: `resume_supported` nunca é `True` neste host, mesmo com `--conversation` presente no `--help`, porque a fonte do session-id não está provada. O binário da imagem do container permanece o gate autoritativo desta capacidade; a revalidação com container faz parte do checkpoint humano após a Tarefa 5, não desta tarefa.
+
+---
+
+## 4. Revisão após o piloto (2026-09-19)
+
+O piloto (rodada 5) mostrou que a descoberta por arquivo novo não
+funciona para um agente real em sandbox: o Claude e o Codex só criam o
+arquivo de sessão na primeira mensagem, depois da janela de cinco
+tentativas. As decisões abaixo substituem, para o sandbox, a fonte de
+session-id da matriz da §1.
+
+### 4.1 Claude — id atribuído no lançamento
+
+- O manager gera um UUID (`uuid4`), grava-o como `providerSessionId` na
+  escrita `starting`, antes de lançar, e o driver lança
+  `claude --session-id <uuid> --dangerously-skip-permissions`. O resume é
+  `claude --resume <uuid> --dangerously-skip-permissions` (o id vem logo
+  depois de `--resume`, cujo valor é opcional). Nenhuma descoberta roda
+  para o Claude; o driver não varre `claude-projects/`.
+- O driver só aceita um UUID canônico (minúsculas, com hífens), que também
+  satisfaz `ProviderSessionId`.
+- Binário da IMAGEM (`localhost/agent-sandbox:latest`, `2.1.263 (Claude
+  Code)`), num container descartável, só `--help`: lista
+  `--session-id <uuid>` ("must be a valid UUID"), `-r, --resume [value]` e
+  `--dangerously-skip-permissions`. `claude … --help` sai 0 até com uma
+  flag inexistente, então o `--help` NÃO prova que o argv completo é
+  aceito; isso só um lançamento real prova (fora do escopo: nenhuma
+  conversa foi iniciada).
+
+### 4.2 Modo de permissão
+
+Claude e Codex lançam e retomam sem prompts de permissão, como o Orca os
+lança: o sandbox é a fronteira de isolamento. Codex:
+`codex --dangerously-bypass-approvals-and-sandbox` e
+`codex resume --dangerously-bypass-approvals-and-sandbox <id>` (a forma
+`codex resume [OPTIONS] [SESSION_ID]` do `--help` do binário da imagem,
+`codex-cli 0.153.4`). Ali o `--help` discrimina: as duas formas saem 0 e
+`codex resume` com uma flag inexistente sai 2. Antigravity não recebe
+flag de bypass.

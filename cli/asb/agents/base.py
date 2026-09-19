@@ -110,6 +110,15 @@ class AgentDriver(ABC):
     version_pattern: ClassVar[re.Pattern[str]]
     resume_option_pattern: ClassVar[re.Pattern[str]]
     session_id_provable: ClassVar[bool] = True
+    # Flags que lancam o agente sem prompts de permissao, como o Orca o
+    # lanca: o sandbox e a fronteira de isolamento. Vazio = modo padrao.
+    permission_args: ClassVar[tuple[str, ...]] = ()
+    # Argv depois do id no resume (o id fica sempre logo apos o prefixo).
+    resume_argv_suffix: ClassVar[tuple[str, ...]] = ()
+    # `True` quando o provedor aceita um id escolhido por nos no
+    # lancamento: o manager gera o UUID, o passa a `launch()` e o grava
+    # como `provider_session_id` antes de lancar, sem descoberta.
+    assigns_session_id_at_launch: ClassVar[bool] = False
 
     def __init__(self, sessions_root: Path | None = None) -> None:
         # Otimista ate que probe() prove o contrario: os testes do brief
@@ -125,11 +134,17 @@ class AgentDriver(ABC):
 
     # -- comandos (nunca executados aqui) --------------------------------
 
-    def launch(self, cwd: Path) -> LaunchCommand:
+    def launch(self, cwd: Path,
+               session_id: str | None = None) -> LaunchCommand:
         """`cwd` nao entra no argv: `LaunchCommand` nao tem campo de cwd
         porque quem executa o comando define o cwd do subprocesso; o
-        parametro existe para simetria com `resume()` e uso futuro."""
-        return LaunchCommand(argv=(self.binary,))
+        parametro existe para simetria com `resume()` e uso futuro.
+        `session_id` so e aceito por quem `assigns_session_id_at_launch`:
+        aqui ele seria descartado em silencio, entao e recusado."""
+        if session_id is not None:
+            raise ValueError(
+                f"{self.kind}: o lancamento nao aceita um session id")
+        return LaunchCommand(argv=(self.binary, *self.permission_args))
 
     def resume(self, cwd: Path, session_id: str) -> LaunchCommand:
         # session_id_provable e um fato ESTATICO do driver (nao depende de
@@ -145,7 +160,8 @@ class AgentDriver(ABC):
             raise ResumeUnsupported(
                 f"{self.kind}: resume nao confirmado nesta instalacao")
         validated = ProviderSessionId(session_id)
-        return LaunchCommand(argv=(*self.resume_argv_prefix, validated))
+        return LaunchCommand(argv=(*self.resume_argv_prefix, validated,
+                                   *self.resume_argv_suffix))
 
     # -- caracterizacao (via runner injetado) ----------------------------
 

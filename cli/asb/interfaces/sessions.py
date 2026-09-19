@@ -62,11 +62,12 @@ class SessionServices:
 
 def default_drivers(workspace: str) -> dict[AgentKind, AgentDriver]:
     """Drivers que leem a evidencia de sessao no volume de sessao do
-    workspace (Tarefa 8). Antigravity nao tem local de estado comprovado."""
+    workspace (Tarefa 8). O Claude recebe o id no lancamento e nao varre
+    nada; Antigravity nao tem local de estado comprovado."""
     mount = session_volume_mountpoint(workspace)
     return {
         AgentKind.CODEX: CodexDriver(mount / "codex-sessions"),
-        AgentKind.CLAUDE: ClaudeDriver(mount / "claude-projects"),
+        AgentKind.CLAUDE: ClaudeDriver(),
         AgentKind.ANTIGRAVITY: AntigravityDriver(None),
     }
 

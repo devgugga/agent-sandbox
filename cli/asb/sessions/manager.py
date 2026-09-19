@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import functools
 import time
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -128,21 +129,30 @@ class SessionManager:
 
     def start(self, request: StartSession) -> AgentSession:
         driver = self._drivers[request.agent]
-        argv = _argv_only(driver.launch(request.cwd))
+        # Um provedor que aceita o id no lancamento (Claude) recebe um UUID
+        # novo, gravado na escrita STARTING, ANTES do lancamento, e nunca
+        # passa por descoberta.
+        assigned = (ProviderSessionId(str(uuid.uuid4()))
+                    if driver.assigns_session_id_at_launch else None)
+        argv = _argv_only(driver.launch(request.cwd, assigned))
         record = self._store.insert(AgentSession.new(
             request.checkout_id, request.agent, request.cwd, request.title))
         record = self._store.replace(record.with_state(
-            SessionState.STARTING, terminal_id=terminal_name(record.id)))
-        baseline = driver.capture_before(request.cwd)
+            SessionState.STARTING, terminal_id=terminal_name(record.id),
+            provider_session_id=assigned))
+        baseline = (None if assigned is not None
+                    else driver.capture_before(request.cwd))
         liveness = self._launch(record, argv)
         if liveness is Liveness.DEAD:
             return self._store.replace(record.with_state(SessionState.FAILED))
         if liveness is Liveness.UNKNOWN:
             return self._store.replace(
                 record.with_state(SessionState.RECOVERY_REQUIRED))
+        provider_session_id = (assigned if baseline is None
+                               else self._discover(driver, baseline))
         return self._store.replace(record.with_state(
             SessionState.RUNNING,
-            provider_session_id=self._discover(driver, baseline),
+            provider_session_id=provider_session_id,
             last_healthy_at=self._clock(),
         ))
 

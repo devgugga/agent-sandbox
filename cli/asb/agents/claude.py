@@ -1,48 +1,63 @@
 """cli/asb/agents/claude.py — driver do Claude Code CLI.
 
-Fonte do session-id comprovada em
-docs/validation/2026-09-17-agent-session-contracts.md (medida no host):
-exatamente um novo arquivo `<uuid>.jsonl` sob
-`~/.claude/projects/<slug(cwd)>/`, onde `slug()` substitui `/` e `.` por
-`-`. O UUID vem do NOME do arquivo — nenhum conteudo de transcript e lido.
+O id da sessao e ATRIBUIDO no lancamento, nao descoberto: o manager gera um
+UUID, o grava como `provider_session_id` antes de lancar e o driver lanca
+`claude --session-id <uuid>`; o resume e `claude --resume <uuid>`. O binario
+da imagem (2.1.263) lista `--session-id <uuid>` ("must be a valid UUID").
+Por isso o driver nao varre diretorio nenhum: a descoberta por arquivo novo
+em `~/.claude/projects/<slug>/` falhou no piloto, porque o Claude so cria o
+arquivo na primeira mensagem, depois da janela de descoberta.
 
-Dentro do sandbox, `$HOME/.claude/projects` e o subpath `claude-projects`
-do volume de sessao do workspace; o driver o le PELO HOST, pelo mountpoint
-do volume, via `sessions_root`. `cwd` e o checkout de execucao do sandbox
-(`ConnectionInfo.project_root`, mesmo caminho absoluto no host e no
-container). Sem `sessions_root` nao ha varredura: o `~/.claude` do operador
-nunca e lido.
+Claude lanca e retoma com `--dangerously-skip-permissions`, como o Orca o
+lanca: o sandbox e a fronteira de isolamento.
 """
 from __future__ import annotations
 
 import re
+import uuid
 from pathlib import Path
 
-from asb.agents.base import AgentDriver, SessionEvidence
-from asb.sessions.model import AgentKind
+from asb.agents.base import AgentDriver, LaunchCommand, SessionEvidence
+from asb.sessions.model import AgentKind, ProviderSessionId
 
-_SLUG_CHARS = re.compile(r"[/.]")
+_SKIP_PERMISSIONS = "--dangerously-skip-permissions"
 
 
-def _slugify(cwd: Path) -> str:
-    return _SLUG_CHARS.sub("-", str(cwd.resolve()))
+def _canonical_uuid(value: object) -> ProviderSessionId:
+    """`value` so passa se ja e um UUID na forma canonica (minusculas, com
+    hifens), que o `--session-id` do Claude aceita e o `ProviderSessionId`
+    tambem."""
+    if not isinstance(value, str):
+        raise ValueError(f"claude session id must be a UUID: {value!r}")
+    try:
+        canonical = str(uuid.UUID(value))
+    except ValueError as exc:
+        raise ValueError(
+            f"claude session id must be a UUID: {value!r}") from exc
+    if canonical != value:
+        raise ValueError(
+            f"claude session id must be a canonical UUID: {value!r}")
+    return ProviderSessionId(value)
 
 
 class ClaudeDriver(AgentDriver):
     kind = AgentKind.CLAUDE
     binary = "claude"
+    permission_args = (_SKIP_PERMISSIONS,)
+    # `--resume [value]` tem valor opcional: o id vem logo depois dele.
     resume_argv_prefix = ("claude", "--resume")
+    resume_argv_suffix = (_SKIP_PERMISSIONS,)
     version_pattern = re.compile(r"^(\S+)\s+\(Claude Code\)$")
     resume_option_pattern = re.compile(r"--resume\b")
     session_id_provable = True
+    assigns_session_id_at_launch = True
 
-    def _scan_root(self, cwd: Path) -> Path | None:
-        if self._sessions_root is None:
-            return None
-        return self._sessions_root / _slugify(cwd)
+    def launch(self, cwd: Path,
+               session_id: str | None = None) -> LaunchCommand:
+        validated = _canonical_uuid(session_id)
+        return LaunchCommand(argv=(self.binary, "--session-id", validated,
+                                   *self.permission_args))
 
     def discover_session_id(self, evidence: SessionEvidence) -> str | None:
-        candidates = [p for p in evidence.new_paths if p.suffix == ".jsonl"]
-        if len(candidates) != 1:
-            return None
-        return candidates[0].stem
+        """Nunca descobre: o id e atribuido no lancamento."""
+        return None

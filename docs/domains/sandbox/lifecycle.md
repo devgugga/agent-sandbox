@@ -206,8 +206,16 @@ A refresh (TUI or `reconcile`) never launches a process, skips
 A stop confirmed by a DEAD probe is recorded `completed` even if a
 concurrent refresh rewrote the record in between; a concurrent relaunch
 (`starting`/`running`) is never marked completed.
-The provider session id is discovered once after launch (five polls, one
-second apart) from the workspace's session volume; zero or several
+A Claude session gets its provider session id at launch: the manager
+generates a UUID, records it with the `starting` write before anything
+runs, launches `claude --session-id <uuid>` and resumes with
+`claude --resume <uuid>`; nothing is discovered for Claude. Claude and
+Codex are launched and resumed without permission prompts
+(`--dangerously-skip-permissions`,
+`--dangerously-bypass-approvals-and-sandbox`), as Orca launches them: the
+sandbox is the isolation boundary. Antigravity gets no bypass flag.
+The Codex provider session id is discovered once after launch (five polls,
+one second apart) from the workspace's session volume; zero or several
 candidates store no id, so such a session cannot be resumed natively. A
 provider that creates its session file only when the first message is
 sent therefore gets no id, and native resume does not happen for it;

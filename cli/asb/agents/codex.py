@@ -42,7 +42,12 @@ _FIRST_LINE_LIMIT = 64 * 1024
 class CodexDriver(AgentDriver):
     kind = AgentKind.CODEX
     binary = "codex"
-    resume_argv_prefix = ("codex", "resume")
+    # Como o Orca lanca o Codex: sem aprovacoes nem o sandbox proprio do
+    # Codex; o container e a fronteira. `codex resume [OPTIONS]
+    # [SESSION_ID]`: a flag vem antes do id (conferido no binario da
+    # imagem, 0.153.4).
+    permission_args = ("--dangerously-bypass-approvals-and-sandbox",)
+    resume_argv_prefix = ("codex", "resume", *permission_args)
     version_pattern = re.compile(r"^codex-cli\s+(\S+)$")
     resume_option_pattern = re.compile(r"(?m)^\s*resume\b")
     session_id_provable = True

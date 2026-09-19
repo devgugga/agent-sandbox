@@ -659,8 +659,8 @@ class TestSessionServices(unittest.TestCase):
         self.assertIsInstance(drivers[AgentKind.ANTIGRAVITY], AntigravityDriver)
         self.assertEqual(drivers[AgentKind.CODEX]._sessions_root,
                          Path("/vol/codex-sessions"))
-        self.assertEqual(drivers[AgentKind.CLAUDE]._sessions_root,
-                         Path("/vol/claude-projects"))
+        # O id do Claude e atribuido no lancamento: nada para varrer.
+        self.assertIsNone(drivers[AgentKind.CLAUDE]._sessions_root)
         self.assertIsNone(drivers[AgentKind.ANTIGRAVITY]._sessions_root)
 
 

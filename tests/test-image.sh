@@ -50,27 +50,31 @@ done
 echo "== fornecedores via mise (root, /opt/asb-mise) =="
 
 # Pelo entrypoint REAL, como o usuario comum: e ele que escreve o PATH do
-# shell de login (/etc/profile.d) e do `ssh host cmd` (/etc/environment).
+# `ssh host cmd` (/etc/environment). A garantia vale para o caminho
+# NAO-login, o que as sessoes usam (exec por ssh; o tmux roda o comando do
+# agente sem shell de login). Num shell de login o ~/.profile do Debian roda
+# depois do /etc/profile.d e poe $HOME/.local/bin na frente; o agente e dono
+# desse HOME, entao aqui nao se afirma nada sobre shells de login.
 as_user() { podman run --rm "$IMG" runuser -u "$HOST_USER" -- "$@"; }
 
 for spec in 'claude|^[0-9]+\.[0-9]+\.[0-9]+ \(Claude Code\)$' \
             'codex|^codex-cli [0-9]+\.[0-9]+\.[0-9]+$' \
             'agy|^[0-9]+\.[0-9]+\.[0-9]+$'; do
   bin=${spec%%|*}; re=${spec#*|}
-  assert_eq "/opt/asb-mise/bin/$bin" "$(as_user bash -lc "command -v $bin" 2>/dev/null)" \
-    "$bin resolve para a instalacao de root num shell de login"
+  assert_eq "/opt/asb-mise/bin/$bin" "$(as_user bash -c "command -v $bin" 2>/dev/null)" \
+    "$bin resolve para a instalacao de root num shell nao-login (bash -c, como o exec por ssh)"
   assert_eq "/opt/asb-mise/bin/$bin" "$(as_user sh -c \
     ". /etc/environment; export PATH; command -v $bin" 2>/dev/null)" \
     "$bin resolve para a instalacao de root pelo PATH de /etc/environment (ssh nao-interativo)"
-  got=$(as_user bash -lc "cd && HOME=\$(mktemp -d) timeout 60 $bin --version 2>/dev/null | head -1")
+  got=$(as_user bash -c "cd && HOME=\$(mktemp -d) timeout 60 $bin --version 2>/dev/null | head -1")
   assert_eq "0" "$(printf '%s\n' "$got" | grep -Eq "$re" && echo 0 || echo 1)" \
     "$bin --version roda como usuario comum no formato conhecido ('$got')"
   real=$(in_image readlink -f "/opt/asb-mise/bin/$bin")
   assert_eq "root" "$(in_image stat -c %U "$real")" "o binario de $bin e de root ($real)"
 done
 
-assert_eq "/opt/asb-mise/bin/claude" "$(as_user bash -lc \
-  'tmux -L t new-session -d "bash -lc \"command -v claude > /tmp/where\""; \
+assert_eq "/opt/asb-mise/bin/claude" "$(as_user bash -c \
+  'tmux -L t new-session -d "command -v claude > /tmp/where"; \
    for i in 1 2 3 4 5 6 7 8 9 10; do [ -s /tmp/where ] && break; sleep 0.5; done; \
    cat /tmp/where; tmux -L t kill-server 2>/dev/null' 2>/dev/null)" \
   "claude resolve para a instalacao de root dentro do tmux"
@@ -86,8 +90,8 @@ chmod -R a+rX "$decoy"
 for bin in claude codex agy; do
   assert_eq "/opt/asb-mise/bin/$bin" "$(podman run --rm \
     -v "$decoy:$HOST_HOME/.local/share/mise:ro,z" "$IMG" \
-    runuser -u "$HOST_USER" -- bash -lc "command -v $bin" 2>/dev/null)" \
-    "um shim-isca de $bin no toolcache nao vence a instalacao de root"
+    runuser -u "$HOST_USER" -- bash -c "command -v $bin" 2>/dev/null)" \
+    "um shim-isca de $bin no toolcache nao vence a instalacao de root (nao-login)"
 done
 rm -rf "$decoy"
 

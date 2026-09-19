@@ -72,6 +72,14 @@ ATTACH_SCRIPT = ('infocmp "$TERM" >/dev/null 2>&1 || '
                  'export TERM=xterm-256color; '
                  'exec tmux -u attach-session -t "$1"')
 
+# Hook `pane-died` SO desta sessao (piloto 2): com `remain-on-exit` o
+# cliente anexado ficava preso em "Pane is dead"; o hook desanexa todos os
+# clientes da sessao e deixa o pane morto com o status. Texto FIXO: o alvo
+# vazio resolve para a sessao do proprio hook, mesmo renomeada, e nunca
+# para outra; `-s "#{session_id}"` NAO serve, o alvo nao expande formato
+# (pinado no tmux 3.3a da imagem, relatorio pilot-fix-2).
+DETACH_HOOK = 'detach-client -s ""'
+
 
 def _filter(name: TerminalId) -> str:
     """Formato de filtro do tmux: a tag OU o nome exato. `TerminalId` so
@@ -104,9 +112,10 @@ class TmuxTerminal:
 
     def start(self, terminal_id: str, cwd: str | Path,
               command: Sequence[str]) -> None:
-        """Cria a sessao desanexada e liga `remain-on-exit` SO nela, na
-        mesma invocacao do tmux (`;`), para que um comando que termina na
-        hora ainda deixe o pane morto com seu exit status.
+        """Cria a sessao desanexada e liga `remain-on-exit`, a tag e o hook
+        `pane-died` (`DETACH_HOOK`) SO nela, na mesma invocacao do tmux
+        (`;`), para que um comando que termina na hora ainda deixe o pane
+        morto com seu exit status e o operador volte ao shell ou a TUI.
 
         O `TerminalError` e o mesmo para falha definitiva e para falha
         ambigua: em timeout, falha ao executar o `ssh` ou exit 255 do SSH
@@ -128,6 +137,7 @@ class TmuxTerminal:
             "--", *(_tmux_arg(a) for a in command),
             ";", "set-option", "-t", f"={name}:", "remain-on-exit", "on",
             ";", "set-option", "-t", f"={name}:", _TAG, name,
+            ";", "set-hook", "-t", f"={name}:", "pane-died", DETACH_HOOK,
         )
         result = self._call(remote)
         if result is None or result.returncode != 0:

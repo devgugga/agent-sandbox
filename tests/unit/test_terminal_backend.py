@@ -66,8 +66,14 @@ def attach_remote(quoted_target: str) -> str:
             + quoted_target)
 
 
+# Pilot round 2: um hook `pane-died` SO desta sessao desanexa os clientes
+# dela quando o agente sai; o pane fica morto com o status. O alvo vazio
+# ("") resolve para a sessao do proprio hook, mesmo renomeada, e nunca para
+# outra (pinado no tmux 3.3a da imagem, relatorio pilot-fix-2).
+DETACH_HOOK = 'detach-client -s ""'
 START_TAIL = (f"';' set-option -t ={NAME}: remain-on-exit on "
-              f"';' set-option -t ={NAME}: @asb_session {NAME}")
+              f"';' set-option -t ={NAME}: @asb_session {NAME} "
+              f"';' set-hook -t ={NAME}: pane-died '{DETACH_HOOK}'")
 
 
 def _connection() -> ConnectionInfo:
@@ -165,6 +171,26 @@ class TestStart(_RunContract, unittest.TestCase):
         self.assertNotIn(" -g", remote)
         self.assertIn(f"set-option -t ={NAME}: remain-on-exit on", remote)
 
+    def test_the_pane_died_hook_is_session_scoped_and_constant_text(self):
+        # O texto do hook nao carrega nome, cwd nem comando: so o alvo do
+        # `set-hook` usa o nome validado.
+        for name, cwd, command in (
+                (NAME, "/sandbox/repo", ("codex",)),
+                ("asb-other", "/sandbox/a#S;", ("sh", "-c", "x; y", "$1")),
+                ("asb-x", "/sandbox/r", ("detach-client -s \"\"",))):
+            terminal, run = _terminal(_done(0))
+            terminal.start(name, cwd, command)
+            remote = shlex.split(run.call_args.args[0][-1])
+            with self.subTest(name=name):
+                hooks = [i for i, a in enumerate(remote) if a == "set-hook"]
+                self.assertEqual(len(hooks), 1)
+                i = hooks[0]
+                self.assertEqual(remote[i - 1], ";")
+                self.assertEqual(remote[i:],
+                                 ["set-hook", "-t", f"={name}:", "pane-died",
+                                  DETACH_HOOK])
+                self.assertNotIn("-g", remote[i:])
+
     def test_tmux_failure_raises(self):
         terminal, _ = _terminal(_done(1, stderr=f"duplicate session: {NAME}\n"))
         with self.assertRaises(TerminalError):
@@ -197,8 +223,8 @@ class TestTag(unittest.TestCase):
         terminal, run = _terminal(_done(0))
         terminal.start(NAME, "/sandbox/repo", ("codex",))
         remote = run.call_args.args[0][-1]
-        self.assertTrue(remote.endswith(
-            f"';' set-option -t ={NAME}: @asb_session {NAME}"))
+        self.assertIn(f" ';' set-option -t ={NAME}: @asb_session {NAME} ';' ",
+                      remote)
         self.assertEqual(run.call_count, 1)
 
 

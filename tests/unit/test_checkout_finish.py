@@ -1116,7 +1116,10 @@ class TestMissingRowFromTheTui(_Case):
         ctl = self.controller()
         row = next(r for r in ctl.rows if r.checkout_id == self.checkout_id)
         self.assertNotIn("merged", row.text)
-        self.assertEqual(self.press_f_then_y(ctl), "cleanup: blocked")
+        message = self.press_f_then_y(ctl)
+        # A razao do bloqueio fica na linha de status.
+        self.assertTrue(message.startswith("cleanup: blocked: "), message)
+        self.assertIn("no export ref", message)
         self.assertEqual(self.registry.checkout(self.checkout_id),
                          self.binding)
         self.assertIn("topic", self.branches())
@@ -1177,7 +1180,9 @@ class TestWorktreeWithoutSandbox(_Case):
         self.assertIsInstance(ctl.prompt, tui.Prompt)
         self.assertIn("clean up?", ctl.prompt.text)
         tui.handle_key(ctl, ord("y"))
-        self.assertEqual(ctl.message, "cleanup: blocked")
+        self.assertTrue(ctl.message.startswith("cleanup: blocked: "),
+                        ctl.message)
+        self.assertIn("is not integrated into main", ctl.message)
         self.assertTrue(self.worktree.is_dir())
         self.assertEqual(self.registry.checkout(self.checkout_id),
                          self.binding)

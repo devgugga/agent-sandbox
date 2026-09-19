@@ -31,7 +31,7 @@ from asb.checkouts.model import (  # noqa: E402
     FinishResult, FinishState,
 )
 from asb.interfaces import sessions, tui  # noqa: E402
-from asb.interfaces.tui_model import RowKind  # noqa: E402
+from asb.interfaces.tui_model import PLACEHOLDER, RowKind  # noqa: E402
 from asb.podman import PodmanError  # noqa: E402
 from asb.projects.model import Project, ProjectId  # noqa: E402
 from asb.projects.registry import (  # noqa: E402
@@ -922,6 +922,40 @@ class TestFinish(_Case):
         tui.handle_key(ctl, ord("y"))
         self.assertEqual(ctl.message, "finish failed: boom")
 
+    def test_an_unfinished_result_puts_its_reason_on_the_status_line(self):
+        """O `notice` some na proxima tecla; a razao fica na linha de
+        status, saneada e cortada."""
+        for state in (FinishState.BLOCKED, FinishState.CONFLICT,
+                      FinishState.CLEANUP_PENDING):
+            with self.subTest(state=state):
+                self.checkouts.finish.return_value = FinishResult(
+                    state, None, None,
+                    "sandbox branch moved\x1b[2J since the preview; "
+                    "export again\nsecond line")
+                ctl = self.open_confirmation()
+                tui.handle_key(ctl, ord("y"))
+                self.assertEqual(
+                    ctl.message,
+                    f"finish: {state}: sandbox branch moved{PLACEHOLDER}[2J "
+                    "since the preview; export again")
+                tui.handle_key(ctl, ord("j"))
+                self.assertEqual(ctl.notice, ())
+                self.assertIn("sandbox branch moved", ctl.message)
+
+    def test_a_long_reason_is_clipped(self):
+        self.checkouts.finish.return_value = FinishResult(
+            FinishState.BLOCKED, None, None, "x" * 500)
+        ctl = self.open_confirmation()
+        tui.handle_key(ctl, ord("y"))
+        self.assertEqual(ctl.message, "finish: blocked: " + "x" * 120)
+
+    def test_a_blocked_result_without_a_reason_shows_the_state(self):
+        self.checkouts.finish.return_value = FinishResult(
+            FinishState.BLOCKED, None, None, "  ")
+        ctl = self.open_confirmation()
+        tui.handle_key(ctl, ord("y"))
+        self.assertEqual(ctl.message, "finish: blocked")
+
     def test_f_refuses_the_primary_and_non_checkout_rows(self):
         self.stored(C_PRI)
         ctl = self.controller()
@@ -974,7 +1008,8 @@ class TestFinish(_Case):
         tui.handle_key(ctl, ord("y"))
         self.checkouts.cleanup.assert_called_once_with(C_WT, "main", False)
         self.checkouts.finish.assert_not_called()
-        self.assertEqual(ctl.message, "cleanup: blocked")
+        self.assertEqual(ctl.message,
+                         "cleanup: blocked: no export ref; manual recovery")
         self.assertIn("manual recovery", ctl.notice)
 
     def test_unlistable_lost_sessions_refuse_the_missing_row_cleanup(self):

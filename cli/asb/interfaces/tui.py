@@ -47,7 +47,9 @@ from ..checkouts.manager import (
     CheckoutManager, CreateCheckout, CreatePreview, FinishPreview,
     checkout_kind,
 )
-from ..checkouts.model import CheckoutKind, FinishCheckout, FinishResult
+from ..checkouts.model import (
+    CheckoutKind, FinishCheckout, FinishResult, FinishState,
+)
 from ..projects.model import Project, ProjectId
 from ..projects.registry import CheckoutBinding
 from ..runtime.sandbox import WorkspaceDiscovery, WorkspaceStatus
@@ -64,6 +66,9 @@ from .tui_model import (
 MIN_WIDTH = 40
 MIN_HEIGHT = 5
 _REASON_LIMIT = 120
+# Resultados de finish/cleanup que nao terminaram: a razao vai para o status.
+_UNFINISHED = frozenset({FinishState.BLOCKED, FinishState.CONFLICT,
+                         FinishState.CLEANUP_PENDING})
 
 AGENTS = (AgentKind.CODEX, AgentKind.CLAUDE, AgentKind.ANTIGRAVITY)
 _NOT_ATTACHABLE = frozenset({SessionState.RECOVERY_REQUIRED,
@@ -656,6 +661,13 @@ class TuiController:
             message = f"{name} failed: {_reason(error)}"
         else:
             message = f"{name}: {result.state}"
+            if result.state in _UNFINISHED:
+                # O `notice` some na proxima tecla: a razao de um finish ou
+                # cleanup recusado fica na linha de status.
+                lines = result.message.strip().splitlines()
+                reason = sanitize(lines[0].strip() if lines else "")
+                if reason:
+                    message = f"{message}: {reason[:_REASON_LIMIT]}"
             notice = tuple(sanitize(part.strip())
                            for part in result.message.split(";")
                            if part.strip())

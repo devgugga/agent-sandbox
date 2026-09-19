@@ -118,3 +118,18 @@ flag de bypass.
   vários → nada. Registros sem `startedAt` (anteriores ao campo) nunca
   fazem descoberta preguiçosa, e uma sessão não a faz enquanto outra
   sessão viva do mesmo agente no mesmo cwd também espera um id.
+
+### 4.4 Troca para mise `latest` na imagem (2026-09-19)
+
+A imagem deixou de fixar versões: `claude`, `codex` e `agy` vêm do mise
+(backends aqua do host, `latest` no build) e a versão de cada build fica em
+`/opt/asb-mise/versions`. As versões citadas em 4.1 e 4.2 (`2.1.263`,
+`0.153.4`) são as da caracterização, não mais as da imagem. Rechecado no
+primeiro build pós-troca (`claude=2.1.276`, `codex=0.155.0`, `agy=1.2.6`),
+container descartável, só `--help`, HOME temporário:
+- Claude ainda lista `--session-id <uuid>`, `-r, --resume [value]` e
+  `--dangerously-skip-permissions`.
+- Codex ainda mostra `codex resume [OPTIONS] [SESSION_ID] [PROMPT]` com
+  `--dangerously-bypass-approvals-and-sandbox`, e `codex resume` com flag
+  inexistente ainda sai 2.
+Um rebuild pode trazer outra versão; estes `--help` são o que rechecar.

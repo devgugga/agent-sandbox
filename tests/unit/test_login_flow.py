@@ -850,62 +850,56 @@ class TestEntrypointCredentialLayout(unittest.TestCase):
         self.assertIn("asb-staging", self.code)
 
 
-class TestImageVersionPinning(unittest.TestCase):
-    """Fixar versoes da imagem pelo mecanismo suportado por cada instalador.
+class TestImageProviderInstall(unittest.TestCase):
+    """Fornecedores via mise `latest`, num diretorio de root (decisao humana
+    de 2026-09-19, que substituiu a fixacao exata via npm e tarball).
 
-    Se indisponivel, interromper o gate de build, sem usar latest como se
-    estivesse fixado.
+    Sem pino, o que prova o conteudo da imagem e o gate de build: cada binario
+    roda como o usuario comum e responde `--version` no formato conhecido, e a
+    versao lida vai para /opt/asb-mise/versions.
     """
 
     def setUp(self):
         self.text = CONTAINERFILE.read_text(encoding="utf-8")
+        self.code = "\n".join(
+            line for line in self.text.splitlines()
+            if not line.lstrip().startswith("#"))
 
-    def test_claude_and_codex_are_pinned_to_exact_npm_versions(self):
-        self.assertIn("@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}", self.text)
-        self.assertIn("@openai/codex@${CODEX_VERSION}", self.text)
-        self.assertNotIn("npm install -g @anthropic-ai/claude-code @openai/codex",
-                         self.text)
+    def test_providers_use_the_same_aqua_backends_as_the_host(self):
+        for backend in ('"aqua:anthropics/claude-code" = "latest"',
+                        '"aqua:openai/codex" = "latest"',
+                        '"aqua:google-antigravity/antigravity-cli" = "latest"'):
+            self.assertIn(backend, self.code)
 
-    def test_pinned_versions_are_declared_as_build_args(self):
-        for arg in ("ARG CLAUDE_CODE_VERSION=", "ARG CODEX_VERSION=",
-                    "ARG AGY_VERSION="):
-            self.assertIn(arg, self.text)
+    def test_no_provider_comes_from_npm_or_a_pinned_tarball(self):
+        self.assertNotIn("npm install", self.code)
+        self.assertNotIn("@anthropic-ai/claude-code", self.code)
+        self.assertNotIn("@openai/codex", self.code)
+        self.assertNotIn("sha512sum", self.code)
 
-    def test_agy_is_installed_from_a_versioned_artifact_with_checksum(self):
-        """O install.sh do agy nao aceita selecao de versao (so `--dir` e
-        `--help`) e sempre instala a "latest available version". O manifesto,
-        porem, expoe URL versionada + sha512: e esse o artefato fixado."""
-        self.assertNotIn("antigravity.google/cli/install.sh", self.text)
-        self.assertIn("ARG AGY_SHA512=", self.text)
-        self.assertIn("sha512sum -c", self.text)
-
-    def test_the_agy_artifact_url_carries_the_pinned_version(self):
-        version = self._arg("AGY_VERSION")
-        url = self._arg("AGY_URL")
-        self.assertIn(f"/{version}-", url,
-                      f"a URL {url!r} nao carrega a versao {version!r}")
+    def test_install_goes_to_a_root_dir_never_the_toolcache(self):
+        """~/.local/share/mise vira symlink para o toolcache compartilhado e
+        gravavel pelo agente; os MISE_* de build nao podem virar ENV."""
+        self.assertIn("MISE_DATA_DIR=/opt/asb-mise/data", self.code)
+        for line in self.code.splitlines():
+            if line.startswith("ENV "):
+                self.assertNotIn("MISE_DATA_DIR", line)
+        self.assertIn('ENV PATH="/usr/local/sbin:/usr/sbin:/sbin:/opt/asb-mise/bin:',
+                      self.code)
 
     def test_versions_are_validated_against_the_binaries_at_build_time(self):
-        """Label declarado no Containerfile nao prova nada: o build compara o
-        que o BINARIO responde e falha se divergir."""
-        for probe in ("claude --version", "codex --version", "agy --version"):
-            self.assertIn(probe, self.text,
-                          f"o build nao interroga '{probe}'")
+        for probe in ('claude|^', 'codex|^codex-cli ', 'agy|^'):
+            self.assertIn(probe, self.code, f"o gate nao interroga '{probe}'")
+        self.assertIn('"$t" --version', self.code)
+        self.assertIn("/opt/asb-mise/versions", self.code)
+        self.assertIn('runuser -u "$ASB_USER"', self.code)
 
-    def test_every_pinned_version_has_a_label(self):
-        for label in ("asb.claude.version=", "asb.codex.version=",
-                      "asb.agy.version="):
-            self.assertIn(label, self.text)
-
-    def test_no_provider_is_installed_unpinned(self):
-        self.assertNotIn("npm install -g @anthropic-ai/claude-code\n", self.text)
-        self.assertNotIn("@latest", self.text)
-
-    def _arg(self, name: str) -> str:
-        for line in self.text.splitlines():
-            if line.startswith(f"ARG {name}="):
-                return line.split("=", 1)[1].strip()
-        raise AssertionError(f"ARG {name} ausente no Containerfile")
+    def test_old_provider_labels_are_gone(self):
+        """LABEL nao carrega valor calculado num RUN; um label com versao
+        declarada afirmaria algo que o build nao prova."""
+        for label in ("asb.claude.version", "asb.codex.version",
+                      "asb.agy.version"):
+            self.assertNotIn(label, self.code)
 
 
 class TestLifecycleLoginReexport(unittest.TestCase):

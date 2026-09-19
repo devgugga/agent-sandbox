@@ -123,6 +123,17 @@ FALTA rtk 0.46.0 na imagem, 0.48.1 no host  ->  asb-agent build
 
 Drift is reported but does not fail `doctor`: the image stays usable on the older version. What must not happen is the divergence staying invisible. If the host does not have the tool at all, nothing is printed — not every host uses `rtk`, and warning there would be noise rather than diagnosis.
 
+### Provider CLIs (`claude`, `codex`, `agy`): mise `latest`, root-owned
+
+The three provider CLIs follow a different policy from the tools above: they are installed with mise, using the same aqua backends as the operator's host (`aqua:anthropics/claude-code`, `aqua:openai/codex`, `aqua:google-antigravity/antigravity-cli`), each at `latest` resolved **at image build time**. Every rebuild takes the newest release mise accepts, so two builds can differ. Nothing is installed from npm or from a pinned tarball any more; Node.js stays in the image because Orca's remote agent compiles `node-pty` inside the container (see `failure-modes.md`).
+
+- **Location**: a root-owned mise tree at `/opt/asb-mise` (`libexec/mise`, `config/config.toml`, `data/installs/...`). `MISE_DATA_DIR`/`MISE_CONFIG_DIR`/`MISE_CACHE_DIR`/`MISE_STATE_DIR` are set only for that build step, never as `ENV`, so an agent's own `mise install` still lands in `asb-toolcache`.
+- **Never under `~/.local/share/mise`**: the entrypoint replaces that path with a symlink to the shared, agent-writable toolcache. An install there would vanish on the first start, and one workspace's agent could replace the binaries every workspace and the auth clients use.
+- **PATH**: `/opt/asb-mise/bin` holds symlinks straight to the installed executables and comes before `~/.local/bin` and the toolcache shims, in the image `ENV PATH` (which the entrypoint copies to `/etc/environment` for non-interactive `ssh`) and in `/etc/profile.d/agent-sandbox.sh` (login shells, tmux). Symlinks rather than mise shims: a shim consults user config at runtime and could resolve another version, or none.
+- **Smoke gate, not version gate**: the build fails unless each binary resolves to `/opt/asb-mise/bin`, runs as the unprivileged user, and prints `--version` in its known format — `<v> (Claude Code)`, `codex-cli <v>`, `<v>` (agy). The versions read there are written to `/opt/asb-mise/versions` (`claude=…`, `codex=…`, `agy=…`, root-owned, `0644`). A Containerfile `LABEL` cannot carry a value computed in a `RUN`, so the old `asb.claude.version`/`asb.codex.version`/`asb.agy.version` labels are gone rather than faked. Read it with `podman run --rm --entrypoint cat localhost/agent-sandbox:latest /opt/asb-mise/versions`.
+- **Self-update**: the binaries are root-owned and cannot replace themselves. `DISABLE_AUTOUPDATER=1` (Claude Code) and `AGY_CLI_DISABLE_AUTO_UPDATE=1` (read from the agy binary's strings, undocumented) silence the attempt. Codex only offers `check_for_update_on_startup` in `~/.codex/config.toml`, which is the credential volume, so it is left alone.
+- **`latest` is mise's `latest`**: mise 2026.9.11 hides releases younger than its built-in minimum release age from `latest` (`mise ls-remote` warns "N newer releases hidden by minimum_release_age"), so the image can trail the host by the newest release or two.
+
 ---
 
 ## 3. Worked Examples

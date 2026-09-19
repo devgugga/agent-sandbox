@@ -22,32 +22,53 @@ RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
-# Fornecedores de agente com versao EXATA. Sem pino, um `npm install -g` sem
-# `@versao` traz o que o registro chamar de latest no dia do build: o mesmo
-# Containerfile produz imagens diferentes, e um release quebrado do fornecedor
-# entra sem aviso. Os valores sao validados contra os BINARIOS logo abaixo —
-# label declarado no Containerfile nao prova o que foi instalado.
-ARG CLAUDE_CODE_VERSION=2.1.263
-ARG CODEX_VERSION=0.153.4
+# Node.js fica mesmo sem nenhum fornecedor vindo do npm: o agente remoto do
+# Orca compila `node-pty` com `node-gyp` DENTRO do container
+# (docs/domains/sandbox/failure-modes.md).
 
-RUN npm install -g \
-      "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
-      "@openai/codex@${CODEX_VERSION}" \
-    && npm cache clean --force
-
-# Gate de build: o que o binario RESPONDE tem de bater com o que foi pedido.
-# `claude --version` responde "2.1.263 (Claude Code)" e `codex --version`
-# responde "codex-cli 0.153.4"; por isso a comparacao e por substring da
-# versao, e nao por igualdade da linha inteira.
+# Fornecedores de agente (claude, codex, agy) via mise, com os MESMOS
+# backends aqua do host e em `latest` resolvido NO BUILD: cada rebuild traz o
+# release mais novo que o mise aceitar. Dois builds podem entao diferir; o
+# que a imagem contem fica registrado em /opt/asb-mise/versions pelo gate
+# abaixo, lido dos binarios e nao declarado.
+#
+# Diretorio de dados PROPRIO, de root, em /opt/asb-mise — NUNCA em
+# ~/.local/share/mise: o entrypoint troca esse caminho por um symlink para o
+# asb-toolcache, volume compartilhado e gravavel pelo agente. Instalado ali, o
+# fornecedor sumiria no primeiro arranque, e o agente de um workspace poderia
+# trocar o binario que todos os workspaces e os clientes de login usam.
+#
+# MISE_DATA_DIR/MISE_CONFIG_DIR/MISE_CACHE_DIR/MISE_STATE_DIR so neste RUN,
+# nao como ENV (mesmo motivo do UV_TOOL_DIR mais abaixo): em runtime um
+# `mise install` do agente tem de cair no toolcache, nao num diretorio de root.
+#
+# O PATH aponta para symlinks em /opt/asb-mise/bin, e nao para os shims do
+# mise: shim consulta a configuracao do usuario em runtime e poderia resolver
+# outra versao, ou nenhuma. O symlink leva direto ao binario instalado.
 RUN set -eu; \
-    got=$(timeout 60 claude --version 2>&1 | head -1); \
-    case "$got" in *"$CLAUDE_CODE_VERSION"*) : ;; \
-      *) echo "gate de versao: claude respondeu '$got', esperado $CLAUDE_CODE_VERSION" >&2; exit 1 ;; \
-    esac; \
-    got=$(timeout 60 codex --version 2>&1 | head -1); \
-    case "$got" in *"$CODEX_VERSION"*) : ;; \
-      *) echo "gate de versao: codex respondeu '$got', esperado $CODEX_VERSION" >&2; exit 1 ;; \
-    esac
+    install -d -m 0755 /opt/asb-mise /opt/asb-mise/libexec /opt/asb-mise/config /opt/asb-mise/bin; \
+    curl -fsSL https://mise.run | MISE_INSTALL_PATH=/opt/asb-mise/libexec/mise sh; \
+    printf '%s\n' '[tools]' \
+      '"aqua:anthropics/claude-code" = "latest"' \
+      '"aqua:openai/codex" = "latest"' \
+      '"aqua:google-antigravity/antigravity-cli" = "latest"' \
+      > /opt/asb-mise/config/config.toml; \
+    export MISE_DATA_DIR=/opt/asb-mise/data MISE_CONFIG_DIR=/opt/asb-mise/config \
+           MISE_CACHE_DIR=/tmp/asb-mise-cache MISE_STATE_DIR=/tmp/asb-mise-state; \
+    /opt/asb-mise/libexec/mise install; \
+    for t in claude codex agy; do \
+      ln -s "$(/opt/asb-mise/libexec/mise which "$t")" "/opt/asb-mise/bin/$t"; \
+    done; \
+    rm -rf /tmp/asb-mise-cache /tmp/asb-mise-state /opt/asb-mise/data/downloads; \
+    chmod -R go-w /opt/asb-mise
+
+# Os binarios sao de root e nao conseguem se autoatualizar; estas variaveis so
+# calam a tentativa e o aviso. DISABLE_AUTOUPDATER e a documentada do Claude
+# Code. AGY_CLI_DISABLE_AUTO_UPDATE foi lida da tabela de strings do binario
+# do agy (nao documentada). O Codex so tem a chave `check_for_update_on_startup`
+# no ~/.codex/config.toml, que e o volume de credencial — nao se toca.
+ENV DISABLE_AUTOUPDATER=1 \
+    AGY_CLI_DISABLE_AUTO_UPDATE=1
 
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
       -o /usr/share/keyrings/githubcli.gpg \
@@ -97,9 +118,7 @@ RUN curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/in
 ENV RTK_TELEMETRY_DISABLED=1
 
 LABEL asb.rtk.version="${RTK_VERSION}" \
-      asb.graphify.version="${GRAPHIFY_VERSION}" \
-      asb.claude.version="${CLAUDE_CODE_VERSION}" \
-      asb.codex.version="${CODEX_VERSION}"
+      asb.graphify.version="${GRAPHIFY_VERSION}"
 
 # O usuario espelha o do host: mesmo nome, uid 1000, MESMO home. E o home
 # identico que faz a worktree irma do Orca cair num caminho que existe dos
@@ -109,37 +128,36 @@ RUN useradd -m -u 1000 -d "$ASB_HOME" -s /bin/bash "$ASB_USER"
 USER $ASB_USER
 ENV HOME=$ASB_HOME
 RUN curl -fsSL https://mise.run | sh
-ENV PATH="/usr/local/sbin:/usr/sbin:/sbin:$ASB_HOME/.local/bin:$ASB_HOME/.local/share/mise/shims:${PATH}"
-# O Antigravity CLI substituiu o Gemini CLI, descontinuado em 2026-06-18 para
-# contas Pro/Ultra. E um binario Go unico; nao ha pacote npm.
-#
-# O `install.sh` oficial NAO aceita selecao de versao — os unicos parametros
-# sao `--dir` e `--help`, e ele instala sempre a "latest available version" do
-# manifesto. Usa-se entao o outro mecanismo que o brief admite: o ARTEFATO
-# VERSIONADO com checksum, que e o proprio par (url, sha512) que aquele
-# manifesto publica. O sha512 e o pino de verdade: se a URL versionada mudar
-# de conteudo, o build PARA, em vez de instalar outra coisa em silencio.
-#
-# Para subir de versao, releia o manifesto e troque os tres ARGs juntos:
-#   curl -fsSL https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/linux_amd64.json
-ARG AGY_VERSION=1.1.27
-ARG AGY_URL=https://storage.googleapis.com/antigravity-public/antigravity-cli/1.1.27-5211191891591168/linux-x64/cli_linux_x64.tar.gz
-ARG AGY_SHA512=793d4b9ea2c08d9a7e50bafa02cfc8c19424bd60d6e83f91408d45f9c6d4ce79a5d576fede5bef164d823abf84f81359a14b4ca665952c47b0a7cfd743bb69c0
-
-RUN set -eu; \
-    mkdir -p "$ASB_HOME/.local/bin"; \
-    curl -fsSL "$AGY_URL" -o /tmp/agy.tar.gz; \
-    echo "$AGY_SHA512  /tmp/agy.tar.gz" | sha512sum -c -; \
-    tar -xzf /tmp/agy.tar.gz -C /tmp antigravity; \
-    install -m 0755 /tmp/antigravity "$ASB_HOME/.local/bin/agy"; \
-    rm -f /tmp/agy.tar.gz /tmp/antigravity; \
-    got=$(timeout 60 agy --version 2>&1 | head -1); \
-    case "$got" in *"$AGY_VERSION"*) : ;; \
-      *) echo "gate de versao: agy respondeu '$got', esperado $AGY_VERSION" >&2; exit 1 ;; \
-    esac
+ENV PATH="/usr/local/sbin:/usr/sbin:/sbin:/opt/asb-mise/bin:$ASB_HOME/.local/bin:$ASB_HOME/.local/share/mise/shims:${PATH}"
 USER root
 
-LABEL asb.agy.version="${AGY_VERSION}"
+# Gate de build: cada fornecedor tem de RODAR como o usuario comum, pelo PATH
+# da imagem, resolver para /opt/asb-mise/bin e responder `--version` no
+# formato conhecido — "<v> (Claude Code)", "codex-cli <v>" e "<v>" (agy). A
+# versao lida aqui e a que vai para /opt/asb-mise/versions. Um LABEL do
+# Containerfile nao pode carregar valor calculado num RUN, por isso o
+# registro e um arquivo de root, e nao os antigos labels asb.<fornecedor>.
+# HOME temporario: o `--version` nao pode deixar estado no home da imagem.
+# So o stdout conta para o formato: sob /tmp o Codex avisa no stderr que nao
+# cria os aliases de PATH ali, e esse aviso nao e a versao.
+RUN set -eu; \
+    h=$(runuser -u "$ASB_USER" -- mktemp -d); \
+    : > /opt/asb-mise/versions; \
+    for spec in 'claude|^([0-9]+\.[0-9]+\.[0-9]+) \(Claude Code\)$' \
+                'codex|^codex-cli ([0-9]+\.[0-9]+\.[0-9]+)$' \
+                'agy|^([0-9]+\.[0-9]+\.[0-9]+)$'; do \
+      t=${spec%%|*}; re=${spec#*|}; \
+      where=$(runuser -u "$ASB_USER" -- env HOME="$h" PATH="$PATH" sh -c "command -v $t" || true); \
+      [ "$where" = "/opt/asb-mise/bin/$t" ] \
+        || { echo "gate: $t resolve para '$where', esperado /opt/asb-mise/bin/$t" >&2; exit 1; }; \
+      got=$(cd / && runuser -u "$ASB_USER" -- env HOME="$h" PATH="$PATH" timeout 60 "$t" --version 2>"$h.err" | head -1); \
+      v=$(printf '%s\n' "$got" | sed -nE "s/$re/\1/p"); \
+      [ -n "$v" ] || { echo "gate: $t --version respondeu '$got', fora do formato; stderr:" >&2; cat "$h.err" >&2; exit 1; }; \
+      printf '%s=%s\n' "$t" "$v" >> /opt/asb-mise/versions; \
+    done; \
+    rm -rf "$h" "$h.err"; \
+    chmod 0644 /opt/asb-mise/versions; \
+    cat /opt/asb-mise/versions
 
 # HOST KEYS ASSADAS NO BUILD. Geradas em runtime, cada workspace teria a sua, e
 # como todos atendem em 127.0.0.1 o ssh do Orca acusaria host-key-changed a

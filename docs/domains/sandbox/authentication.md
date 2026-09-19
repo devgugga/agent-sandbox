@@ -7,6 +7,10 @@ versions in
 [`docs/validation/2026-09-07-provider-auth-contracts.md`](../../validation/2026-09-07-provider-auth-contracts.md)
 and validated live in
 [`docs/validation/startup-auth-pilot.md`](../../validation/startup-auth-pilot.md) §5.
+The image no longer pins those versions: it installs each CLI at mise
+`latest` at build time and records what it got in `/opt/asb-mise/versions`
+(see [`configuration.md`](./configuration.md) §3). A rebuild can therefore
+change a contract characterized here; re-check it against that file.
 
 ---
 

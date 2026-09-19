@@ -22,7 +22,7 @@ assert_eq "1000" "$(in_image sh -c 'id -u')" "uid do usuario e 1000"
 assert_eq "$HOST_HOME" "$(in_image sh -c 'echo $HOME')" \
   "o home do container e identico ao do host"
 
-for bin in claude codex agy gh git rg jq socat ssh-keygen podman-compose; do
+for bin in gh git rg jq socat ssh-keygen podman-compose; do
   assert_eq "0" "$(in_image sh -lc "command -v $bin >/dev/null; echo \$?")" \
     "$bin esta no PATH de um shell de login"
 done
@@ -46,6 +46,72 @@ for label in asb.rtk.version asb.graphify.version; do
   assert_eq "0" "$(test -n "$(podman image inspect "$IMG" --format "{{index .Labels \"$label\"}}" 2>/dev/null)" && echo 0 || echo 1)" \
     "a imagem declara o label $label"
 done
+
+echo "== fornecedores via mise (root, /opt/asb-mise) =="
+
+# Pelo entrypoint REAL, como o usuario comum: e ele que escreve o PATH do
+# shell de login (/etc/profile.d) e do `ssh host cmd` (/etc/environment).
+as_user() { podman run --rm "$IMG" runuser -u "$HOST_USER" -- "$@"; }
+
+for spec in 'claude|^[0-9]+\.[0-9]+\.[0-9]+ \(Claude Code\)$' \
+            'codex|^codex-cli [0-9]+\.[0-9]+\.[0-9]+$' \
+            'agy|^[0-9]+\.[0-9]+\.[0-9]+$'; do
+  bin=${spec%%|*}; re=${spec#*|}
+  assert_eq "/opt/asb-mise/bin/$bin" "$(as_user bash -lc "command -v $bin" 2>/dev/null)" \
+    "$bin resolve para a instalacao de root num shell de login"
+  assert_eq "/opt/asb-mise/bin/$bin" "$(as_user sh -c \
+    ". /etc/environment; export PATH; command -v $bin" 2>/dev/null)" \
+    "$bin resolve para a instalacao de root pelo PATH de /etc/environment (ssh nao-interativo)"
+  got=$(as_user bash -lc "cd && HOME=\$(mktemp -d) timeout 60 $bin --version 2>/dev/null | head -1")
+  assert_eq "0" "$(printf '%s\n' "$got" | grep -Eq "$re" && echo 0 || echo 1)" \
+    "$bin --version roda como usuario comum no formato conhecido ('$got')"
+  real=$(in_image readlink -f "/opt/asb-mise/bin/$bin")
+  assert_eq "root" "$(in_image stat -c %U "$real")" "o binario de $bin e de root ($real)"
+done
+
+assert_eq "/opt/asb-mise/bin/claude" "$(as_user bash -lc \
+  'tmux -L t new-session -d "bash -lc \"command -v claude > /tmp/where\""; \
+   for i in 1 2 3 4 5 6 7 8 9 10; do [ -s /tmp/where ] && break; sleep 0.5; done; \
+   cat /tmp/where; tmux -L t kill-server 2>/dev/null' 2>/dev/null)" \
+  "claude resolve para a instalacao de root dentro do tmux"
+
+# O toolcache compartilhado (~/.local/share/mise, com shims) e gravavel pelo
+# agente. Um shim-isca ali NAO pode vencer a instalacao de root.
+decoy=$(mktemp -d)
+mkdir -p "$decoy/shims"
+for bin in claude codex agy; do
+  printf '#!/bin/sh\necho isca\nexit 42\n' > "$decoy/shims/$bin"; chmod 0755 "$decoy/shims/$bin"
+done
+chmod -R a+rX "$decoy"
+for bin in claude codex agy; do
+  assert_eq "/opt/asb-mise/bin/$bin" "$(podman run --rm \
+    -v "$decoy:$HOST_HOME/.local/share/mise:ro,z" "$IMG" \
+    runuser -u "$HOST_USER" -- bash -lc "command -v $bin" 2>/dev/null)" \
+    "um shim-isca de $bin no toolcache nao vence a instalacao de root"
+done
+rm -rf "$decoy"
+
+assert_eq "1|1|1" "$(in_image sh -c \
+  'a=0; touch /opt/asb-mise/x 2>/dev/null || a=1; \
+   b=0; touch /opt/asb-mise/bin/x 2>/dev/null || b=1; \
+   c=0; d=$(readlink -f /opt/asb-mise/bin/claude); touch "$(dirname "$d")/x" 2>/dev/null || c=1; \
+   printf "%s|%s|%s" $a $b $c')" \
+  "o usuario comum nao escreve em /opt/asb-mise, no bin nem no diretorio instalado"
+
+versions=$(in_image cat /opt/asb-mise/versions 2>/dev/null)
+for bin in claude codex agy; do
+  assert_eq "0" "$(printf '%s\n' "$versions" | grep -Eq "^$bin=[0-9]+\.[0-9]+\.[0-9]+$" && echo 0 || echo 1)" \
+    "/opt/asb-mise/versions registra a versao resolvida de $bin"
+done
+assert_eq "root 644" "$(in_image stat -c '%U %a' /opt/asb-mise/versions)" \
+  "/opt/asb-mise/versions e de root, somente leitura para os demais"
+
+assert_eq "" "$(in_image sh -c 'ls -d /usr/lib/node_modules/@anthropic-ai /usr/lib/node_modules/@openai \
+  /usr/local/lib/node_modules/@anthropic-ai /usr/local/lib/node_modules/@openai 2>/dev/null' || true)" \
+  "nenhum pacote npm global de fornecedor sobrou"
+
+assert_eq "1|1" "$(in_image sh -c 'printf "%s|%s" "${DISABLE_AUTOUPDATER:-}" "${AGY_CLI_DISABLE_AUTO_UPDATE:-}"')" \
+  "a imagem desliga a autoatualizacao do Claude e do agy"
 
 # O sandbox E a fronteira; sudo dentro dele so serviria para escapar dela.
 assert_eq "1" "$(in_image bash -c 'command -v sudo >/dev/null; echo $?')" \

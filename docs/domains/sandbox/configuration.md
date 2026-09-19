@@ -123,7 +123,9 @@ FALTA rtk 0.46.0 na imagem, 0.48.1 no host  ->  asb-agent build
 
 Drift is reported but does not fail `doctor`: the image stays usable on the older version. What must not happen is the divergence staying invisible. If the host does not have the tool at all, nothing is printed — not every host uses `rtk`, and warning there would be noise rather than diagnosis.
 
-### Provider CLIs (`claude`, `codex`, `agy`): mise `latest`, root-owned
+---
+
+## Provider CLIs (`claude`, `codex`, `agy`): mise `latest`, root-owned
 
 The three provider CLIs follow a different policy from the tools above: they are installed with mise, using the same aqua backends as the operator's host (`aqua:anthropics/claude-code`, `aqua:openai/codex`, `aqua:google-antigravity/antigravity-cli`), each at `latest` resolved **at image build time**. Every rebuild takes the newest release mise accepts, so two builds can differ. Nothing is installed from npm or from a pinned tarball any more; Node.js stays in the image because Orca's remote agent compiles `node-pty` inside the container (see `failure-modes.md`).
 

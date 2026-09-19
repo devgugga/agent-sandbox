@@ -1,5 +1,9 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3
 """image/asb-seed-claude-state — semeia a flag de primeira execucao do Claude.
+
+Interpretador FIXO, nao `env python3`: o PATH da imagem poe os shims do mise
+(toolcache compartilhado) antes de /usr/bin, e um `python3` de projeto ali
+faria a semeadura falhar calada.
 
 O Claude Code guarda o login em `~/.claude/.credentials.json` (volume
 compartilhado entre workspaces), mas o "onboarding ja feito" em

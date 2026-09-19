@@ -152,7 +152,7 @@ printf '%s|%s|%s' "\$warns" "\$rc" "\$([ -p .claude.json ] && echo fifo)"
 EOS
 )" "FIFO: um aviso, sem bloquear, intocado, sai 0"
 
-for bad in '{"hasCompletedOnboarding": fal' '[1, 2]' '"texto"' 'null'; do
+for bad in '' '{"hasCompletedOnboarding": fal' '[1, 2]' '"texto"' 'null'; do
   assert_eq "1|0|same" "$(seed_case <<EOS
 printf '%s' '$bad' > .claude.json; cp .claude.json orig
 $RUN
@@ -179,6 +179,16 @@ printf '%s|%s|%s|%s' "\$warns" "\$rc" "\$(cat .claude/.credentials.json)" \
   "\$(python3 -c 'import json;print(json.load(open(".claude.json"))=={"hasCompletedOnboarding":True})')"
 EOS
 )" "~/.claude (credencial) nao e tocado nem atrapalha"
+
+# O runuser do entrypoint herda o PATH da imagem, com os shims do mise ANTES
+# de /usr/bin, e esses shims vem do toolcache compartilhado. Um `python3` de
+# projeto ali nao pode sequestrar o helper (falharia calado, saindo 0).
+assert_eq "True|0" "$(seed_case <<EOS
+mkdir shim; printf '#!/bin/sh\nexit 42\n' > shim/python3; chmod 0755 shim/python3
+PATH="\$PWD/shim:\$PATH" $RUN
+printf '%s|%s' "\$(python3 -c 'import json;print(json.load(open(".claude.json"))=={"hasCompletedOnboarding":True})' 2>/dev/null)" "\$warns"
+EOS
+)" "um python3 anterior no PATH (shim do mise) nao sequestra o helper"
 
 # Ponta a ponta: o entrypoint REAL (root) semeia como o usuario comum, no home
 # dele. Sem mounts, os blocos de config/credencial/toolcache nao rodam.

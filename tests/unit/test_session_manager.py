@@ -134,6 +134,7 @@ class FakeDriver:
                                         known_paths=frozenset({Path("/old")}))
         self.capture_before_cwds: list[Path] = []
         self.capture_after_inputs: list[SessionEvidence] = []
+        self.since_calls: list[tuple[Path, datetime, frozenset]] = []
         self.resumed: list[tuple[Path, str]] = []
 
     def launch(self, cwd: Path, session_id: str | None = None) -> LaunchCommand:
@@ -166,6 +167,13 @@ class FakeDriver:
         return SessionEvidence(scan_root=baseline.scan_root,
                                known_paths=baseline.known_paths,
                                new_paths=frozenset())
+
+    def capture_since(self, cwd: Path, not_before: datetime,
+                      claimed_ids) -> SessionEvidence:
+        self.since_calls.append((cwd, not_before, frozenset(claimed_ids)))
+        return SessionEvidence(scan_root=None, cwd=cwd,
+                               not_before=not_before,
+                               claimed_ids=frozenset(claimed_ids))
 
     def discover_session_id(self, evidence: SessionEvidence) -> str | None:
         if len(self.discoveries) > 1:
@@ -205,8 +213,10 @@ class ManagerCase(unittest.TestCase):
     def seed(self, state: SessionState, *, provider_id: str | None = PROVIDER_ID,
              agent: AgentKind = AgentKind.CODEX,
              checkout: CheckoutId = CHECKOUT,
-             with_terminal: bool = True) -> AgentSession:
-        record = self.store.insert(AgentSession.new(checkout, agent, CWD, "t"))
+             with_terminal: bool = True,
+             started_at: datetime | None = None) -> AgentSession:
+        record = self.store.insert(AgentSession.new(
+            checkout, agent, CWD, "t", started_at=started_at))
         changes: dict[str, object] = {"provider_session_id": provider_id}
         if with_terminal:
             changes["terminal_id"] = terminal_name(record.id)
@@ -330,7 +340,7 @@ class TestStart(ManagerCase):
                 for name in ("a", "b"):
                     (root / f"rollout-{name}.jsonl").write_text(
                         json.dumps({"type": "session_meta",
-                                    "payload": {"cwd": str(CWD),
+                                    "payload": {"cwd": str(CWD), "source": "cli",
                                                 "id": f"id-{name}"}}) + "\n")
 
             terminal.start = start_and_write
@@ -353,7 +363,7 @@ class TestStart(ManagerCase):
             def start_and_write(terminal_id, cwd, command):
                 (root / "rollout-mine.jsonl").write_text(
                     json.dumps({"type": "session_meta",
-                                "payload": {"cwd": str(CWD),
+                                "payload": {"cwd": str(CWD), "source": "cli",
                                             "id": PROVIDER_ID}}) + "\n")
 
             terminal.start = start_and_write
@@ -751,6 +761,184 @@ class TestReconcile(ManagerCase):
         self.assertEqual(result, record)
         self.assertEqual(terminal.calls, [])
         self.assertEqual(self.store.get(record.id), record)
+
+
+class TestLazyDiscovery(ManagerCase):
+    """Um Codex real cria o rollout na primeira mensagem, depois da janela
+    do start: a descoberta e tentada de novo quando a sessao sem id sonda
+    ALIVE (reconcile/attach) ou DEAD (recuperacao)."""
+
+    def lazy(self, state=SessionState.DETACHED, **kwargs) -> AgentSession:
+        return self.seed(state, provider_id=None, started_at=NOW, **kwargs)
+
+    def test_start_records_started_at(self):
+        session = self.make(self.terminal()).start(StartSession(
+            checkout_id=CHECKOUT, agent=AgentKind.CODEX, cwd=CWD, title="t"))
+        self.assertEqual(session.started_at, NOW_STORED)
+        self.assertEqual(self.store.get(session.id).started_at, NOW_STORED)
+
+    def test_reconcile_alive_stores_the_id_and_bumps_the_revision_once(self):
+        record = self.lazy()
+        terminal = self.terminal(probes=[Liveness.ALIVE])
+        driver = FakeDriver(discoveries=[PROVIDER_ID])
+        manager = self.make(terminal, driver)
+        [result] = manager.reconcile(CHECKOUT)
+        self.assertEqual(result.state, SessionState.DETACHED)
+        self.assertEqual(result.provider_session_id, PROVIDER_ID)
+        self.assertEqual(result.revision, record.revision + 1)
+        self.assertEqual(self.store.get(record.id), result)
+        self.assertEqual(driver.since_calls, [(CWD, NOW_STORED, frozenset())])
+        self.assertEqual(terminal.names("start"), [])
+        # Com o id gravado, o proximo refresh nao descobre nem grava.
+        [again] = manager.reconcile(CHECKOUT)
+        self.assertEqual(again, result)
+        self.assertEqual(len(driver.since_calls), 1)
+
+    def test_reconcile_alive_with_zero_or_ambiguous_writes_nothing(self):
+        record = self.lazy()
+        driver = FakeDriver(discoveries=[None])
+        [result] = self.make(self.terminal(probes=[Liveness.ALIVE]), driver
+                             ).reconcile(CHECKOUT)
+        self.assertEqual(result, record)
+        self.assertEqual(self.store.get(record.id), record)
+        self.assertEqual(len(driver.since_calls), 1)
+
+    def test_invalid_lazy_id_is_not_stored(self):
+        record = self.lazy()
+        driver = FakeDriver(discoveries=["-rm -rf"])
+        [result] = self.make(self.terminal(probes=[Liveness.ALIVE]), driver
+                             ).reconcile(CHECKOUT)
+        self.assertEqual(result, record)
+
+    def test_claimed_ids_come_from_every_other_stored_session(self):
+        self.seed(SessionState.RUNNING, provider_id="other-checkout-id",
+                  checkout=OTHER_CHECKOUT)
+        self.seed(SessionState.COMPLETED, provider_id="claude-id",
+                  agent=AgentKind.CLAUDE)
+        self.lazy()
+        driver = FakeDriver(discoveries=[None])
+        self.make(self.terminal(probes=[Liveness.ALIVE]), driver
+                  ).reconcile(CHECKOUT)
+        self.assertEqual(driver.since_calls, [
+            (CWD, NOW_STORED, frozenset({"other-checkout-id", "claude-id"}))])
+
+    def test_lazy_discovery_at_recovery_enables_native_resume(self):
+        record = self.lazy()
+        terminal = self.terminal(probes=[Liveness.DEAD, Liveness.ALIVE],
+                                 exit_status=137)
+        driver = FakeDriver(discoveries=[PROVIDER_ID])
+        result = self.make(terminal, driver).attach(record.id)
+        self.assertEqual(driver.probe_runs, [self.remote_run])
+        self.assertEqual(driver.resumed, [(CWD, PROVIDER_ID)])
+        self.assertEqual(terminal.names("start"),
+                         [("start", record.terminal_id, CWD,
+                           ("codex", "resume", PROVIDER_ID))])
+        self.assertEqual(terminal.provider_at_start, [PROVIDER_ID])
+        self.assertEqual(result.session.state, SessionState.RUNNING)
+        self.assertEqual(result.session.provider_session_id, PROVIDER_ID)
+        self.assertEqual(self.store.get(record.id), result.session)
+        self.assertIsNotNone(result.argv)
+
+    def test_lazy_discovery_at_recovery_still_needs_confirmed_resume(self):
+        record = self.lazy()
+        terminal = self.terminal(probes=[Liveness.DEAD], exit_status=137)
+        driver = FakeDriver(discoveries=[PROVIDER_ID], resume_supported=False)
+        result = self.make(terminal, driver).attach(record.id)
+        self.assertEqual(result.session.state, SessionState.RECOVERY_REQUIRED)
+        self.assertEqual(result.session.provider_session_id, PROVIDER_ID)
+        self.assertEqual(driver.resumed, [])
+        self.assertEqual(terminal.names("start"), [])
+
+    def test_reconcile_dead_with_a_discovered_id_is_one_write(self):
+        record = self.lazy()
+        terminal = self.terminal(probes=[Liveness.DEAD], exit_status=1)
+        driver = FakeDriver(discoveries=[PROVIDER_ID])
+        [result] = self.make(terminal, driver).reconcile(CHECKOUT)
+        self.assertEqual(result.state, SessionState.EXITED_RESUMABLE)
+        self.assertEqual(result.provider_session_id, PROVIDER_ID)
+        self.assertEqual(result.revision, record.revision + 1)
+        self.assertEqual(terminal.names("start"), [])
+
+    def test_reconcile_dead_without_candidates_is_recovery_required(self):
+        record = self.lazy(SessionState.RECOVERY_REQUIRED)
+        driver = FakeDriver(discoveries=[None])
+        [result] = self.make(self.terminal(probes=[Liveness.DEAD],
+                                           exit_status=1), driver
+                             ).reconcile(CHECKOUT)
+        self.assertEqual(result, record)
+        self.assertEqual(len(driver.since_calls), 1)
+
+    def test_no_lazy_discovery_on_unknown_or_voluntary_exit(self):
+        for liveness, status in ((Liveness.UNKNOWN, None),
+                                 (Liveness.DEAD, 0)):
+            with self.subTest(liveness=liveness):
+                checkout = CheckoutId(f"c-{liveness}")
+                self.lazy(checkout=checkout)
+                driver = FakeDriver(discoveries=[PROVIDER_ID])
+                [result] = self.make(self.terminal(probes=[liveness],
+                                                   exit_status=status),
+                                     driver).reconcile(checkout)
+                self.assertIsNone(result.provider_session_id)
+                self.assertEqual(driver.since_calls, [])
+
+    def test_a_session_without_started_at_never_discovers_lazily(self):
+        for liveness, status in ((Liveness.ALIVE, None),
+                                 (Liveness.DEAD, 1)):
+            with self.subTest(liveness=liveness):
+                checkout = CheckoutId(f"c-old-{liveness}")
+                self.seed(SessionState.DETACHED, provider_id=None,
+                          checkout=checkout)
+                driver = FakeDriver(discoveries=[PROVIDER_ID])
+                [result] = self.make(self.terminal(probes=[liveness],
+                                                   exit_status=status),
+                                     driver).reconcile(checkout)
+                self.assertIsNone(result.provider_session_id)
+                self.assertEqual(driver.since_calls, [])
+
+    def test_a_stored_record_without_the_started_at_key_never_discovers(self):
+        import json
+
+        self.store.path.parent.mkdir(parents=True, exist_ok=True)
+        self.store.path.write_text(json.dumps({
+            "schemaVersion": 1, "revision": 1, "sessions": [{
+                "id": "s-0123456789abcdef", "checkoutId": str(CHECKOUT),
+                "agent": "codex", "title": "t", "cwd": str(CWD),
+                "terminalId": "asb-s-0123456789abcdef",
+                "providerSessionId": None, "state": "detached",
+                "lastHealthyAt": None, "revision": 1}]}))
+        driver = FakeDriver(discoveries=[PROVIDER_ID])
+        terminal = self.terminal(probes=[Liveness.DEAD], exit_status=1)
+        result = self.make(terminal, driver).attach(
+            self.store.list()[0].id)
+        self.assertIsNone(result.session.started_at)
+        self.assertEqual(result.session.state, SessionState.RECOVERY_REQUIRED)
+        self.assertIsNone(result.session.provider_session_id)
+        self.assertEqual(driver.since_calls, [])
+        self.assertEqual(terminal.names("start"), [])
+
+    def test_another_id_less_session_in_the_same_checkout_blocks_it(self):
+        """Duas sessoes Codex sem id no mesmo cwd: o rollout de uma seria
+        o unico candidato da outra. Nenhuma recebe id (nunca o errado)."""
+        first = self.lazy()
+        second = self.lazy()
+        driver = FakeDriver(discoveries=[PROVIDER_ID])
+        results = self.make(self.terminal(probes=[Liveness.ALIVE]), driver
+                            ).reconcile(CHECKOUT)
+        self.assertEqual({r.id: r.provider_session_id for r in results},
+                         {first.id: None, second.id: None})
+        self.assertEqual(driver.since_calls, [])
+
+    def test_final_or_other_agent_sessions_do_not_block_it(self):
+        self.seed(SessionState.COMPLETED, provider_id=None, started_at=NOW)
+        self.seed(SessionState.DETACHED, provider_id=None, started_at=NOW,
+                  agent=AgentKind.CLAUDE)
+        record = self.lazy()
+        driver = FakeDriver(discoveries=[PROVIDER_ID])
+        claude = FakeDriver(AgentKind.CLAUDE, discoveries=[None])
+        self.make(self.terminal(probes=[Liveness.ALIVE]), driver, claude
+                  ).reconcile(CHECKOUT)
+        self.assertEqual(self.store.get(record.id).provider_session_id,
+                         PROVIDER_ID)
 
 
 class TestStopAndSuspend(ManagerCase):

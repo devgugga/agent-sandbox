@@ -109,21 +109,17 @@ class SessionStore:
         return self._transact(mutate)
 
     def _normalize(self, session: AgentSession) -> AgentSession:
-        """Valida e normaliza `last_healthy_at` antes de gravar.
+        """Valida e normaliza `last_healthy_at` e `started_at` antes de
+        gravar.
 
         Recusa um datetime naive cedo, sem tocar lock nem arquivo, e trunca
         para precisao de segundos (o que o disco guarda), para que o
         registro devolvido por `insert()`/`replace()` seja igual ao que uma
         leitura subsequente por `get()` devolveria."""
-        dt = session.last_healthy_at
-        if dt is None:
-            return session
-        if dt.tzinfo is None or dt.tzinfo.utcoffset(dt) is None:
-            raise SessionStoreError(
-                f"session {session.id} last_healthy_at must be a "
-                "timezone-aware datetime, got a naive one")
-        normalized = dt.astimezone(timezone.utc).replace(microsecond=0)
-        return _dataclass_replace(session, last_healthy_at=normalized)
+        return _dataclass_replace(
+            session,
+            last_healthy_at=_to_stored_utc(session, "last_healthy_at"),
+            started_at=_to_stored_utc(session, "started_at"))
 
     def remove(self, session_id: SessionId) -> None:
         def mutate(sessions: list[AgentSession]) -> None:
@@ -211,6 +207,7 @@ class SessionStore:
         state = self._decode_enum(raw, "state", SessionState)
         last_healthy_at = self._decode_last_healthy_at(raw)
         revision = self._decode_revision(raw)
+        started_at = self._decode_started_at(raw)
         return AgentSession(
             id=session_id,
             checkout_id=checkout_id,
@@ -222,6 +219,7 @@ class SessionStore:
             provider_session_id=provider_session_id,
             last_healthy_at=last_healthy_at,
             revision=revision,
+            started_at=started_at,
         )
 
     def _required_str(self, raw: dict, key: str) -> str:
@@ -277,18 +275,26 @@ class SessionStore:
             raise SessionStoreError(
                 f"session entry missing required field 'lastHealthyAt' at "
                 f"{self.path}")
-        value = raw["lastHealthyAt"]
+        return self._decode_utc(raw["lastHealthyAt"], "lastHealthyAt")
+
+    def _decode_started_at(self, raw: dict) -> datetime | None:
+        """Opcional: registros gravados antes do campo nao tem a chave e
+        decodificam como `None`; um valor presente segue a regra estrita de
+        `lastHealthyAt`."""
+        return self._decode_utc(raw.get("startedAt"), "startedAt")
+
+    def _decode_utc(self, value: object, key: str) -> datetime | None:
         if value is None:
             return None
         if not isinstance(value, str) or not value.endswith("Z"):
             raise SessionStoreError(
-                "session entry field 'lastHealthyAt' must be an ISO-8601 "
+                f"session entry field {key!r} must be an ISO-8601 "
                 f"UTC timestamp ending in 'Z' at {self.path}: {value!r}")
         try:
             parsed = datetime.fromisoformat(value)
         except ValueError as exc:
             raise SessionStoreError(
-                "session entry field 'lastHealthyAt' is not a valid "
+                f"session entry field {key!r} is not a valid "
                 f"ISO-8601 timestamp at {self.path}: {value!r}") from exc
         return parsed.astimezone(timezone.utc)
 
@@ -339,16 +345,25 @@ class SessionStore:
                                   if session.provider_session_id is not None
                                   else None),
             "state": str(session.state),
-            "lastHealthyAt": self._encode_last_healthy_at(session),
+            "lastHealthyAt": _encode_utc(session, "last_healthy_at"),
             "revision": session.revision,
+            "startedAt": _encode_utc(session, "started_at"),
         }
 
-    def _encode_last_healthy_at(self, session: AgentSession) -> str | None:
-        dt = session.last_healthy_at
-        if dt is None:
-            return None
-        if dt.tzinfo is None or dt.tzinfo.utcoffset(dt) is None:
-            raise SessionStoreError(
-                f"session {session.id} last_healthy_at must be a "
-                "timezone-aware datetime, got a naive one")
-        return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+def _to_stored_utc(session: AgentSession, field: str) -> datetime | None:
+    """`session.<field>` em UTC truncado ao segundo; um datetime naive e
+    recusado."""
+    dt = getattr(session, field)
+    if dt is None:
+        return None
+    if dt.tzinfo is None or dt.tzinfo.utcoffset(dt) is None:
+        raise SessionStoreError(
+            f"session {session.id} {field} must be a "
+            "timezone-aware datetime, got a naive one")
+    return dt.astimezone(timezone.utc).replace(microsecond=0)
+
+
+def _encode_utc(session: AgentSession, field: str) -> str | None:
+    dt = _to_stored_utc(session, field)
+    return None if dt is None else dt.strftime("%Y-%m-%dT%H:%M:%SZ")

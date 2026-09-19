@@ -51,6 +51,7 @@ def _make_session(
     provider_session_id: ProviderSessionId | None = None,
     last_healthy_at: datetime | None = None,
     revision: int = 0,
+    started_at: datetime | None = None,
 ) -> AgentSession:
     return AgentSession(
         id=session_id or SessionId(f"s-{_new_id()}"),
@@ -63,6 +64,7 @@ def _make_session(
         provider_session_id=provider_session_id,
         last_healthy_at=last_healthy_at,
         revision=revision,
+        started_at=started_at,
     )
 
 
@@ -234,6 +236,7 @@ class PersistenceShapeTests(SessionStoreTestCase):
         self.assertEqual(set(entry.keys()), {
             "id", "checkoutId", "agent", "title", "cwd", "terminalId",
             "providerSessionId", "state", "lastHealthyAt", "revision",
+            "startedAt",
         })
 
     def test_json_schema_version_and_top_level_revision(self):
@@ -374,6 +377,64 @@ class LastHealthyAtTests(SessionStoreTestCase):
         with self.assertRaises(SessionStoreError):
             store.insert(_make_session())
         self.assertEqual(self.store_path.read_text(), before)
+
+
+class StartedAtTests(SessionStoreTestCase):
+    """`startedAt` e opcional: registros gravados antes dele (sem a chave)
+    decodificam como `None`; um valor presente segue a regra estrita de
+    `lastHealthyAt` (UTC com `Z`, datetime aware, truncado ao segundo)."""
+
+    def test_round_trips_started_at_truncated_to_seconds(self):
+        store = self.store()
+        moment = datetime(2026, 9, 19, 14, 36, 14, 987654,
+                          tzinfo=timezone.utc)
+        inserted = store.insert(_make_session(started_at=moment))
+        self.assertEqual(inserted.started_at, moment.replace(microsecond=0))
+        on_disk = json.loads(self.store_path.read_text())
+        self.assertEqual(on_disk["sessions"][0]["startedAt"],
+                         "2026-09-19T14:36:14Z")
+        self.assertEqual(store.get(inserted.id), inserted)
+
+    def test_none_is_written_as_null_and_read_back_as_none(self):
+        store = self.store()
+        inserted = store.insert(_make_session())
+        on_disk = json.loads(self.store_path.read_text())
+        self.assertIsNone(on_disk["sessions"][0]["startedAt"])
+        self.assertIsNone(store.get(inserted.id).started_at)
+
+    def test_a_record_without_the_key_decodes_as_none(self):
+        raw = _valid_raw_session()
+        self.assertNotIn("startedAt", raw)
+        self._seed_sessions(raw)
+        [session] = self.store().list()
+        self.assertIsNone(session.started_at)
+
+    def test_a_record_without_the_key_can_still_be_replaced(self):
+        self._seed_sessions(_valid_raw_session())
+        store = self.store()
+        [session] = store.list()
+        updated = store.replace(session.with_state(SessionState.DETACHED))
+        self.assertIsNone(updated.started_at)
+        self.assertEqual(store.get(session.id), updated)
+
+    def test_insert_rejects_naive_started_at_and_leaves_no_file(self):
+        with self.assertRaises(SessionStoreError):
+            self.store().insert(_make_session(
+                started_at=datetime(2026, 9, 19, 14, 36, 14)))
+        self.assertFalse(self.store_path.exists())
+
+    def test_invalid_started_at_raises_and_leaves_file_unchanged(self):
+        for value in ("2026-09-19 14:36:14", "not-a-real-timestampZ", 7,
+                      True, ["2026-09-19T14:36:14Z"]):
+            with self.subTest(value=value):
+                before = self._seed_sessions(
+                    _valid_raw_session(startedAt=value))
+                store = self.store()
+                with self.assertRaises(SessionStoreError):
+                    store.list()
+                with self.assertRaises(SessionStoreError):
+                    store.insert(_make_session())
+                self.assertEqual(self.store_path.read_text(), before)
 
 
 class DecoderRejectionTests(SessionStoreTestCase):

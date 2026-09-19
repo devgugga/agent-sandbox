@@ -90,3 +90,31 @@ lança: o sandbox é a fronteira de isolamento. Codex:
 `codex-cli 0.153.4`). Ali o `--help` discrimina: as duas formas saem 0 e
 `codex resume` com uma flag inexistente sai 2. Antigravity não recebe
 flag de bypass.
+
+### 4.3 Codex — thread do usuário e descoberta preguiçosa
+
+- No piloto, uma única sessão Codex produziu DOIS rollouts na primeira
+  mensagem, ~5 s depois da primeira escrita da sessão (fora da janela de
+  cinco tentativas), ambos com o cwd exato da sessão: o thread do usuário
+  (`source: "cli"`, `thread_source: "user"`, sem `parent_thread_id`) e um
+  subagente (`source: {"subagent": …}`, `thread_source:
+  "guardian_review"`, com `parent_thread_id` e `multi_agent_version`),
+  aberto por `approvals_reviewer = "auto_review"`.
+- Regra: um candidato só conta se o `payload` do `session_meta` NÃO tem
+  `parent_thread_id` E tem `source` string. Os demais guardas (cwd exato,
+  arquivo regular sem seguir symlink, sem bloquear em FIFO, primeira
+  linha de no máximo 64 KiB) continuam.
+- Verificação na história de HOST do operador (só leitura, só a primeira
+  linha de cada `~/.codex/sessions/**/*.jsonl`, só contagens): 167
+  arquivos, todos `session_meta`; 144 com `parent_thread_id`, 144 com
+  `source` objeto, os mesmos 144 nos dois conjuntos (0 com só um dos
+  marcadores); 23 sem nenhum, todos com `source` string e `thread_source:
+  "user"`; os 167 com `payload.timestamp` ISO-8601 com fuso.
+- Descoberta preguiçosa: além do start, tentada quando uma sessão sem id
+  sonda ALIVE (reconcile/attach) ou DEAD sem exit 0 (antes de decidir
+  `recovery_required`). Sem baseline: todo rollout atual é candidato, e o
+  filtro extra é `payload.timestamp >= startedAt` da sessão e id não
+  reclamado por outra sessão guardada. Exatamente um → gravado; zero ou
+  vários → nada. Registros sem `startedAt` (anteriores ao campo) nunca
+  fazem descoberta preguiçosa, e uma sessão não a faz enquanto outra
+  sessão viva do mesmo agente no mesmo cwd também espera um id.

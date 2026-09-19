@@ -84,10 +84,14 @@ class AgentSession:
     provider_session_id: ProviderSessionId | None
     last_healthy_at: datetime | None
     revision: int = 0
+    # Instante do `start`. `None` em registros gravados antes do campo:
+    # sem ele nao ha descoberta preguicosa do id do provedor.
+    started_at: datetime | None = None
 
     @classmethod
     def new(cls, checkout_id: CheckoutId, agent: AgentKind, cwd: Path,
-            title: str) -> "AgentSession":
+            title: str, *,
+            started_at: datetime | None = None) -> "AgentSession":
         return cls(
             id=SessionId(f"s-{secrets.token_hex(8)}"),
             checkout_id=checkout_id,
@@ -98,6 +102,7 @@ class AgentSession:
             terminal_id=None,
             provider_session_id=None,
             last_healthy_at=None,
+            started_at=started_at,
         )
 
     def with_state(self, state: SessionState, **changes: object) -> "AgentSession":

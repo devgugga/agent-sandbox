@@ -13,6 +13,18 @@ Codex viva no mesmo workspace pode aparecer durante a descoberta. Por isso
 so conta como candidato o arquivo cujo `payload.cwd` (string, caminho
 absoluto sem barra final) e o checkout de execucao desta sessao.
 
+Uma sessao Codex pode abrir SUBAGENTES com o mesmo cwd (o piloto viu um
+`guardian_review` criado por `approvals_reviewer = "auto_review"` junto com
+o thread do usuario, na primeira mensagem). So conta o thread do usuario:
+`payload` sem `parent_thread_id` e com `source` string (um `source` objeto,
+`{"subagent": ...}`, e subagente). Na historia do Codex do operador os dois
+marcadores coincidem em todos os arquivos (ver
+docs/validation/2026-09-17-agent-session-contracts.md, secao 4.3).
+
+Na descoberta preguicosa (`capture_since`), o `payload.timestamp` tem de
+ser um instante UTC com fuso, igual ou posterior ao inicio da sessao, e o
+id nao pode ser de outra sessao ja guardada.
+
 O volume tambem e gravavel pelo AGENTE: a leitura abre sem seguir symlink
 (`O_NOFOLLOW`), sem bloquear num FIFO (`O_NONBLOCK`), exige arquivo
 regular (`fstat`) e le no maximo `_FIRST_LINE_LIMIT` bytes; uma primeira
@@ -29,6 +41,7 @@ import json
 import os
 import re
 import stat
+from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Iterable
 
@@ -63,13 +76,18 @@ class CodexDriver(AgentDriver):
             return None
         ids = [session_id for path in evidence.new_paths
                if path.suffix == ".jsonl"
-               and (session_id := _session_id_for(path, evidence.cwd))]
+               and (session_id := _session_id_for(
+                   path, evidence.cwd, evidence.not_before))
+               and session_id not in evidence.claimed_ids]
         return ids[0] if len(ids) == 1 else None
 
 
-def _session_id_for(path: Path, cwd: Path) -> str | None:
+def _session_id_for(path: Path, cwd: Path,
+                    not_before: datetime | None = None) -> str | None:
     """`payload.id` do `session_meta` na primeira linha de `path`, somente
-    se `payload.cwd` e o checkout `cwd`; senao `None`."""
+    se `payload.cwd` e o checkout `cwd`, o thread e do usuario (nao um
+    subagente) e, com `not_before`, `payload.timestamp` nao e anterior a
+    ele; senao `None`."""
     first_line = _read_first_line(path)
     if first_line is None:
         return None
@@ -88,10 +106,30 @@ def _session_id_for(path: Path, cwd: Path) -> str | None:
     if not isinstance(session_cwd, str) \
             or PurePosixPath(session_cwd) != PurePosixPath(cwd):
         return None
+    if "parent_thread_id" in payload \
+            or not isinstance(payload.get("source"), str):
+        return None
+    if not_before is not None and not _at_or_after(payload.get("timestamp"),
+                                                   not_before):
+        return None
     session_id = payload.get("id")
     if isinstance(session_id, str) and session_id:
         return session_id
     return None
+
+
+def _at_or_after(value: object, not_before: datetime) -> bool:
+    """`value` e um instante ISO-8601 COM fuso, igual ou posterior a
+    `not_before`; qualquer outra coisa nao prova a ordem."""
+    if not isinstance(value, str):
+        return False
+    try:
+        moment = datetime.fromisoformat(value)
+    except ValueError:
+        return False
+    if moment.tzinfo is None or moment.tzinfo.utcoffset(moment) is None:
+        return False
+    return moment >= not_before
 
 
 def _read_first_line(path: Path) -> str | None:

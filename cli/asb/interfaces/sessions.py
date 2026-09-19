@@ -141,6 +141,7 @@ def project_add(repo: str, integration_branch: str | None,
 def _session_json(session: AgentSession) -> dict[str, object]:
     """Exatamente os campos de relacionamento que o store grava."""
     healthy = session.last_healthy_at
+    started = session.started_at
     return {
         "id": str(session.id),
         "checkoutId": str(session.checkout_id),
@@ -156,6 +157,8 @@ def _session_json(session: AgentSession) -> dict[str, object]:
         "lastHealthyAt": (healthy.strftime("%Y-%m-%dT%H:%M:%SZ")
                           if healthy is not None else None),
         "revision": session.revision,
+        "startedAt": (started.strftime("%Y-%m-%dT%H:%M:%SZ")
+                      if started is not None else None),
     }
 
 

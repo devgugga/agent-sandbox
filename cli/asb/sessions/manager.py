@@ -16,11 +16,16 @@ Regras que cada ramo abaixo respeita:
   cada passo grava o ULTIMO registro devolvido pelo store (revisao correta);
 - `TerminalError` de `start()` e ambiguo (a sessao PODE existir): sonda
   antes de concluir, nunca re-tenta as cegas;
+- uma sessao sem id do provedor tenta de novo a descoberta quando sonda
+  ALIVE ou DEAD (sem exit 0): o Codex cria o rollout na primeira mensagem,
+  depois da janela do `start`. Exatamente um candidato e gravado, na MESMA
+  escrita da classificacao; zero ou varios, nada;
 - so `TerminalError` e capturado; cancelamento (`KeyboardInterrupt`...)
   sempre chega ao chamador.
 """
 from __future__ import annotations
 
+import dataclasses
 import functools
 import time
 import uuid
@@ -136,7 +141,8 @@ class SessionManager:
                     if driver.assigns_session_id_at_launch else None)
         argv = _argv_only(driver.launch(request.cwd, assigned))
         record = self._store.insert(AgentSession.new(
-            request.checkout_id, request.agent, request.cwd, request.title))
+            request.checkout_id, request.agent, request.cwd, request.title,
+            started_at=self._clock()))
         record = self._store.replace(record.with_state(
             SessionState.STARTING, terminal_id=terminal_name(record.id),
             provider_session_id=assigned))
@@ -247,13 +253,20 @@ class SessionManager:
         if record.terminal_id is None:
             return settle(record, SessionState.RECOVERY_REQUIRED), False
         liveness = self._terminal.probe(record.terminal_id)
+        if liveness is Liveness.UNKNOWN:
+            return settle(record, SessionState.RECOVERY_REQUIRED), False
+        if liveness is Liveness.DEAD \
+                and self._terminal.capture_exit_status(record.terminal_id) == 0:
+            return settle(record, SessionState.COMPLETED), False
+        found = self._discover_lazily(record)
+        if found is not None:
+            # So em memoria (mesma revisao): a escrita da classificacao
+            # abaixo grava o id junto, numa unica escrita checada.
+            record = dataclasses.replace(record, provider_session_id=found)
+            settle = functools.partial(self._settle, rewrite=True)
         if liveness is Liveness.ALIVE:
             return settle(record, SessionState.DETACHED,
                           last_healthy_at=self._clock()), False
-        if liveness is Liveness.UNKNOWN:
-            return settle(record, SessionState.RECOVERY_REQUIRED), False
-        if self._terminal.capture_exit_status(record.terminal_id) == 0:
-            return settle(record, SessionState.COMPLETED), False
         if not self._can_resume(record):
             return settle(record, SessionState.RECOVERY_REQUIRED), False
         if not launch:
@@ -319,6 +332,30 @@ class SessionManager:
             raise SessionManagerError(
                 f"terminal {record.terminal_id} nao confirmou o encerramento")
         return self._store.replace(record.with_state(state))
+
+    def _discover_lazily(self, record: AgentSession) -> ProviderSessionId | None:
+        """Descoberta sem baseline de uma sessao que ainda nao tem id.
+        Candidatos: `session_meta` com `timestamp` >= `started_at` e id que
+        nenhuma outra sessao guardada reclama. Nunca roda sem `started_at`
+        (registro antigo), nem quando outra sessao viva do mesmo agente no
+        mesmo cwd tambem espera um id: o rollout de uma seria o candidato
+        unico da outra."""
+        if record.provider_session_id is not None or record.started_at is None:
+            return None
+        others = [s for s in self._store.list() if s.id != record.id]
+        if any(s.agent is record.agent and s.cwd == record.cwd
+               and s.provider_session_id is None and s.state not in _FINAL
+               for s in others):
+            return None
+        driver = self._drivers[record.agent]
+        claimed = {s.provider_session_id for s in others
+                   if s.provider_session_id is not None}
+        found = driver.discover_session_id(driver.capture_since(
+            record.cwd, record.started_at, claimed))
+        try:
+            return ProviderSessionId(found)
+        except ValueError:
+            return None
 
     def _discover(self, driver: AgentDriver,
                   baseline: SessionEvidence) -> ProviderSessionId | None:

@@ -23,6 +23,7 @@ import stat
 import subprocess
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Callable, ClassVar, Iterable, Mapping
 
@@ -86,12 +87,19 @@ class SessionEvidence:
     em `cwd` o checkout de execucao da sessao; `capture_after()` preenche
     `new_paths` com o que apareceu desde entao e repassa o mesmo `cwd`, para
     que a descoberta recuse arquivos de OUTRO checkout do mesmo workspace.
+
+    `capture_since()` (descoberta preguicosa, sem baseline) poe em
+    `new_paths` TODO arquivo atual; `not_before` (inicio da sessao) e
+    `claimed_ids` (ids de outras sessoes guardadas) substituem o baseline
+    como filtro.
     """
 
     scan_root: Path | None
     known_paths: frozenset[Path] = frozenset()
     new_paths: frozenset[Path] = frozenset()
     cwd: Path | None = None
+    not_before: datetime | None = None
+    claimed_ids: frozenset[str] = frozenset()
 
 
 def _first_line(text: str) -> str:
@@ -223,6 +231,15 @@ class AgentDriver(ABC):
         new_paths = frozenset(current - baseline.known_paths)
         return SessionEvidence(scan_root=root, known_paths=current,
                                 new_paths=new_paths, cwd=baseline.cwd)
+
+    def capture_since(self, cwd: Path, not_before: datetime,
+                      claimed_ids: Iterable[str]) -> SessionEvidence:
+        """Evidencia para a descoberta preguicosa: sem baseline, todo
+        arquivo atual e candidato; quem filtra e `discover_session_id`."""
+        root = self._scan_root(cwd)
+        return SessionEvidence(scan_root=root, new_paths=self._scan(root),
+                               cwd=cwd, not_before=not_before,
+                               claimed_ids=frozenset(claimed_ids))
 
     @abstractmethod
     def discover_session_id(self, evidence: SessionEvidence) -> str | None:

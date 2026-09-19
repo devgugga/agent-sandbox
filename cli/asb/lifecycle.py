@@ -12,6 +12,7 @@ from collections.abc import Iterable
 from pathlib import Path
 
 from . import install, podman, readiness, supervisor
+from .checkouts.git import GitError, GitRepository
 from .install import install_runtime
 from .keyring import (
     CONFIG,
@@ -1125,12 +1126,28 @@ def pull(ws: str) -> int:
     if origin is None:
         raise podman.PodmanError(f"workspace desconhecido: {ws}")
     layout = layout_for(origin, ws, home)
-    branch = subprocess.run(
-        ["git", "-C", str(layout.project_root), "rev-parse",
-         "--abbrev-ref", "HEAD"],
-        capture_output=True, text=True, check=True).stdout.strip()
-    subprocess.run(["git", "-C", str(origin), "fetch",
-                    str(layout.project_root), f"{branch}:refs/asb/{ws}/{branch}"],
+    # O checkout do workspace e ESCRITO pelo agente: o nome do branch que
+    # dele sai so chega ao `git fetch` do host validado, depois do `--` e
+    # como ref completa. `runner` resolve `subprocess.run` na hora da
+    # chamada (os testes o simulam).
+    sandbox = GitRepository(layout.project_root, runner=subprocess.run)
+    host = GitRepository(origin, runner=subprocess.run)
+    try:
+        branch = sandbox.symbolic_branch()
+        if branch is None:
+            raise podman.PodmanError(
+                f"o checkout de {ws} nao esta em um branch (HEAD destacado): "
+                f"{layout.project_root}; faca checkout de um branch e repita")
+        if not sandbox.valid_branch_name(branch):
+            raise podman.PodmanError(
+                f"nome de branch recusado no checkout de {ws}: {branch!r}")
+        dest = f"refs/asb/{ws}/{branch}"
+        if not host.valid_ref(dest):
+            raise podman.PodmanError(f"ref de destino recusada: {dest!r}")
+    except GitError as error:
+        raise podman.PodmanError(str(error)) from error
+    subprocess.run(["git", "-C", str(origin), "fetch", "--",
+                    str(layout.project_root), f"refs/heads/{branch}:{dest}"],
                    check=True)
     print(f"buscado em {origin}: refs/asb/{ws}/{branch}\n"
           f"  revise:  git -C {origin} log refs/asb/{ws}/{branch}\n"

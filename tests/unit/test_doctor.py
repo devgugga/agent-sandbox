@@ -3,9 +3,12 @@ from __future__ import annotations
 
 import asb_test_isolation  # noqa: F401  (guarda de isolamento da suite: nenhum volume real)
 
+import importlib.machinery
+import importlib.util
 import io
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -17,6 +20,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "cli"))
 from asb import doctor as doc_mod  # noqa: E402
 from asb import lifecycle  # noqa: E402
 from asb.podman import PodmanError  # noqa: E402
+
+CLI_PATH = Path(__file__).resolve().parents[2] / "cli" / "asb-agent"
+
+
+def _load_cli_module():
+    loader = importlib.machinery.SourceFileLoader("asb_agent_cli_pull",
+                                                  str(CLI_PATH))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    assert spec is not None
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
 
 
 class TestDoctor(unittest.TestCase):
@@ -349,34 +364,103 @@ class TestPull(unittest.TestCase):
             lifecycle.pull("unknown-ws")
         self.assertIn("workspace desconhecido: unknown-ws", str(ctx.exception))
 
-    @mock.patch("asb.lifecycle._origin_of")
-    @mock.patch("asb.lifecycle.subprocess.run")
-    def test_pull_fetches_into_namespaced_ref(self, mock_run, mock_origin):
-        with tempfile.TemporaryDirectory() as tmp:
-            origin = Path(tmp) / "origin"
-            origin.mkdir()
-            mock_origin.return_value = origin
+    def _pull(self, head, valid=True, ref_ok=True, main=None):
+        """Roda `pull("test-ws")` (ou `main`) com o Git simulado: `head` e
+        a saida de `symbolic-ref` (None = HEAD destacado), `valid` o
+        veredito de `check-ref-format --branch` e `ref_ok` o da ref de
+        destino. Devolve (resultado, chamadas, stderr, origin, raiz)."""
+        calls = []
 
-            mock_run.return_value = mock.Mock(stdout="feat/awesome\n")
+        def run(argv, **kwargs):
+            calls.append((list(argv), kwargs))
+            args = argv[3:]
+            if args[:1] == ["symbolic-ref"]:
+                if head is None:
+                    return subprocess.CompletedProcess(
+                        argv, 128, b"",
+                        b"fatal: ref HEAD is not a symbolic ref\n")
+                return subprocess.CompletedProcess(
+                    argv, 0, f"{head}\n".encode(), b"")
+            if args[:2] == ["check-ref-format", "--branch"]:
+                out = f"{args[2]}\n".encode() if valid else b""
+                return subprocess.CompletedProcess(
+                    argv, 0 if valid else 1, out, b"")
+            if args[:1] == ["check-ref-format"]:
+                return subprocess.CompletedProcess(
+                    argv, 0 if ref_ok else 1, b"", b"")
+            return subprocess.CompletedProcess(argv, 0)
 
-            err = io.StringIO()
-            with mock.patch("sys.stderr", err):
-                code = lifecycle.pull("test-ws")
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        origin = Path(tmp.name) / "origin"
+        origin.mkdir()
+        err = io.StringIO()
+        with mock.patch("asb.lifecycle._origin_of", return_value=origin), \
+                mock.patch("asb.lifecycle.subprocess.run", side_effect=run), \
+                mock.patch("sys.stderr", err):
+            try:
+                result = (main or (lambda: lifecycle.pull("test-ws")))()
+            except PodmanError as error:
+                result = error
+        root = str(lifecycle.layout_for(
+            origin, "test-ws", Path(os.path.expanduser("~"))).project_root)
+        return result, calls, err.getvalue(), origin, root
 
-            self.assertEqual(code, 0)
-            mock_run.assert_has_calls([
-                mock.call(
-                    ["git", "-C", mock.ANY, "rev-parse", "--abbrev-ref", "HEAD"],
-                    capture_output=True, text=True, check=True
-                ),
-                mock.call(
-                    ["git", "-C", str(origin), "fetch", mock.ANY,
-                     "feat/awesome:refs/asb/test-ws/feat/awesome"],
-                    check=True
-                ),
-            ])
-            self.assertIn("buscado em", err.getvalue())
-            self.assertIn("refs/asb/test-ws/feat/awesome", err.getvalue())
+    def test_pull_fetches_into_namespaced_ref(self):
+        code, calls, err, origin, root = self._pull("feat/awesome")
+        self.assertEqual(code, 0)
+        git = dict(shell=False, capture_output=True, timeout=mock.ANY,
+                   check=False, stdin=subprocess.DEVNULL)
+        self.assertEqual(calls, [
+            (["git", "-C", root, "symbolic-ref", "--short", "HEAD"], git),
+            (["git", "-C", root, "check-ref-format", "--branch",
+              "feat/awesome"], git),
+            (["git", "-C", str(origin), "check-ref-format",
+              "refs/asb/test-ws/feat/awesome"], git),
+            (["git", "-C", str(origin), "fetch", "--", root,
+              "refs/heads/feat/awesome:refs/asb/test-ws/feat/awesome"],
+             dict(check=True)),
+        ])
+        # Mesmas tres linhas de antes, byte a byte.
+        self.assertEqual(err, (
+            f"buscado em {origin}: refs/asb/test-ws/feat/awesome\n"
+            f"  revise:  git -C {origin} log refs/asb/test-ws/feat/awesome\n"
+            f"  integre: git -C {origin} merge "
+            "refs/asb/test-ws/feat/awesome\n"))
+
+    def test_pull_refuses_an_unusable_branch_without_fetching(self):
+        """O branch vem do checkout que o agente escreve: um HEAD
+        destacado, uma opcao disfarcada de branch ou um nome que o Git
+        recusa nunca chegam ao `git fetch` do host."""
+        cases = {
+            "detached": dict(head=None),
+            "option": dict(head="--upload-pack=touch /tmp/x"),
+            "bad name": dict(head="a..b", valid=False),
+            "bad destination": dict(head="ok", ref_ok=False),
+        }
+        for label, case in cases.items():
+            with self.subTest(label):
+                result, calls, err, _origin, _root = self._pull(**case)
+                self.assertIsInstance(result, PodmanError)
+                self.assertEqual(
+                    [argv for argv, _kw in calls if "fetch" in argv], [])
+                self.assertNotIn("buscado em", err)
+
+    def test_a_refused_pull_exits_2_through_the_cli(self):
+        cli = _load_cli_module()
+        for label, case in {"detached": dict(head=None),
+                            "option": dict(head="-x"),
+                            "bad name": dict(head="a..b", valid=False)
+                            }.items():
+            with self.subTest(label), mock.patch.object(
+                    cli.sys, "argv",
+                    ["asb-agent", "pull", "--workspace", "test-ws"]):
+                code, calls, err, _origin, _root = self._pull(
+                    **case, main=cli.main)
+                self.assertEqual(code, 2)
+                self.assertEqual(
+                    [argv for argv, _kw in calls if "fetch" in argv], [])
+                self.assertTrue(err.startswith("asb-agent: "), err)
 
 
 class TestPurge(unittest.TestCase):

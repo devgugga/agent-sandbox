@@ -10,6 +10,7 @@ from __future__ import annotations
 import asb_test_isolation  # noqa: F401  (guarda de isolamento da suite: nenhum volume real)
 
 import curses
+import io
 import subprocess
 import sys
 import tempfile
@@ -176,6 +177,8 @@ class _Case(unittest.TestCase):
         self.branch_reads: list[Path] = []
         self.events: list = []
         self.child_error: BaseException | None = None
+        self.child_code = 0
+        self.pause_error: BaseException | None = None
 
     def _discover(self, project):
         value = self.discovered[project.id]
@@ -191,7 +194,12 @@ class _Case(unittest.TestCase):
         self.events.append(("child", tuple(argv)))
         if self.child_error is not None:
             raise self.child_error
-        return 0
+        return self.child_code
+
+    def pause_after_failure(self, code):
+        self.events.append(("pause", code))
+        if self.pause_error is not None:
+            raise self.pause_error
 
     def services(self) -> sessions.SessionServices:
         return sessions.SessionServices(
@@ -201,6 +209,7 @@ class _Case(unittest.TestCase):
     def controller(self, refresh=True) -> tui.TuiController:
         ctl = tui.TuiController(self.services(), read_branch=self.read_branch,
                                 run_child=self.run_child,
+                                pause_after_failure=self.pause_after_failure,
                                 checkouts=self.checkouts)
         ctl.terminal = FakeTerminal(self.events)
         if refresh:
@@ -370,6 +379,51 @@ class TestAttach(_Case):
         with self.assertRaises(KeyboardInterrupt):
             ctl.activate()
         self.assertEqual(self.events[-1], "restore")
+
+    def test_a_failed_attach_waits_for_the_operator_before_restoring(self):
+        """Piloto 1: o curses apagava o erro do tmux assim que o filho
+        saia; com exit != 0 a TUI espera o Enter ANTES do restore."""
+        self.child_code = 1
+        ctl = self.controller()
+        self.select(ctl, f"s:{self.record.id}")
+        ctl.activate()
+        self.assertEqual(self.events, ["suspend", ("child", ATTACH_ARGV),
+                                       ("pause", 1), "restore"])
+        self.assertEqual(ctl.message, "attach exited with code 1")
+
+    def test_a_clean_detach_does_not_wait(self):
+        ctl = self.controller()
+        self.select(ctl, f"s:{self.record.id}")
+        ctl.activate()
+        self.assertNotIn(("pause", 0), self.events)
+        self.assertEqual(self.events,
+                         ["suspend", ("child", ATTACH_ARGV), "restore"])
+        self.assertEqual(ctl.message, "detached")
+
+    def test_the_screen_is_restored_even_when_the_wait_raises(self):
+        self.child_code = 1
+        for error in (EOFError(), KeyboardInterrupt(), OSError("tty")):
+            with self.subTest(error=error):
+                self.events.clear()
+                self.pause_error = error
+                ctl = self.controller()
+                self.select(ctl, f"s:{self.record.id}")
+                if isinstance(error, KeyboardInterrupt):
+                    with self.assertRaises(KeyboardInterrupt):
+                        ctl.activate()
+                else:
+                    ctl.activate()
+                self.assertEqual(self.events,
+                                 ["suspend", ("child", ATTACH_ARGV),
+                                  ("pause", 1), "restore"])
+
+    def test_the_default_wait_prints_one_line_and_reads_one_line(self):
+        out, stdin = io.StringIO(), io.StringIO("\n")
+        tui.pause_after_failure(1, out=out, stdin=stdin)
+        self.assertEqual(out.getvalue(),
+                         "attach failed (exit 1). "
+                         "Press Enter to return to the TUI.\n")
+        self.assertEqual(stdin.read(), "")
 
     def test_the_default_child_runs_the_argv_without_a_shell(self):
         with mock.patch.object(tui.subprocess, "run",

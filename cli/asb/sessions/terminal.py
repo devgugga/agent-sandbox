@@ -61,6 +61,14 @@ _TAG = "@asb_session"
 _PANE_FORMAT = "#{session_id} #{pane_dead} #{pane_dead_status}"
 _PANE_LINE = re.compile(r"^(\$[0-9]+) ([01]) ([0-9]*)$", re.ASCII)
 _NO_SERVER = re.compile(r"^no server running on \S+$")
+# Script FIXO do attach (piloto 1): o `ssh -tt` repassa o TERM do operador,
+# e o tmux 3.3a recusa um TERM sem terminfo na imagem ("missing or
+# unsuitable terminal: xterm-ghostty", exit 1). Sem o terminfo, cai para
+# xterm-256color. O alvo chega como `$1`, argumento separado: nenhum texto
+# e interpolado no script.
+ATTACH_SCRIPT = ('infocmp "$TERM" >/dev/null 2>&1 || '
+                 'export TERM=xterm-256color; '
+                 'exec tmux attach-session -t "$1"')
 
 
 def _filter(name: TerminalId) -> str:
@@ -169,13 +177,15 @@ class TmuxTerminal:
     def attach_argv(self, terminal_id: str) -> list[str]:
         """argv interativo (com TTY) que anexa exatamente a esta sessao:
         pelo `session_id` quando a tag ou o nome a localizam (um rename nao
-        a perde), senao pelo nome exato, que no pior caso nao acha nada."""
+        a perde), senao pelo nome exato, que no pior caso nao acha nada.
+        Roda `ATTACH_SCRIPT` com o alvo como `$1` (`asb-attach` e `$0`)."""
         name = TerminalId(terminal_id)
         found = self._locate(name)
         target = (found[0] if found is not None and found is not _ABSENT
                   else f"={name}")
         return self._connection.ssh_argv(
-            ("tmux", "attach-session", "-t", target), interactive=True)
+            ("sh", "-c", ATTACH_SCRIPT, "asb-attach", target),
+            interactive=True)
 
     def _locate(self, name: TerminalId):
         """`(session_id, [(pane_dead, status), ...])` da UNICA sessao que

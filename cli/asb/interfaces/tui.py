@@ -90,6 +90,18 @@ def run_child(argv: list[str]) -> int:
     return subprocess.run(argv, check=False).returncode
 
 
+def pause_after_failure(code: int, *, out: TextIO | None = None,
+                        stdin: TextIO | None = None) -> None:
+    """Com o curses suspenso, deixa o erro do filho (o do tmux) na tela ate
+    o operador apertar Enter; o `restore` o apagaria na hora (piloto 1)."""
+    out = sys.stdout if out is None else out
+    stdin = sys.stdin if stdin is None else stdin
+    out.write(f"attach failed (exit {code}). "
+              "Press Enter to return to the TUI.\n")
+    out.flush()
+    stdin.readline()
+
+
 def session_liveness(services: SessionServices
                      ) -> Callable[[CheckoutBinding, AgentSession], Liveness]:
     """Sonda do tmux da sessao pela conexao viva do workspace, sem nunca
@@ -166,10 +178,12 @@ class TuiController:
     def __init__(self, services: SessionServices, *,
                  read_branch: Callable[[Path], BranchInfo | None] = read_branch,
                  run_child: Callable[[list[str]], int] = run_child,
+                 pause_after_failure: Callable[[int], None] = pause_after_failure,
                  checkouts: CheckoutManager | None = None) -> None:
         self._services = services
         self._read_branch = read_branch
         self._run_child = run_child
+        self._pause_after_failure = pause_after_failure
         self.checkouts = (checkouts if checkouts is not None
                           else default_checkouts(services))
         # Substituido pela camada curses (`run`); testes injetam um falso.
@@ -375,6 +389,8 @@ class TuiController:
             self.terminal.suspend()
             try:
                 exit_codes.append(self._run_child(argv))
+                if exit_codes[0] != 0:
+                    self._pause_after_failure(exit_codes[0])
             finally:
                 self.terminal.restore()
 

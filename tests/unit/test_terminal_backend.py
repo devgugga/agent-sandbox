@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asb_test_isolation  # noqa: F401  (guarda de isolamento da suite: nenhum volume real)
 
+import shlex
 import subprocess
 import sys
 import unittest
@@ -21,6 +22,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "cli"))
 
 from asb.runtime.connection import ConnectionInfo  # noqa: E402
+from asb.sessions import terminal as terminal_module  # noqa: E402
 from asb.sessions.model import TerminalId  # noqa: E402
 from asb.sessions.terminal import (  # noqa: E402
     Liveness, TerminalError, TmuxTerminal,
@@ -47,6 +49,20 @@ FILTER = ("#{||:#{==:#{@asb_session}," + NAME + "},"
           "#{==:#{session_name}," + NAME + "}}")
 PROBE_REMOTE = (f"tmux list-panes -a -f '{FILTER}' -F "
                 "'#{session_id} #{pane_dead} #{pane_dead_status}'")
+# Pilot round 1: o attach roda um script FIXO que cai para xterm-256color
+# quando a imagem nao tem o terminfo do TERM do operador (Ghostty); o alvo
+# e `$1`, argumento separado, nunca interpolado no script.
+ATTACH_SCRIPT = ('infocmp "$TERM" >/dev/null 2>&1 || '
+                 'export TERM=xterm-256color; '
+                 'exec tmux attach-session -t "$1"')
+
+
+def attach_remote(quoted_target: str) -> str:
+    return ("sh -c 'infocmp \"$TERM\" >/dev/null 2>&1 || "
+            "export TERM=xterm-256color; "
+            "exec tmux attach-session -t \"$1\"' asb-attach " + quoted_target)
+
+
 START_TAIL = (f"';' set-option -t ={NAME}: remain-on-exit on "
               f"';' set-option -t ={NAME}: @asb_session {NAME}")
 
@@ -216,7 +232,7 @@ class TestRenamedSession(unittest.TestCase):
         terminal.stop(NAME)
         self.assertEqual(run.call_args.args[0][-1], "tmux kill-session -t '$7'")
         self.assertEqual(terminal.attach_argv(NAME),
-                         [*SSH_TTY, "tmux attach-session -t '$7'"])
+                         [*SSH_TTY, attach_remote("'$7'")])
 
 
 class TestProbe(_RunContract, unittest.TestCase):
@@ -394,7 +410,7 @@ class TestAttachArgv(unittest.TestCase):
     def test_attaches_to_the_located_session_id(self):
         terminal, run = _terminal(_done(0, stdout="$3 0 \n"))
         self.assertEqual(terminal.attach_argv(NAME), [
-            *SSH_TTY, "tmux attach-session -t '$3'",
+            *SSH_TTY, attach_remote("'$3'"),
         ])
         self.assertEqual(run.call_args.args[0], [*SSH_BATCH, PROBE_REMOTE])
 
@@ -404,8 +420,19 @@ class TestAttachArgv(unittest.TestCase):
             terminal, _ = _terminal(result)
             with self.subTest(result=result):
                 self.assertEqual(terminal.attach_argv(NAME), [
-                    *SSH_TTY, f"tmux attach-session -t ={NAME}",
+                    *SSH_TTY, attach_remote(f"={NAME}"),
                 ])
+
+    def test_the_script_is_constant_and_the_target_its_last_argument(self):
+        for stdout, target in (("$3 0 \n", "$3"), ("", f"={NAME}")):
+            terminal, _ = _terminal(_done(0, stdout=stdout))
+            with self.subTest(target=target):
+                argv = terminal.attach_argv(NAME)
+                self.assertEqual(argv[:-1], SSH_TTY)
+                self.assertEqual(shlex.split(argv[-1]),
+                                 ["sh", "-c", ATTACH_SCRIPT, "asb-attach",
+                                  target])
+                self.assertEqual(terminal_module.ATTACH_SCRIPT, ATTACH_SCRIPT)
 
 
 class TestInvalidTerminalId(unittest.TestCase):

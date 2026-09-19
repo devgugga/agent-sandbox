@@ -439,7 +439,10 @@ class TestSessionAttach(_Case):
         self.assertEqual(argv[:-1], info.ssh_argv())
         # Um unico alvo, exato: o id tmux ($5) da sessao que carrega a tag,
         # escrito a mao e nao recomputado com shlex.
-        self.assertEqual(argv[-1], "tmux attach-session -t '$5'")
+        self.assertEqual(argv[-1], (
+            "sh -c 'infocmp \"$TERM\" >/dev/null 2>&1 || "
+            "export TERM=xterm-256color; "
+            "exec tmux attach-session -t \"$1\"' asb-attach '$5'"))
         self.assertEqual(self.store.get(record.id).state,
                          SessionState.DETACHED)
 

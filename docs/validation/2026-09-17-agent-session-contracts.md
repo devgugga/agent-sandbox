@@ -129,6 +129,21 @@ descartáveis, nenhuma conversa iniciada):
   (strings do binário: `struct ProjectConfig with 1 element`,
   `trust_level`, `trusted`, `failed to persist trusted project state`).
 
+Um `=` no caminho é recusado por um motivo diferente e mais grave: o `-c`
+parte o argumento em `key=value` no PRIMEIRO `=`, então um `=` dentro da
+chave citada a parte ao meio. Medido:
+`codex doctor -c 'projects."/work/a=b".trust_level="trusted"'` reporta
+`✗ config could not be loaded` — a sessão nem começaria, o que é pior que
+voltar ao prompt de trust. Já um caminho com aspa embutida
+(`projects."/a"b".trust_level="trusted"`) o Codex ACEITA em silêncio, com
+uma chave errada: o binário não protege contra isso, só a omissão do
+driver protege.
+
+A forma de lançamento também foi conferida: `codex
+--dangerously-bypass-approvals-and-sandbox -c badkey` sai com
+`Error parsing -c overrides: Invalid override (missing '='): badkey`,
+provando que o `-c` depois da flag de bypass é parseado.
+
 NÃO verificado: que o override suprime a pergunta de trust numa sessão
 real — isso exige um TTY e uma conversa de verdade, fora do escopo desta
 validação. O que está provado é o nome da chave, o valor, e que a forma
@@ -136,8 +151,8 @@ citada parseia e é carregada.
 
 Segurança: a chave TEM de ser citada (uma chave nua de TOML não aceita
 `/`) e a citação não é escapada, então um `cwd` com aspa dupla,
-contrabarra ou caractere de controle (inclusive quebra de linha) faz o
-driver OMITIR a flag inteira — o Codex volta a perguntar pelo trust, nunca
+contrabarra, `=` ou caractere de controle (inclusive quebra de linha) faz
+o driver OMITIR a flag inteira — o Codex volta a perguntar pelo trust, nunca
 recebe um TOML quebrado. O argv atravessa `ssh_argv` (`shlex.join`, um
 elemento por vez) e o `tmux new-session -- <argv>` com dois ou mais
 elementos faz exec direto, então as aspas chegam literais ao binário.

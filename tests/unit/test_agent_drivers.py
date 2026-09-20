@@ -111,6 +111,18 @@ class TestCodexTrustOverride(unittest.TestCase):
         self.assertEqual(CodexDriver().resume(Path("/work/a\nb"), "abc").argv,
                          ("codex", "resume", CODEX_BYPASS, "abc"))
 
+    def test_launch_omits_the_override_for_a_path_with_an_equals_sign(self):
+        # O `-c` parte em `key=value` no PRIMEIRO `=`: um `=` dentro da
+        # chave citada parte a chave ao meio e o Codex recusa a config
+        # inteira ("config could not be loaded", medido em 0.155.0) — pior
+        # que o prompt de trust, porque a sessao nem comecaria.
+        self.assertEqual(CodexDriver().launch(Path("/work/a=b")).argv,
+                         ("codex", CODEX_BYPASS))
+
+    def test_resume_omits_the_override_for_a_path_with_an_equals_sign(self):
+        self.assertEqual(CodexDriver().resume(Path("/work/a=b"), "abc").argv,
+                         ("codex", "resume", CODEX_BYPASS, "abc"))
+
     def test_launch_still_refuses_a_session_id(self):
         # O override nao pode contornar a checagem da base.
         with self.assertRaises(ValueError):

@@ -134,9 +134,14 @@ def _trust_override(cwd: Path) -> str | None:
     citacao nao e escapada: um caminho com aspa, contrabarra ou caractere
     de controle (inclusive quebra de linha) poderia sair da string, entao
     a flag inteira e OMITIDA — o Codex volta a perguntar pelo trust, que e
-    o comportamento de hoje, em vez de receber um TOML quebrado."""
+    o comportamento de hoje, em vez de receber um TOML quebrado.
+
+    Um `=` tambem e recusado: o `-c` parte o argumento em `key=value` no
+    primeiro `=`, entao um `=` dentro da chave citada a parte ao meio e o
+    Codex recusa a config INTEIRA ("config could not be loaded", medido no
+    binario 0.155.0 da imagem) — a sessao nem comecaria."""
     path = str(cwd)
-    if '"' in path or "\\" in path \
+    if '"' in path or "\\" in path or "=" in path \
             or any(char < " " or char == "\x7f" for char in path):
         return None
     return f'projects."{path}".trust_level="trusted"'

@@ -323,9 +323,11 @@ finish.
   `-c projects."<cwd>".trust_level="trusted"`, with `<cwd>` the session's
   sandbox checkout (`ConnectionInfo.project_root`). Nothing shared is
   mutated and there is no start-order race. A `cwd` containing a double
-  quote, a backslash or a control character makes the driver omit the
-  flag entirely, so a broken TOML value can never be emitted; in that
-  case Codex prompts for trust as before. The key, the value and the
+  quote, a backslash, an `=` or a control character makes the driver omit
+  the flag entirely, so a broken TOML value can never be emitted; in that
+  case Codex prompts for trust as before. (`=` is rejected because `-c`
+  splits on the first one, which halves the quoted key and makes Codex
+  refuse the whole config — measured, not assumed.) The key, the value and the
   quoted dotted path were measured against the image binary
   (`codex 0.155.0`) in throwaway containers — see
   `docs/validation/2026-09-17-agent-session-contracts.md` §4.2.1. What is

@@ -3,16 +3,31 @@
 - **Plan:** `docs/superpowers/plans/2026-09-17-agent-sandbox-tui.md`, Task 13
 - **Spec:** `docs/superpowers/specs/2026-09-17-agent-sandbox-tui-design.md`
 - **Branch:** `feat/agent-sandbox-tui` (base `ec420ac`); automated evidence
-  collected on 2026-09-18 at `2f9e924`
+  collected on 2026-09-18 at `2f9e924`; the human pilot (§4) ran across
+  rounds 1-5 on 2026-09-19 and 2026-09-20, with fixes landed between
+  rounds, plus a final passing re-run, ending at `9c30fa3` (unit suite
+  1286 OK, recipe 39/39, verified by the controller)
 - **Host:** Linux 7.2.5, Podman 6.1.1 (rootless), Python 3.14.7, Git 2.55.0;
-  image `localhost/agent-sandbox:latest` = `594065ee99fe` (includes tmux)
-- **Status:** automated acceptance recorded below; the human pilot (§4) is
-  **pending**.
-- **Sanitization:** no credential, prompt, provider output or transcript was
-  produced or recorded. Every agent in the automated scenarios is a harmless
-  fake command (`sh -lc 'printf …; exec sleep 600'`); no provider binary ran
-  and no provider API was contacted (`ASB_LIVE_AUTH` unset). Workspace names
-  are shown by shape (`asb-test-<label>-<uid>-…`), never by the random value.
+  the image was rebuilt twice during the pilot for defects only a real
+  workspace surfaced; `localhost/agent-sandbox:latest` = `13d17b20c0a6` at
+  the passing round (rollback tags kept: `pre-onboarding` = `594065ee99fe`,
+  the image used through round 3; `pre-mise` = `0315f5f5d01f`, used for
+  round 5, after the onboarding fix and before the mise switch)
+- **Status:** automated acceptance recorded below (§§1-3); the human pilot
+  (§4) **PASSED** on 2026-09-20.
+- **Sanitization (§§1-3, automated scenarios):** no credential, prompt,
+  provider output or transcript was produced or recorded. Every agent is
+  a harmless fake command (`sh -lc 'printf …; exec sleep 600'`); no
+  provider binary ran and no provider API was contacted (`ASB_LIVE_AUTH`
+  unset). Workspace names are shown by shape (`asb-test-<label>-<uid>-…`),
+  never by the random value.
+- **Sanitization (§4, human pilot):** real `claude`/`codex` binaries ran
+  under the operator's own accounts on a disposable workspace, and real
+  short prompts were sent to them. Nothing from those prompts or their
+  output is recorded in this report — no prompt text, no provider output,
+  no transcript, no credential, no account identifier. Only session
+  metadata is quoted: session state, timestamps, and truncated provider
+  session ids.
 
 ---
 
@@ -41,7 +56,9 @@ Two real workspaces are created per run:
 What the automated test does **not** prove: the real curses terminal
 (`def_prog_mode`/`endwin` around an attach, drawing, resizing). The test
 calls `handle_key` on a `TuiController`; attach runs in a real pty through
-the injected `run_child`. The real terminal is observation 2 of the pilot.
+the injected `run_child`. The real terminal is the human pilot's
+detach/quit/reopen bullet in §4 (exercised there with a Claude session,
+not Codex).
 
 ---
 
@@ -161,44 +178,58 @@ NETWORK ID  NAME        DRIVER
 
 ## 4. Human pilot (Task 13 Step 3)
 
-On one disposable workspace, without credentials or transcripts. Stop on the
-first unexpected runtime, auth, network, mount or readiness change and keep
-the workspace for diagnosis.
+The pilot ran on one disposable workspace, through the TUI itself — not
+through the CLI-only script this section originally laid out. It took
+five rounds across 2026-09-19 and 2026-09-20; interim rounds surfaced real
+defects, each fixed and independently reviewed before the pilot continued:
+Ghostty's `TERM` making `tmux attach-session` fail outright, exit 1
+(round 1); accented characters rendering as `_` and a dead pane leaving
+the operator stuck in the attached client (round 2); Claude's first-run
+"Select login method" screen appearing in every new workspace (round 3);
+and, after a real reboot, both agents reading `recovery_required` with no
+stored `providerSessionId` (round 5) — the failure that produced Claude's
+launch-time session-id assignment and Codex's lazy/contended discovery
+design recorded in §5. The full round-by-round trail, including every
+ruling made along the way, is in
+`.superpowers/sdd/2026-09-17-agent-sandbox-tui/progress.md`. What follows
+is the final, passing round (2026-09-20):
 
-| # | Observation | Result |
-| :--- | :--- | :--- |
-| 1 | `asb-agent connect` opens the real project root. | **pending — to be filled by the operator** |
-| 2 | A Codex session survives TUI exit and reattaches to the same tmux process. | **pending — to be filled by the operator** |
-| 3 | A second agent can exist in the same checkout while the operator controls whether it runs. | **pending — to be filled by the operator** |
-| 4 | An agent branch switch updates the TUI label. | **pending — to be filled by the operator** |
-| 5 | External merge enables cleanup. | **pending — to be filled by the operator** |
-| 6 | Dirty state and an active session each block cleanup. | **pending — to be filled by the operator** |
-| 7 | Existing Orca create/resume hooks still connect. | **pending — to be filled by the operator** |
-| 8 | Provider session ID and native resume with a real Codex (steps below). | **pending — to be filled by the operator** |
+- A Claude session started on the primary checkout opened directly into a
+  working conversation: no login screen, running in bypass-permissions
+  mode; accented characters rendered correctly.
+- Detaching with `C-b d`, quitting the TUI, reopening it, and pressing
+  Enter on the row returned the SAME conversation.
+- A worktree was created with `w`; a Codex session was started in it;
+  from inside that session Codex ran `git switch -c teste-branch`; after
+  `r` the TUI's branch label followed the new branch.
+- Pressing `f` on that worktree while its session was still live was
+  refused, with the reason shown on screen.
+- Native resume across a REAL COMPUTER REBOOT, for both agents: after
+  sending one prompt in each session and pressing `r`,
+  `session list --json` showed a `providerSessionId` for both — Claude
+  `0913403c-…`, Codex `01a0c074-…` — each with `startedAt` set and
+  `endedAt` null. After the reboot, pressing Enter on each row returned
+  each agent to its OWN conversation (native resume, not a fresh one).
+- Observation 7 (existing Orca create/resume hooks still connect) was
+  **not run**: the operator does not use Orca. That is recorded plainly,
+  not as a pass.
+- Observation 1 (`asb-agent connect` opens the real project root) is not
+  re-tested here; it **passed earlier**, at the Task 5 checkpoint pilot on
+  2026-09-18.
 
-Observation 8, step by step, on the disposable workspace:
+Observation 5 (external merge enables cleanup) and the dirty-worktree half
+of observation 6 were not separately re-exercised live in this round;
+they remain proven by automated scenarios 10-12 (§2), not by the human
+pilot.
 
-1. `asb-agent session start --checkout <id> --agent codex`, then
-   `asb-agent session attach <session-id>`.
-2. Send one short prompt that needs no tool use, then detach with `C-b d`.
-3. `asb-agent session list --json`: record whether the session has a
-   `providerSessionId`.
-4. End the process without `session stop`: stop the workspace container
-   (`asb-agent suspend --workspace <ws>` then `asb-agent resume
-   --workspace <ws>`) or kill the pane from inside tmux.
-5. Refresh the TUI (`r`): record whether the row becomes
-   `exited_resumable`.
-6. Press Enter on it: record whether Codex resumes the SAME conversation
-   (the earlier prompt is in its history).
-
-If step 3 shows no ID, the provider creates its session file lazily and
-the discovery bounded to the first five seconds after launch never sees
-it (see §5); record that as the finding rather than a pass.
-
-Items the pilot is also the only evidence for (carried from Tasks 4, 8 and
-10): the real curses suspend/restore around an attach, a real provider's
-session-ID discovery inside the sandbox, and `ssh` end-of-options handling
-with a real terminal.
+Items only this pilot proves, and now confirms: the real curses
+`def_prog_mode`/`endwin` suspend-and-restore around an attach (the
+automated suite only drives `handle_key` directly, per §1); a real
+provider's session-ID handling running inside the sandbox
+against a real `codex`/`claude` binary, not a harmless fake command; and
+`ssh` behaviour against a real interactive terminal (round 1's Ghostty
+`TERM` failure is exactly that class of defect, invisible to every
+automated scenario).
 
 ---
 
@@ -207,6 +238,8 @@ with a real terminal.
 Drawn from the controller's ledger; none is fixed by this task. The
 final review's fix wave (after this report was first written) fixed some
 items that were listed here; they are marked **fixed in the fix wave**.
+The human pilot (§4) fixed further items and surfaced new ones; those are
+marked **fixed in the pilot**.
 
 **Spec divergence to ratify: external-merge detection (spec §10.4)**
 
@@ -231,19 +264,20 @@ finish.
 
 **Security (needs a human decision)**
 
-- `asb-agent pull` (existing command, outside this plan) reads the sandbox
-  branch with `rev-parse --abbrev-ref HEAD` and passes it unvalidated, with
-  no `--`, into a host `git fetch`. The sandbox checkout is agent-writable,
-  so agent-controlled text reaches a host Git command line; a detached HEAD
-  is also mishandled. Finish does not use `pull` (it validates the branch
-  and fetches by full ref), but the external-merge path in §2 row 11 does,
-  as an operator would.
-- The finish export fetch still runs `upload-pack` against the
-  agent-writable clone, as `pull` does. Git ignores
-  `uploadpack.packObjectsHook` from repository config, but not every key
-  `upload-pack` reads was audited. The hardening path is a fetch from
-  inside the sandbox or a transport that ignores the source repository's
-  config.
+- **Fixed in the pilot** (human decision, round 1): `asb-agent pull` used
+  to read the sandbox branch with `rev-parse --abbrev-ref HEAD` and pass
+  it unvalidated, with no `--`, into a host `git fetch`, and mishandled a
+  detached HEAD. `pull()` in `cli/asb/lifecycle.py` now validates the
+  branch name and the destination ref (`GitRepository.valid_branch_name`,
+  `valid_ref`), fetches after `--`, and refuses a detached HEAD before any
+  `git fetch` runs. Finish already validated and fetched by full ref;
+  both paths do now.
+- The finish export fetch and `pull` still run `upload-pack` against the
+  agent-writable clone. Git ignores `uploadpack.packObjectsHook` from
+  repository config, but not every key `upload-pack` reads was audited.
+  The hardening path is a fetch from inside the sandbox or a transport
+  that ignores the source repository's config — a transport concern, not
+  fixed by the branch-name validation above.
 - The sandbox `git status` that guards a purge runs inside the container,
   so an agent could fake "clean"; it would only lose its own uncommitted
   work. Running it on the host would let an agent-set `core.fsmonitor` or
@@ -253,13 +287,57 @@ finish.
 
 - The `merged / cleanup available` label and its direct cleanup always
   target the integration branch.
-- Provider-ID discovery runs only during the first five seconds after
-  launch, which always ends before the operator's first prompt. If a
-  provider creates its session file only when the first message is sent,
-  today's code stores no provider ID for that session, and native resume
-  will not happen: after its process ends the session becomes
-  `recovery_required`, never `exited_resumable`. Pilot observation 8
-  decides whether a lazy discovery is needed; none is built yet.
+- **Superseded in the pilot** (round 5's reboot failure): discovery is no
+  longer limited to a five-second window at launch. Claude no longer
+  discovers a session id at all — the manager generates a UUID, passes it
+  at launch with `claude --session-id <uuid>`, and stores it immediately
+  (`cli/asb/agents/claude.py`). Codex still discovers at launch (bounded
+  attempts) but now also discovers lazily on every reconcile/attach and
+  once more right before a session reaches a final state
+  (`SessionManager._discover_lazily`/`_last_discovery`), so a rollout the
+  provider creates only on the first prompt is still picked up. The
+  remaining limit, by ruling: a candidate is accepted for a session only
+  when its timestamp falls outside the lifetime of every OTHER
+  same-agent, same-cwd session (live or final) that lacks a stored id —
+  so while two Codex sessions are open at once in the same checkout,
+  NEITHER can claim an id until one of them ends; ambiguity yields none,
+  never a wrong conversation. A session record saved before this change
+  has no `started_at`, so lazy discovery never runs for it — the pilot's
+  own leftover records had to be cleared for this reason.
+- Both agents now launch with their bypass flags: Claude with
+  `--dangerously-skip-permissions`, Codex with
+  `--dangerously-bypass-approvals-and-sandbox` (`permission_args` in
+  `cli/asb/agents/claude.py`/`codex.py`) — matching how Orca launches them
+  and the human's stated expectation that the sandbox is the isolation
+  boundary, not an in-session prompt.
+- Codex asks to trust the workspace folder again after a restart. Its
+  trusted paths live in `~/.codex/config.toml`, which sits inside the
+  shared credential volume but is not itself a credential
+  (`asb.staging.filter_codex_config` strips only the `[projects."..."]`
+  tables keyed by host path); the entrypoint's config manifest copies
+  that filtered file from the host over the sandbox copy at every
+  container start, and the sandbox path never matches a host path anyway,
+  so no trust entry can survive. Not a resume defect — `auth.json` is
+  untouched. Follow-up pending a human decision (same shape as the
+  Claude-onboarding-flag seed from round 3): append a trust entry for the
+  workspace project root after the manifest copy.
+- Provider CLIs (`claude`, `codex`, `agy`) now install via `mise latest`
+  into a root-owned tree (`/opt/asb-mise`), ahead of the toolcache on
+  `PATH`, resolved fresh at each image build instead of pinned versions
+  (see `docs/domains/sandbox/configuration.md`, "Provider CLIs"). mise's
+  own minimum-release-age default is kept as a supply-chain safeguard, so
+  the image can trail the host by the newest release or two.
+- Login shells inside the container are NOT PATH-protected against the
+  agent: `/etc/profile.d/agent-sandbox.sh` puts `/opt/asb-mise/bin` first,
+  but in an interactive login shell Debian's stock `~/.profile` runs
+  afterwards and prepends `$HOME/.local/bin`/`$HOME/bin`, so a binary the
+  agent writes there shadows `claude`/`codex`/`agy` in that shell. This is
+  not a boundary the image can hold — the agent owns its container `HOME`
+  and can rewrite `~/.profile` itself. What does hold: `/opt/asb-mise`
+  cannot be modified by uid 1000, one workspace's agent cannot replace
+  another workspace's or the auth clients' binaries, and session launches
+  never go through a login shell (only a human operator's own `connect`
+  session uses one).
 - A split pane or extra tmux window keeps a session at `recovery_required`
   until the extra pane is gone (scenario 4).
 - After a workspace container is recreated (not merely restarted), the
@@ -293,7 +371,10 @@ finish.
 - **Fixed in the fix wave:** the suspended-workspace message now names
   `asb-agent resume --workspace <ws>`, and `lifecycle.md` §4 describes it;
   `ensure()`'s docstring no longer says it writes the registry.
-- `codex.py`/`claude.py` module docstrings overstate the session-ID proof.
+- **Fixed in the pilot:** `codex.py`/`claude.py` module docstrings used to
+  overstate the session-ID proof; they now document the mechanism each
+  driver actually uses (Claude's launch-time UUID assignment; Codex's
+  scan, subagent/`exec` filtering, and the contended-lifetime rule).
 - `remote_run` can raise `ValueError` for an out-of-range port; `--title`
   is unvalidated on the CLI (the TUI neutralizes control characters).
 - Registry/store: `remove()` on an unknown id creates an empty file;

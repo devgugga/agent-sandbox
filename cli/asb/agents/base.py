@@ -161,9 +161,11 @@ class AgentDriver(ABC):
 
     def launch(self, cwd: Path,
                session_id: str | None = None) -> LaunchCommand:
-        """`cwd` nao entra no argv: `LaunchCommand` nao tem campo de cwd
-        porque quem executa o comando define o cwd do subprocesso; o
-        parametro existe para simetria com `resume()` e uso futuro.
+        """`cwd` nao entra no argv AQUI: `LaunchCommand` nao tem campo de
+        cwd porque quem executa o comando define o cwd do subprocesso; o
+        parametro existe para simetria com `resume()` e para as subclasses
+        que precisam do caminho no argv (o `CodexDriver` o usa no override
+        de trust).
         `session_id` so e aceito por quem `assigns_session_id_at_launch`:
         aqui ele seria descartado em silencio, entao e recusado."""
         if session_id is not None:

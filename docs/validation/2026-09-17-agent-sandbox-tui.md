@@ -310,17 +310,27 @@ finish.
   `cli/asb/agents/claude.py`/`codex.py`) — matching how Orca launches them
   and the human's stated expectation that the sandbox is the isolation
   boundary, not an in-session prompt.
-- Codex asks to trust the workspace folder again after a restart. Its
-  trusted paths live in `~/.codex/config.toml`, which sits inside the
+- Codex used to ask to trust the workspace folder again after a restart.
+  Its trusted paths live in `~/.codex/config.toml`, which sits inside the
   shared credential volume but is not itself a credential
   (`asb.staging.filter_codex_config` strips only the `[projects."..."]`
   tables keyed by host path); the entrypoint's config manifest copies
   that filtered file from the host over the sandbox copy at every
   container start, and the sandbox path never matches a host path anyway,
-  so no trust entry can survive. Not a resume defect — `auth.json` is
-  untouched. Follow-up pending a human decision (same shape as the
-  Claude-onboarding-flag seed from round 3): append a trust entry for the
-  workspace project root after the manifest copy.
+  so no trust entry written there can survive. Resolved without touching
+  that file: the Codex driver passes the trust as a per-launch config
+  override on the command line, on launch and on resume —
+  `-c projects."<cwd>".trust_level="trusted"`, with `<cwd>` the session's
+  sandbox checkout (`ConnectionInfo.project_root`). Nothing shared is
+  mutated and there is no start-order race. A `cwd` containing a double
+  quote, a backslash or a control character makes the driver omit the
+  flag entirely, so a broken TOML value can never be emitted; in that
+  case Codex prompts for trust as before. The key, the value and the
+  quoted dotted path were measured against the image binary
+  (`codex 0.155.0`) in throwaway containers — see
+  `docs/validation/2026-09-17-agent-session-contracts.md` §4.2.1. What is
+  NOT verified is that the prompt is suppressed in a live session: that
+  needs a TTY and a real conversation.
 - Provider CLIs (`claude`, `codex`, `agy`) now install via `mise latest`
   into a root-owned tree (`/opt/asb-mise`), ahead of the toolcache on
   `PATH`, resolved fresh at each image build instead of pinned versions

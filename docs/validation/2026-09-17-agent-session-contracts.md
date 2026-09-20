@@ -91,6 +91,57 @@ lança: o sandbox é a fronteira de isolamento. Codex:
 `codex resume` com uma flag inexistente sai 2. Antigravity não recebe
 flag de bypass.
 
+### 4.2.1 Trust do diretório (Codex)
+
+O Codex guarda os diretórios confiados na tabela `projects` de
+`~/.codex/config.toml`. No sandbox esse arquivo vive no volume
+COMPARTILHADO de credenciais e o manifesto de config do entrypoint o copia
+do host a cada start do container: uma entrada por workspace seria
+disputada entre checkouts e apagada no start seguinte, e o caminho do
+sandbox nunca coincide com um caminho do host. Por isso o driver NÃO
+escreve nada nesse arquivo (nem o lê): passa o trust como override POR
+LANÇAMENTO na linha de comando, no lançamento e no resume, escopado ao
+checkout de execução da sessão (`ConnectionInfo.project_root`, o mesmo
+`cwd` que o driver já recebe):
+
+```
+codex --dangerously-bypass-approvals-and-sandbox \
+      -c projects."<cwd>".trust_level="trusted"
+codex resume --dangerously-bypass-approvals-and-sandbox <id> \
+      -c projects."<cwd>".trust_level="trusted"
+```
+
+Medido no binário da IMAGEM (`codex 0.155.0`, containers `--rm`
+descartáveis, nenhuma conversa iniciada):
+- `codex --help` e `codex resume --help` listam `-c, --config <key=value>`
+  ("Use a dotted path (`foo.bar.baz`) to override nested values. The
+  `value` portion is parsed as TOML").
+- `codex doctor -c projects."/root".trust_level="trusted"` reporta
+  `✓ config loaded`; `codex doctor -c badkey` reporta
+  `✗ config could not be loaded`. Ou seja, o override com caminho citado
+  na chave pontilhada é de fato parseado e aceito.
+- Depois do posicional também vale: `codex resume --dangerously-bypass-…
+  <uuid> -c badkey` sai com `Error parsing -c overrides: Invalid override
+  (missing '='): badkey`, e com o override válido chega a `Error: stdin is
+  not a terminal`. Por isso o `-c` vai no FIM do argv e o id continua
+  exatamente onde estava.
+- A tabela é `projects` e o campo é `trust_level` com o valor `trusted`
+  (strings do binário: `struct ProjectConfig with 1 element`,
+  `trust_level`, `trusted`, `failed to persist trusted project state`).
+
+NÃO verificado: que o override suprime a pergunta de trust numa sessão
+real — isso exige um TTY e uma conversa de verdade, fora do escopo desta
+validação. O que está provado é o nome da chave, o valor, e que a forma
+citada parseia e é carregada.
+
+Segurança: a chave TEM de ser citada (uma chave nua de TOML não aceita
+`/`) e a citação não é escapada, então um `cwd` com aspa dupla,
+contrabarra ou caractere de controle (inclusive quebra de linha) faz o
+driver OMITIR a flag inteira — o Codex volta a perguntar pelo trust, nunca
+recebe um TOML quebrado. O argv atravessa `ssh_argv` (`shlex.join`, um
+elemento por vez) e o `tmux new-session -- <argv>` com dois ou mais
+elementos faz exec direto, então as aspas chegam literais ao binário.
+
 ### 4.3 Como cada provedor obtém o id (estado atual)
 
 **Claude.** Nenhuma descoberta: o manager gera um UUID (`uuid4`), grava-o

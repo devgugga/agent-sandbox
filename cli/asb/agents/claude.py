@@ -3,7 +3,10 @@
 O id da sessao e ATRIBUIDO no lancamento, nao descoberto: o manager gera um
 UUID, o grava como `provider_session_id` antes de lancar e o driver lanca
 `claude --session-id <uuid>`; o resume e `claude --resume <uuid>`. O binario
-da imagem (2.1.263) lista `--session-id <uuid>` ("must be a valid UUID").
+da imagem lista `--session-id <uuid>` ("must be a valid UUID"); a versao e a
+que o binario instalado pelo mise reporta, registrada em
+`/opt/asb-mise/versions` na imagem (nao ha pin no Dockerfile: o build
+instala `latest`).
 Por isso o driver nao varre diretorio nenhum: a descoberta por arquivo novo
 em `~/.claude/projects/<slug>/` falhou no piloto, porque o Claude so cria o
 arquivo na primeira mensagem, depois da janela de descoberta.

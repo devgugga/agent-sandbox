@@ -33,6 +33,15 @@ O volume tambem e gravavel pelo AGENTE: a leitura abre sem seguir symlink
 regular (`fstat`) e le no maximo `_FIRST_LINE_LIMIT` bytes; uma primeira
 linha que nao cabe nisso nao da id.
 
+O trust do diretorio NAO e gravado: `~/.codex/config.toml` vive no volume
+COMPARTILHADO de credenciais e o manifesto do entrypoint o copia do host a
+cada start do container, entao uma entrada por workspace seria disputada
+entre checkouts e apagada no proximo start. Em vez disso, o driver passa o
+trust como override POR LANCAMENTO (`-c projects."<cwd>".trust_level=
+"trusted"`), escopado ao checkout desta sessao: nada compartilhado e
+mutado e nao ha corrida de ordem de inicio. O driver nunca le nem escreve
+`~/.codex/config.toml`.
+
 Dentro do sandbox, `$HOME/.codex/sessions` e o subpath `codex-sessions` do
 volume de sessao do workspace; o driver o le PELO HOST, pelo mountpoint do
 volume, via `sessions_root`. Sem `sessions_root` nao ha varredura: o
@@ -48,11 +57,17 @@ from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Iterable
 
-from asb.agents.base import AgentDriver, Lifetime, SessionEvidence
+from asb.agents.base import (AgentDriver, LaunchCommand, Lifetime,
+                             SessionEvidence)
 from asb.sessions.model import AgentKind
 
 # Teto da leitura da primeira linha (o `session_meta` medido tem ~1 KiB).
 _FIRST_LINE_LIMIT = 64 * 1024
+
+# Flag de override de configuracao do Codex (`-c, --config <key=value>`,
+# caminho TOML pontilhado, valor parseado como TOML), presente tanto em
+# `codex --help` quanto em `codex resume --help` no binario da imagem.
+_CONFIG_FLAG = "-c"
 
 
 class CodexDriver(AgentDriver):
@@ -61,12 +76,27 @@ class CodexDriver(AgentDriver):
     # Como o Orca lanca o Codex: sem aprovacoes nem o sandbox proprio do
     # Codex; o container e a fronteira. `codex resume [OPTIONS]
     # [SESSION_ID]`: a flag vem antes do id (conferido no binario da
-    # imagem, 0.153.4).
+    # imagem, 0.155.0).
     permission_args = ("--dangerously-bypass-approvals-and-sandbox",)
     resume_argv_prefix = ("codex", "resume", *permission_args)
     version_pattern = re.compile(r"^codex-cli\s+(\S+)$")
     resume_option_pattern = re.compile(r"(?m)^\s*resume\b")
     session_id_provable = True
+
+    def launch(self, cwd: Path,
+               session_id: str | None = None) -> LaunchCommand:
+        """Lancamento da base MAIS o override de trust do checkout: aqui o
+        `cwd` ENTRA no argv (a base diz que nao entra; esta subclasse e a
+        excecao). O override vai depois da flag de bypass, que mantem a
+        posicao que sempre teve."""
+        return _with_trust(super().launch(cwd, session_id), cwd)
+
+    def resume(self, cwd: Path, session_id: str) -> LaunchCommand:
+        """Resume da base MAIS o override de trust do checkout. Em
+        `codex resume [OPTIONS] [SESSION_ID] [PROMPT]` o `-c` tambem e
+        aceito DEPOIS do posicional (conferido no binario 0.155.0 da
+        imagem), entao o id fica exatamente onde ja estava."""
+        return _with_trust(super().resume(cwd, session_id), cwd)
 
     def _scan_root(self, cwd: Path) -> Path | None:
         return self._sessions_root
@@ -84,6 +114,32 @@ class CodexDriver(AgentDriver):
                    evidence.contended))
                and session_id not in evidence.claimed_ids]
         return ids[0] if len(ids) == 1 else None
+
+
+def _with_trust(command: LaunchCommand, cwd: Path) -> LaunchCommand:
+    """`command` com o override de trust anexado ao FIM do argv; sem
+    override, o `command` intacto."""
+    override = _trust_override(cwd)
+    if override is None:
+        return command
+    return LaunchCommand(argv=(*command.argv, _CONFIG_FLAG, override),
+                         env=command.env)
+
+
+def _trust_override(cwd: Path) -> str | None:
+    """`projects."<cwd>".trust_level="trusted"` para o `-c` do Codex, ou
+    `None` quando o caminho nao cabe numa string basica de TOML.
+
+    A chave TEM de ser citada (uma chave nua de TOML nao aceita `/`), e a
+    citacao nao e escapada: um caminho com aspa, contrabarra ou caractere
+    de controle (inclusive quebra de linha) poderia sair da string, entao
+    a flag inteira e OMITIDA — o Codex volta a perguntar pelo trust, que e
+    o comportamento de hoje, em vez de receber um TOML quebrado."""
+    path = str(cwd)
+    if '"' in path or "\\" in path \
+            or any(char < " " or char == "\x7f" for char in path):
+        return None
+    return f'projects."{path}".trust_level="trusted"'
 
 
 def _session_id_for(path: Path, cwd: Path,

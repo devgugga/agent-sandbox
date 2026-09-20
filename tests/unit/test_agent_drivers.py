@@ -47,6 +47,7 @@ class _FakeRun:
 
 CLAUDE_UUID = "0f0e0d0c-0b0a-4000-8000-00000000abcd"
 CODEX_BYPASS = "--dangerously-bypass-approvals-and-sandbox"
+CODEX_TRUST = 'projects."/repo".trust_level="trusted"'
 CLAUDE_BYPASS = "--dangerously-skip-permissions"
 
 
@@ -57,13 +58,67 @@ class TestLaunchAndResumeArgv(unittest.TestCase):
 
     def test_codex_launch_argv(self):
         self.assertEqual(CodexDriver().launch(Path("/repo")).argv,
-                         ("codex", CODEX_BYPASS))
+                         ("codex", CODEX_BYPASS, "-c", CODEX_TRUST))
 
     def test_codex_resume_argv(self):
-        # `codex resume [OPTIONS] [SESSION_ID]`: a flag vem antes do id.
+        # `codex resume [OPTIONS] [SESSION_ID]`: a flag vem antes do id e o
+        # override vem DEPOIS do id (o binario 0.155.0 da imagem aceita
+        # `-c` apos o posicional; ver o relatorio desta tarefa).
         self.assertEqual(
             CodexDriver().resume(Path("/repo"), "abc").argv,
-            ("codex", "resume", CODEX_BYPASS, "abc"))
+            ("codex", "resume", CODEX_BYPASS, "abc", "-c", CODEX_TRUST))
+
+
+class TestCodexTrustOverride(unittest.TestCase):
+    """O Codex guarda o trust do diretorio em `~/.codex/config.toml`, que
+    no sandbox vive no volume COMPARTILHADO de credenciais e e reescrito
+    pelo manifesto do entrypoint a cada start. Por isso o driver passa o
+    trust como override POR LANCAMENTO, escopado ao checkout da sessao."""
+
+    def test_launch_trusts_the_session_checkout(self):
+        argv = CodexDriver().launch(Path("/work/my repo")).argv
+        self.assertEqual(
+            argv[-2:],
+            ("-c", 'projects."/work/my repo".trust_level="trusted"'))
+
+    def test_resume_trusts_the_session_checkout(self):
+        argv = CodexDriver().resume(Path("/work/my repo"), "abc").argv
+        self.assertEqual(
+            argv[-2:],
+            ("-c", 'projects."/work/my repo".trust_level="trusted"'))
+
+    def test_launch_omits_the_override_for_a_path_with_a_quote(self):
+        self.assertEqual(CodexDriver().launch(Path('/work/a"b')).argv,
+                         ("codex", CODEX_BYPASS))
+
+    def test_launch_omits_the_override_for_a_path_with_a_backslash(self):
+        self.assertEqual(CodexDriver().launch(Path("/work/a\\b")).argv,
+                         ("codex", CODEX_BYPASS))
+
+    def test_launch_omits_the_override_for_a_path_with_a_newline(self):
+        self.assertEqual(CodexDriver().launch(Path("/work/a\nb")).argv,
+                         ("codex", CODEX_BYPASS))
+
+    def test_resume_omits_the_override_for_a_path_with_a_quote(self):
+        self.assertEqual(CodexDriver().resume(Path('/work/a"b'), "abc").argv,
+                         ("codex", "resume", CODEX_BYPASS, "abc"))
+
+    def test_resume_omits_the_override_for_a_path_with_a_backslash(self):
+        self.assertEqual(CodexDriver().resume(Path("/work/a\\b"), "abc").argv,
+                         ("codex", "resume", CODEX_BYPASS, "abc"))
+
+    def test_resume_omits_the_override_for_a_path_with_a_newline(self):
+        self.assertEqual(CodexDriver().resume(Path("/work/a\nb"), "abc").argv,
+                         ("codex", "resume", CODEX_BYPASS, "abc"))
+
+    def test_launch_still_refuses_a_session_id(self):
+        # O override nao pode contornar a checagem da base.
+        with self.assertRaises(ValueError):
+            CodexDriver().launch(Path("/repo"), "abc")
+
+    def test_resume_still_validates_the_session_id(self):
+        with self.assertRaises(ValueError):
+            CodexDriver().resume(Path("/repo"), "-rm -rf")
 
     def test_claude_resume_argv(self):
         # `--resume [value]` tem valor opcional: o id vem logo depois dele.

@@ -461,7 +461,20 @@ class TestNoRootlessNetnsAdvice(unittest.TestCase):
 
     def test_diagnostic_modules_never_recommend_the_rootless_netns_unshare(self):
         cli = Path(__file__).resolve().parents[2] / "cli" / "asb"
-        for name in ("readiness.py", "doctor.py", "runtime_check.py", "lifecycle.py"):
+        # Tarefa 5 moveu a logica de diagnostico (e a maior parte da
+        # orientacao que ela emite) de doctor.py para diagnostics/checks.py e
+        # diagnostics/report.py; Tarefa 4 moveu a preparacao/orquestracao de
+        # workspace de lifecycle.py para runtime/workspace.py e
+        # runtime/storage.py. Uma lista fixa de nomes de modulo ESTREITA
+        # silenciosamente quando o codigo se move — a rodada final de revisao
+        # do plano de decomposicao (2026-09-21) achou esta lacuna: o guarda
+        # continuava varrendo os quatro nomes originais e cobertura zero dos
+        # modulos que hoje carregam a logica de risco. Mantidos os quatro
+        # originais e somados os quatro que a decomposicao criou.
+        for name in ("readiness.py", "doctor.py", "runtime_check.py",
+                     "lifecycle.py", "diagnostics/checks.py",
+                     "diagnostics/report.py", "runtime/workspace.py",
+                     "runtime/storage.py"):
             with self.subTest(module=name):
                 self.assertNotIn("--rootless-netns", (cli / name).read_text(encoding="utf-8"))
 
@@ -536,8 +549,20 @@ class TestNoDirectPodmanLifecycleAdvice(unittest.TestCase):
     def test_diagnostic_modules_never_tell_the_operator_to_drive_podman(self):
         # So o TEXTO que chega ao operador: comentario que diz "nunca
         # `podman restart`" e exatamente o que se quer preservar.
+        #
+        # Mesma lacuna da §"TestNoRootlessNetnsAdvice" acima (achado da
+        # rodada final de revisao do plano de decomposicao, 2026-09-21):
+        # esta tupla e fixa e a decomposicao moveu a construcao de texto de
+        # remediacao (doctor.py -> diagnostics/checks.py e
+        # diagnostics/report.py; parte de lifecycle.py -> runtime/workspace.py
+        # e runtime/storage.py). Mantidos os cinco originais e somados os
+        # quatro modulos que hoje constroem remediacao para container
+        # supervisionado.
         cli = Path(__file__).resolve().parents[2] / "cli" / "asb"
-        for name in ("keyring.py", "doctor.py", "readiness.py", "auth.py", "lifecycle.py"):
+        for name in ("keyring.py", "doctor.py", "readiness.py", "auth.py",
+                     "lifecycle.py", "diagnostics/checks.py",
+                     "diagnostics/report.py", "runtime/workspace.py",
+                     "runtime/storage.py"):
             tree = ast.parse((cli / name).read_text(encoding="utf-8"))
             literals = [node.value for node in ast.walk(tree)
                         if isinstance(node, ast.Constant) and isinstance(node.value, str)]

@@ -295,7 +295,7 @@ class SandboxRuntime:
             for volume in (n["session"], f"asb-{ws}-containers"):
                 if podman.exists("volume", volume):
                     return False
-            if lifecycle._origin_of(ws, home) is not None:
+            if lifecycle.origin_of(ws, home) is not None:
                 return False
         except (podman.PodmanError, OSError, subprocess.SubprocessError):
             return False

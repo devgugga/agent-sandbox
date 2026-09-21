@@ -33,9 +33,10 @@ from pathlib import Path
 from typing import Any
 
 from .. import install, podman
-from ..lifecycle import CREDENTIALS_VOLUME, TOOLCACHE_VOLUME, IMAGE, names
+from ..lifecycle import IMAGE, names
 from ..profile import load_profile
 from ..readiness import DEAD_UPLINK_REMEDIATION
+from ..runtime.storage import CREDENTIALS_VOLUME, TOOLCACHE_VOLUME
 from ..supervisor import network_unit_name
 
 

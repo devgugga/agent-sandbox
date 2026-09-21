@@ -203,6 +203,66 @@ class TestCheckToolDrift(unittest.TestCase):
         self.assertIsNone(diag_checks.check_tool_drift("rtk", "asb.rtk.version"))
 
 
+class TestServiceState(unittest.TestCase):
+    """`_service_state` tinha ZERO teste direto (achado da rodada final de
+    revisao do plano de decomposicao, 2026-09-21): todo teste que exercita
+    `collect_workspaces` mocka `podman.exists`/`podman.running` para `True`
+    constante, entao nenhum jamais alcancava os ramos `missing`/`stopped` —
+    o defeito preservado (Global Constraint #1 do plano, "preserve exit
+    codes") e que essa checagem decide `svc_healthy`, que por sua vez vira
+    `ws_healthy`/`infra_healthy` e os dois codigos de saida agregados."""
+
+    def test_missing_container_is_unhealthy_and_names_resume(self):
+        with mock.patch("asb.diagnostics.checks.podman.exists", return_value=False), \
+             mock.patch("asb.diagnostics.checks.podman.running") as running:
+            result = diag_checks._service_state("demo", "asb-demo-svc-web")
+        running.assert_not_called()
+        self.assertEqual(
+            result, (False, "missing", "asb-agent resume --workspace demo"))
+
+    def test_stopped_container_is_unhealthy_and_names_resume(self):
+        with mock.patch("asb.diagnostics.checks.podman.exists", return_value=True), \
+             mock.patch("asb.diagnostics.checks.podman.running", return_value=False), \
+             mock.patch("asb.diagnostics.checks.podman.out") as out:
+            result = diag_checks._service_state("demo", "asb-demo-svc-web")
+        out.assert_not_called()
+        self.assertEqual(
+            result, (False, "stopped", "asb-agent resume --workspace demo"))
+
+    def test_healthy_container_with_healthcheck_is_healthy(self):
+        with mock.patch("asb.diagnostics.checks.podman.exists", return_value=True), \
+             mock.patch("asb.diagnostics.checks.podman.running", return_value=True), \
+             mock.patch("asb.diagnostics.checks.podman.out", return_value="healthy\n"):
+            result = diag_checks._service_state("demo", "asb-demo-svc-web")
+        self.assertEqual(result, (True, "healthy", ""))
+
+    def test_unhealthy_container_names_podman_logs(self):
+        with mock.patch("asb.diagnostics.checks.podman.exists", return_value=True), \
+             mock.patch("asb.diagnostics.checks.podman.running", return_value=True), \
+             mock.patch("asb.diagnostics.checks.podman.out", return_value="unhealthy\n"):
+            result = diag_checks._service_state("demo", "asb-demo-svc-web")
+        self.assertEqual(
+            result, (False, "unhealthy", "podman logs asb-demo-svc-web"))
+
+    def test_starting_container_names_podman_logs(self):
+        with mock.patch("asb.diagnostics.checks.podman.exists", return_value=True), \
+             mock.patch("asb.diagnostics.checks.podman.running", return_value=True), \
+             mock.patch("asb.diagnostics.checks.podman.out", return_value="starting\n"):
+            result = diag_checks._service_state("demo", "asb-demo-svc-web")
+        self.assertEqual(
+            result, (False, "starting", "podman logs asb-demo-svc-web"))
+
+    def test_no_healthcheck_configured_is_process_running_not_ready(self):
+        """Sem healthcheck: `podman inspect --format
+        {{.State.Health.Status}}` devolve string vazia. `process_running`
+        nunca vira `application_ready` sem prova."""
+        with mock.patch("asb.diagnostics.checks.podman.exists", return_value=True), \
+             mock.patch("asb.diagnostics.checks.podman.running", return_value=True), \
+             mock.patch("asb.diagnostics.checks.podman.out", return_value=""):
+            result = diag_checks._service_state("demo", "asb-demo-svc-web")
+        self.assertEqual(result, (True, "process_running", ""))
+
+
 class TestCollectWorkspaces(unittest.TestCase):
     def test_workspace_without_container_is_missing_container_and_healthy(self):
         with tempfile.TemporaryDirectory() as tmp:

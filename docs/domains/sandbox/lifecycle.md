@@ -462,11 +462,27 @@ or JSON plus the exit-code policy in `cli/asb/diagnostics/report.py`;
 `cli/asb/doctor.py` only composes the two, in a fixed order, once per
 invocation.
 
-`lifecycle.py` still re-exports several names it no longer defines
-(`KEYRING_*`, `CREDENTIALS_VOLUME`, `_volume_mountpoint`, `WorkspaceRuntime`,
-etc.) — this is deliberate, not leftover scaffolding: `auth.py`, `keyring.py`,
-`doctor.py` and `staging.py` still read them as `lifecycle.X`, and each of
-those four is a named, verified consumer.
+`lifecycle.py` still re-exports a handful of names it no longer defines —
+this is deliberate, not leftover scaffolding, but only for the names that
+still have a named production consumer reading them as `lifecycle.X`:
+`KEYRING_BUS`, `ensure_keyring_runtime_volume`, `ensure_keyring_service`
+and `credential_mount_args` (all read by `auth.py`); `check_keyring_
+service` (read by both `doctor.py` and `readiness.py`); and
+`CREDENTIALS_VOLUME`/`ensure_credentials_volume` (read by `auth.py` and,
+via a deferred import that avoids a `keyring.py` ⇄ `lifecycle.py` cycle,
+by `keyring.py` itself). `staging.py` is **not** a consumer of this block
+— it duplicates the credential/session mountpoint tables locally (to avoid
+a different cycle: `staging.py` is imported by `runtime/workspace.py`,
+which `lifecycle.py` imports) and is guarded against drift by a parity
+test that reads the owning module, `runtime.storage`, directly. `runtime/
+workspace.py` and `diagnostics/checks.py` used to reach three more of
+these names (`KEYRING_BUS`/`ensure_keyring_runtime_volume`/`ensure_
+keyring_service`, and `CREDENTIALS_VOLUME`/`TOOLCACHE_VOLUME`
+respectively) through this re-export block instead of importing their
+real owners (`keyring.py`, `runtime/storage.py`) directly; both were
+repointed to their owners, closing that reach — see `docs/validation/
+2026-09-17-module-decomposition.md` §3 for the full, repo-wide-re-derived
+inventory of who reads what through `lifecycle.py` and why.
 
 **Known defect, preserved deliberately:** `asb-agent doctor --json` and the
 text-mode `asb-agent doctor` can disagree on the process exit code when the

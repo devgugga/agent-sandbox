@@ -219,7 +219,14 @@ def pilot_cli(state: Path, args: list[str]) -> int:
     real_expanduser = os.path.expanduser
     real_host = readiness.probe_host
     real_run = subprocess.run
-    real_ensure = lifecycle.ensure_keyring_service
+    # Tarefa 6 (rodada final de revisao): `ensure_keyring_service` e dona de
+    # `keyring.py`. `runtime/workspace.py` (o caminho real de `up`/`resume`)
+    # a alcanca por `from .. import keyring` no nivel de modulo — nao mais
+    # via `lifecycle`. Patchear `keyring.ensure_keyring_service` (em vez de
+    # `lifecycle.ensure_keyring_service`) cobre os DOIS chamadores deste
+    # arquivo: o `setup-keyring` direto abaixo e o `up`/`resume` real via
+    # `WorkspaceRuntime`.
+    real_ensure = keyring.ensure_keyring_service
 
     def traced(command, *pos, **kw):
         if not isinstance(command, list):
@@ -245,7 +252,7 @@ def pilot_cli(state: Path, args: list[str]) -> int:
     with contextlib.ExitStack() as stack:
         stack.enter_context(mock.patch.object(os.path, "expanduser", side_effect=lambda p: cfg["home"] if p == "~" else real_expanduser(p)))
         mock_host = stack.enter_context(mock.patch.object(readiness, "probe_host", side_effect=lambda **kw: real_host(cfg["host_target"], **kw)))
-        stack.enter_context(mock.patch.object(lifecycle, "ensure_keyring_service", side_effect=ensure_then_fault))
+        stack.enter_context(mock.patch.object(keyring, "ensure_keyring_service", side_effect=ensure_then_fault))
         # `auth._verify_command` mudou para `<Driver>.verify_argv()` na
         # Tarefa 2 da decomposicao de auth.py: cada driver e patcheado
         # individualmente, preservando a garantia de que so o edge
@@ -255,7 +262,7 @@ def pilot_cli(state: Path, args: list[str]) -> int:
         stack.enter_context(mock.patch.object(AntigravityDriver, "verify_argv", only_codex_edge_allowed))
         stack.enter_context(mock.patch.object(subprocess, "run", side_effect=traced))
         if args == ["setup-keyring"]:
-            lifecycle.ensure_keyring_service(lifecycle.ensure_runtime(ROOT))
+            keyring.ensure_keyring_service(lifecycle.ensure_runtime(ROOT))
             return 0
         sys.argv = [str(ROOT / "cli/asb-agent"), *args]
         rc = runpy.run_path(str(ROOT / "cli/asb-agent"))["main"]()

@@ -47,11 +47,11 @@ def _mount_point_destinations(home: Path) -> tuple[Path, ...]:
     Duas familias, e as duas doem de maneiras diferentes:
 
     * as raizes do volume de credenciais COMPARTILHADO
-      (`lifecycle.CREDENTIAL_DIRS`) — substituir uma delas apagaria a
+      (`runtime.storage.CREDENTIAL_DIRS`) — substituir uma delas apagaria a
       credencial de todos os workspaces;
     * os subdiretorios de estado de sessao POR WORKSPACE
-      (`lifecycle.SESSION_STATE_DIRS`) — substituir um deles nem chega a
-      apagar nada, mas o `rename` sobre mountpoint devolve EBUSY e mata o
+      (`runtime.storage.SESSION_STATE_DIRS`) — substituir um deles nem chega
+      a apagar nada, mas o `rename` sobre mountpoint devolve EBUSY e mata o
       entrypoint com `set -e`, deixando o agente sem subir e o erro longe do
       manifesto que o causou.
 
@@ -59,9 +59,14 @@ def _mount_point_destinations(home: Path) -> tuple[Path, ...]:
     aterrissa no volume de sessao do proprio workspace e nao alcanca nada
     compartilhado.
 
-    Repetidos aqui em vez de importados porque `lifecycle` importa este
-    modulo: o import inverso fecharia um ciclo. Ha teste que compara os dois
-    lados para que nao divirjam.
+    Repetidos aqui em vez de importados: `staging.py` e importado por
+    `runtime/workspace.py` (`build_staging`), entao importar `lifecycle`
+    fecharia um ciclo (`lifecycle` -> `runtime.workspace` -> `staging` ->
+    `lifecycle`). Um import direto de `runtime.storage` (o modulo dono
+    destes dois dicionarios) nao fecharia esse ciclo, mas a duplicacao
+    local e mantida por proposito de fronteira — `staging.py` nao depende
+    do pacote `runtime/` — e continua guardada por teste: ha um que compara
+    os dois lados para que nao divirjam.
 
     `~/.gemini` NAO entra: nao e montado de volume algum, e continua sendo
     destino valido. A credencial do `agy` vai para o Secret Service pelo

@@ -4,10 +4,13 @@ que os liga/desliga.
 
 Extraido de `cli/asb/lifecycle.py::prepare_workspace` (Tarefa 4 da
 decomposicao de modulos), verbatim: mesmo argv de Podman, mesma ordem, mesmo
-texto de erro, mesma politica de posse na transacao. `lifecycle.py` continua
-reexportando `prepare_workspace`, `build_proxy`, `start_services` e
-`start_forwarder` (mesmo padrao ja usado nas extracoes anteriores) para quem
-ja importava daqui.
+texto de erro, mesma politica de posse na transacao. `lifecycle.py`
+continuava reexportando `build_proxy`, `start_services` e `start_forwarder`
+ate a rodada final de revisao do plano de decomposicao (2026-09-21) provar
+que nenhum dos tres tinha consumidor de producao ou teste que entrasse pela
+fronteira antiga — a Tarefa 6 removeu os tres do bloco de reexport;
+`prepare_workspace` continua la, mas como funcao fina que delega a
+`WorkspaceRuntime().prepare(...)`.
 
 `IMAGE`, `PROXY_IMAGE`, `PROXY_PORT`, `names()`, `ensure_ssh_key()` e
 `ensure_runtime()` continuam em `lifecycle.py` — sao usados tambem por
@@ -21,6 +24,14 @@ como o nome `lifecycle` fica ligado ao MODULO (nao a uma copia da funcao),
 `mock.patch("cli.asb.lifecycle.ensure_ssh_key", ...)` nos testes — a mesma
 propriedade que ja tornou a mudanca pura de `WorkspaceTransaction` compativel
 com a suite sem editar um teste sequer.
+
+`ensure_keyring_service()`, `ensure_keyring_runtime_volume()` e
+`KEYRING_BUS` sao diferentes: sao donos de `cli/asb/keyring.py`, nao de
+`lifecycle.py` — `lifecycle.py` so os reexportava, e este modulo alcancava
+essa reexportacao em vez do dono direto. A Tarefa 6 (rodada final de
+revisao) corrigiu isso: `from .. import keyring` no NIVEL DE MODULO (nao
+adiado — `keyring.py` nao importa `runtime/`, entao nao ha ciclo a evitar
+aqui), chamado como `keyring.ensure_keyring_service(...)` etc.
 """
 from __future__ import annotations
 
@@ -32,7 +43,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from .. import podman, readiness, supervisor
+from .. import keyring, podman, readiness, supervisor
 from ..profile import Profile, load_profile
 from ..squid import render
 from ..staging import build_staging
@@ -372,7 +383,7 @@ class WorkspaceRuntime:
             published.extend(["-p", f"127.0.0.1:{host_p}:{cont_p}"])
 
         runtime_dir = lifecycle.ensure_runtime(root)
-        lifecycle.ensure_keyring_service(runtime_dir)
+        keyring.ensure_keyring_service(runtime_dir)
 
         agent_args = [
             cmd_action,
@@ -390,8 +401,8 @@ class WorkspaceRuntime:
             "-e", "NO_PROXY=127.0.0.1,localhost",
             "-v", f"{layout.mount}:{layout.mount}:Z",
             "-v", f"{stage}:/run/asb-config:ro,Z",
-            "-v", f"{lifecycle.ensure_keyring_runtime_volume()}:/run/asb-keyring:ro,z",
-            "-e", f"DBUS_SESSION_BUS_ADDRESS=unix:path={lifecycle.KEYRING_BUS}",
+            "-v", f"{keyring.ensure_keyring_runtime_volume()}:/run/asb-keyring:ro,z",
+            "-e", f"DBUS_SESSION_BUS_ADDRESS=unix:path={keyring.KEYRING_BUS}",
             "-v", f"{storage.ensure_credentials()}:/run/asb-credentials:z",
             "--mount", "type=tmpfs,destination=/run/asb-credentials/keyrings,ro,notmpcopyup,tmpfs-mode=000",
             *storage.credential_mounts(),
@@ -660,7 +671,7 @@ class WorkspaceRuntime:
                      "e rode 'asb-agent resume' de novo")
             return ResumeOutcome(error=error, ok=False)
 
-        lifecycle.ensure_keyring_service(lifecycle.ensure_runtime(root))
+        keyring.ensure_keyring_service(lifecycle.ensure_runtime(root))
 
         target = f"asb-{ws}.target"
         subprocess.run(["systemctl", "--user", "enable", target], check=True)

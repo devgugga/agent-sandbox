@@ -251,8 +251,8 @@ class TestLifecycleHostApi(unittest.TestCase):
             stack.enter_context(mock.patch("asb.runtime.workspace.layout_for", return_value=fake_layout))
             stack.enter_context(mock.patch("asb.runtime.workspace.build_staging", return_value=0))
             stack.enter_context(mock.patch("asb.lifecycle.ensure_ssh_key"))
-            stack.enter_context(mock.patch("asb.lifecycle.ensure_keyring_service"))
-            stack.enter_context(mock.patch("asb.lifecycle.ensure_keyring_runtime_volume", return_value="asb-keyring-runtime"))
+            stack.enter_context(mock.patch("asb.runtime.workspace.keyring.ensure_keyring_service"))
+            stack.enter_context(mock.patch("asb.runtime.workspace.keyring.ensure_keyring_runtime_volume", return_value="asb-keyring-runtime"))
             # `RuntimeStorage` REAL, com so os tres pontos que este teste ja
             # mockava (credenciais e sessao) trocados por valores fixos;
             # `session_mounts` e `ensure_toolcache` ficam reais, exatamente

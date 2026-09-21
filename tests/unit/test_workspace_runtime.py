@@ -167,10 +167,10 @@ class _Harness:
         stack.enter_context(mock.patch(
             "cli.asb.lifecycle.ensure_runtime", return_value=self.runtime_dir))
         stack.enter_context(mock.patch(
-            "cli.asb.lifecycle.ensure_keyring_service",
+            "cli.asb.runtime.workspace.keyring.ensure_keyring_service",
             side_effect=lambda *a, **k: self.events.append("ensure-keyring")))
         stack.enter_context(mock.patch(
-            "cli.asb.lifecycle.ensure_keyring_runtime_volume",
+            "cli.asb.runtime.workspace.keyring.ensure_keyring_runtime_volume",
             return_value="asb-keyring-runtime"))
         stack.enter_context(mock.patch(
             "cli.asb.runtime.workspace.supervisor.unit_dir",

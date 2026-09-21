@@ -167,19 +167,25 @@ def prepare_workspace_harness(ws: str):
             # `build_staging` chegam la por import PROPRIO do modulo (nomes
             # copiados, nao um atributo do modulo `lifecycle` alcancado em
             # tempo de chamada) — mockar o reexport em `lifecycle` nao os
-            # alcanca mais. `ensure_runtime`/`ensure_ssh_key`/
-            # `ensure_keyring_service`/`ensure_keyring_runtime_volume`
-            # continuam em `lifecycle.py`, e `WorkspaceRuntime.prepare()` os
-            # alcanca por import ADIADO (`lifecycle.X`, atributo do modulo em
-            # tempo de chamada) — por isso continuam mockados aqui, sem mudar.
+            # alcanca mais. `ensure_runtime`/`ensure_ssh_key` continuam em
+            # `lifecycle.py`, e `WorkspaceRuntime.prepare()` os alcanca por
+            # import ADIADO (`lifecycle.X`, atributo do modulo em tempo de
+            # chamada) — por isso continuam mockados aqui, sem mudar.
+            #
+            # Tarefa 6 (rodada final de revisao): `ensure_keyring_service`/
+            # `ensure_keyring_runtime_volume` sao donos de `keyring.py`, nao
+            # de `lifecycle.py` — `WorkspaceRuntime.prepare()` agora os
+            # alcanca por `from .. import keyring` NO NIVEL DE MODULO (nao
+            # mais via `lifecycle`), entao o mock tem que apontar para
+            # `runtime_workspace.keyring`, nao mais para `lifecycle`.
             stack.enter_context(mock.patch.object(runtime_workspace, "load_profile", return_value=profile))
             stack.enter_context(mock.patch.object(runtime_workspace, "layout_for", return_value=layout))
             stack.enter_context(mock.patch.object(runtime_workspace, "prepare_clone"))
             stack.enter_context(mock.patch.object(runtime_workspace, "render", return_value="acl x"))
             stack.enter_context(mock.patch.object(runtime_workspace, "build_staging", return_value=0))
             stack.enter_context(mock.patch.object(lifecycle, "ensure_ssh_key", return_value=key))
-            stack.enter_context(mock.patch.object(lifecycle, "ensure_keyring_service"))
-            stack.enter_context(mock.patch.object(lifecycle, "ensure_keyring_runtime_volume", return_value="asb-keyring-runtime"))
+            stack.enter_context(mock.patch.object(runtime_workspace.keyring, "ensure_keyring_service"))
+            stack.enter_context(mock.patch.object(runtime_workspace.keyring, "ensure_keyring_runtime_volume", return_value="asb-keyring-runtime"))
             # Tarefa 3: `ensure_credentials_volume`/`ensure_toolcache_volume`
             # moraram para `runtime/storage.py`. `credential_mount_args`,
             # `ensure_credential_dirs`, `ensure_session_volume` e
@@ -1203,14 +1209,14 @@ class TestSessionStateIsolation(unittest.TestCase):
             # Dentro do bloco: o mountpoint e um diretorio temporario que
             # some quando a harness fecha.
             mountpoint = captured["mountpoint"]
-            for sub in lifecycle.SESSION_STATE_DIRS:
+            for sub in runtime_storage.SESSION_STATE_DIRS:
                 with self.subTest(sub=sub):
                     self.assertTrue((mountpoint / sub).is_dir())
                     self.assertEqual(
                         (mountpoint / sub).stat().st_mode & 0o077, 0)
 
     def test_the_session_volume_holds_no_credential_path(self):
-        joined = " ".join(lifecycle.SESSION_STATE_DIRS.values())
+        joined = " ".join(runtime_storage.SESSION_STATE_DIRS.values())
         self.assertNotIn(".credentials.json", joined)
         self.assertNotIn("auth.json", joined)
 

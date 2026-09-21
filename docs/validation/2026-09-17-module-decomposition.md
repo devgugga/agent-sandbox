@@ -10,19 +10,32 @@ edits) are already stale by 16 lines in `lifecycle.py`.
 
 ## 1. Size: before → after
 
+Re-measured at the end of the fix wave that followed the whole-branch
+review (this task made further deletions and additions after the first
+pass — see §3 for the code-size-relevant changes — so these numbers
+supersede the first pass's).
+
 | Module | Lines (before) | Lines (after) | Words (after) |
 | :--- | ---: | ---: | ---: |
-| `cli/asb/lifecycle.py` | 1231 | **585** | 2743 |
+| `cli/asb/lifecycle.py` | 1231 | **599** | 2900 |
 | `cli/asb/auth.py` | 1180 | **787** | 3901 |
 | `cli/asb/doctor.py` | 683 | **144** | 568 |
-| **Σ (the three original modules)** | **3094** | **1516** | **7212** |
+| **Σ (the three original modules)** | **3094** | **1530** | **7369** |
 
 The three original modules went from 3094 lines combined (pre-Task-1
-baseline) to 1516 (this task's HEAD) — a 51% reduction, not a claimed target
-number invented in advance. `lifecycle.py` alone dropped a further 16 lines
-in this task (601 → 585) from deleting two dead wrappers (§3).
+baseline) to 1530 (this task's final HEAD) — a 51% reduction, not a
+claimed target number invented in advance. `lifecycle.py` itself moved
+601 → 585 → 599 lines across this task's two passes: the first pass net
+-16 (two dead wrappers deleted); this fix wave net +14 despite deleting
+twelve more dead re-exports and their explanatory comment lines, because
+it added a new public `origin_of()` accessor (§3, ~9 lines) and a
+substantially longer, re-derived explanatory comment for the re-export
+block (§3) — a large net addition of documentation and one new function
+outweighing a larger deletion, not a regression against the "delete, not
+move behavior" mandate: no behavior moved, the net line count is honest
+about the doc-comment cost of getting the re-export inventory right.
 
-### New domain modules created by Tasks 2–5 (measured at this task's HEAD)
+### New/touched domain modules (measured at this task's final HEAD)
 
 | Module | Lines | Words |
 | :--- | ---: | ---: |
@@ -32,16 +45,25 @@ in this task (601 → 585) from deleting two dead wrappers (§3).
 | `cli/asb/agents/antigravity.py` | 174 | 1046 |
 | `cli/asb/runtime/storage.py` | 296 | 1768 |
 | `cli/asb/runtime/transaction.py` | 89 | 384 |
-| `cli/asb/runtime/workspace.py` | 734 | 2812 |
+| `cli/asb/runtime/workspace.py` | 745 | 2913 |
 | `cli/asb/runtime/sandbox.py` | 398 | 1848 |
-| `cli/asb/diagnostics/checks.py` | 629 | 2675 |
+| `cli/asb/diagnostics/checks.py` | 630 | 2678 |
 | `cli/asb/diagnostics/report.py` | 156 | 903 |
+| `cli/asb/staging.py` | 249 | 1071 |
 
-`runtime/sandbox.py` was not one of the three original modules and existed
-before this plan; it is listed because Task 6's must-do item 3 (§4) touches
-it. `checkouts/`, `projects/`, `sessions/`, `interfaces/` and `workspace.py`
-are pre-existing packages this plan did not decompose and are out of scope
-for this report.
+`runtime/workspace.py` grew from 734 to 745 lines (import + docstring
+changes, §3: `from .. import keyring` and the explanation of why);
+`diagnostics/checks.py` grew from 629 to 630 (one import line moved to a
+new line, §3). `runtime/sandbox.py` and `staging.py` were not among the
+three original modules and existed before this plan; they are listed
+because this fix wave's items 3 and 5 touch them (a public `origin_of`
+consumer and a corrected docstring, respectively — neither module's own
+size changed meaningfully: `sandbox.py` is still 398 lines, unchanged by
+the one-line `_origin_of` → `origin_of` call-site edit).
+`checkouts/`, `projects/`, `sessions/`, `interfaces/` and `workspace.py`
+(the pre-existing top-level one, distinct from `runtime/workspace.py`)
+are pre-existing packages this plan did not decompose and are out of
+scope for this report.
 
 ## 2. Module map: responsibility, public surface, consumers, tests
 
@@ -181,7 +203,7 @@ runtime/sandbox.py` (`layout_for` import), `cli/asb/projects/registry.py`.
 
 **Focused tests:** `tests/unit/test_workspace_runtime.py`.
 
-**Intentionally large (734 lines):** `_write_manifest` (13 positional
+**Intentionally large (745 lines):** `_write_manifest` (13 positional
 parameters) and `_create_agent_container` (12) are the seam where a future
 edit could transpose two arguments (deferred item 14, no action — style,
 not correctness). Not split further in this task: doing so would move
@@ -191,8 +213,16 @@ not move behavior").
 ### 2.8 `cli/asb/diagnostics/checks.py` + `report.py` — diagnostic data and rendering
 
 **Responsibility:** `checks.py` collects each `CheckResult` (data only,
-never prints); `report.py` renders text/JSON and owns the exit-code
-policy (`aggregate_exit_code`, `text_exit_code`).
+never prints); `report.py` renders text/JSON. The exit-code policy is
+**split, not owned by `report.py` alone** (final review finding, corrected
+here): `report.py` decides the TEXT exit code (`text_exit_code`) and
+supplies `aggregate_exit_code`, but the JSON exit code itself is decided
+in `doctor.py`'s `doctor()` (`return 0 if diag["healthy"] else 1`,
+`doctor.py:141`) and `diagnose()`'s `infra_healthy` computation
+(`doctor.py:92`, which ANDs `report.aggregate_exit_code(check_results) ==
+0` with every workspace's `healthy` flag) — see deferred item 16 (no
+action; it is the exact split this report documents, not a defect this
+plan introduces).
 
 **Direct consumers:** `cli/asb/doctor.py` (both), `cli/asb/diagnostics/
 report.py` (imports `checks.CheckResult` for typing).
@@ -200,7 +230,7 @@ report.py` (imports `checks.CheckResult` for typing).
 **Focused tests:** `tests/unit/test_diagnostic_checks.py`,
 `test_diagnostic_report.py`.
 
-**Intentionally large (`checks.py`, 629 lines):** houses 20 independent
+**Intentionally large (`checks.py`, 630 lines):** houses 20 independent
 `check_*` probes plus `collect_workspaces`; each probe is small and
 focused, the file is large because there are many of them, per deferred
 item 18 (no action — style, not correctness).
@@ -210,40 +240,121 @@ carries both `aggregate_exit_code` and `text_exit_code` because `doctor
 --json` and text-mode `doctor` disagree on the exit code when
 `network_gate` fails.
 
-## 3. The `lifecycle.py` re-export block: kept, not swept
+## 3. The `lifecycle.py` re-export block: re-derived, not trusted on inheritance
 
-`lifecycle.py` still imports and re-exports names it no longer defines
-(`KEYRING_*`, `ensure_keyring_*`, `check_keyring_service`,
-`CREDENTIALS_VOLUME`, `TOOLCACHE_VOLUME`, `CREDENTIAL_DIRS`,
-`SESSION_STATE_DIRS`, `_volume_mountpoint`, `ensure_credentials_volume`,
-`ensure_session_volume`, `credential_mount_args`, `session_mount_args`,
-`ensure_toolcache_volume`, `WorkspaceTransaction`, `WorkspaceRuntime`,
-`build_proxy`, `start_forwarder`, `start_services`). This is deferred
-item 2 (must-act): the block's old comment called these reexports
-"temporarios" (misleading — it invited a future sweep to delete them). Task
-6 verified each of the four named consumers still reads at least one name
-through `lifecycle.X` rather than the owning module directly:
+**Correction to this report's own first draft.** The original version of
+this section (written during the first Task 6 pass) named four "production
+consumers" of the re-export block, one of which — `staging.py` — was
+wrong, and it omitted three real consumers a subsequent whole-branch review
+found by re-deriving the inventory from scratch instead of trusting the
+inherited four-name list. This section is corrected in place, per the same
+review's finding: "the plan forbids claiming a target the diff did not
+achieve — the honest report is the deliverable."
 
-- **`auth.py`** — `lifecycle.KEYRING_BUS`, `lifecycle.ensure_credentials_
-  volume()`, `lifecycle.ensure_keyring_runtime_volume()`, `lifecycle.
-  credential_mount_args(home)`, `lifecycle.ensure_keyring_service(...)`.
-- **`keyring.py`** — `from .lifecycle import CREDENTIALS_VOLUME` and
-  `from .lifecycle import IMAGE, ensure_credentials_volume` (both deferred
-  imports, to avoid the `keyring.py` ⇄ `lifecycle.py` cycle).
-- **`doctor.py`** — `from .lifecycle import check_keyring_service` (the one
-  case `test_public_contracts.py` patches by that exact module path; Task 6
-  did not move this call site, so the permitted `mock.patch` string
-  exception in the task brief was not exercised).
-- **`staging.py`** — imports nothing from `lifecycle` (doing so would close
-  a cycle, since `lifecycle.py` imports `staging.py`), but duplicates
-  `CREDENTIAL_DIRS`/`SESSION_STATE_DIRS` locally, and a parity test compares
-  the local copy against `lifecycle.CREDENTIAL_DIRS`/`lifecycle.
-  SESSION_STATE_DIRS` (the same names reexported here) to prevent drift.
+**What changed in this fix wave, repo-wide search before every deletion
+(not the reviewer's list taken on trust):**
 
-The comment in `lifecycle.py` was rewritten (surgical wording fix only) to
-name these four consumers instead of calling the block "temporarios", so a
-future wrapper sweep does not delete them by mistake. No name in the block
-was removed.
+- **Ten re-exports deleted** as genuinely dead (zero production consumer,
+  zero test consumer via `lifecycle.X`): `LEGACY_ROOT_CREDENTIAL_FILES`,
+  `_inspect_keyring_container`, `_keyring_mount_contract_issue`,
+  `_mkdir_private`, `_volume_mountpoint`, `build_proxy`, `start_services`,
+  `ensure_toolcache_volume`, `warn_about_legacy_credential_layout`, and
+  `start_forwarder` — the last one had a real test consumer
+  (`tests/unit/test_lifecycle.py::TestStartForwarder`, 3 tests) that this
+  task's own re-verification found and repointed to
+  `cli.asb.runtime.workspace` (the owning module) before deleting the
+  re-export, per Brief Step 2's "first change tests to enter the owning
+  public interface, run those tests green, then delete the wrapper".
+- **Two more re-exports removed as a consequence of this wave's other
+  fixes, not from the reviewer's original list:** `TOOLCACHE_VOLUME`
+  (orphaned once `diagnostics/checks.py` was repointed below to import
+  `CREDENTIALS_VOLUME`/`TOOLCACHE_VOLUME` from `runtime.storage` directly)
+  and `CREDENTIAL_DIRS`/`SESSION_STATE_DIRS` (below — `staging.py`'s
+  parity test and two `test_login_flow.py` tests were the only remaining
+  readers, both repointed to `runtime.storage`, the owning module).
+- **`staging.py` was never a real consumer** — it references
+  `lifecycle.CREDENTIAL_DIRS`/`SESSION_STATE_DIRS` only in a docstring
+  comment and deliberately duplicates the values locally (to avoid a real
+  import cycle: `lifecycle.py` → `runtime/workspace.py` → `staging.py` →
+  `lifecycle.py`, since `staging.py` is imported by `runtime/workspace.py`,
+  not the other way around). The actual reader was
+  `tests/unit/test_staging.py::test_the_refused_destinations_match_every_
+  mount_point`, a parity test, now repointed to import `CREDENTIAL_DIRS`/
+  `SESSION_STATE_DIRS` from `asb.runtime.storage` (the owning module)
+  instead of `asb.lifecycle`. Verified empirically that `staging.py`
+  importing `runtime.storage` directly would **not** itself close a cycle
+  (`runtime/storage.py` imports neither `staging.py` nor anything that
+  leads back to it) — `staging.py`'s own duplication strategy was left
+  unchanged regardless, since restructuring it was out of this task's
+  scope; only the stale comment reference and the test's import were
+  corrected.
+- **Two more re-exports (`KEYRING_BUS`, `ensure_keyring_runtime_volume`,
+  `ensure_keyring_service`) had their reach from `runtime/workspace.py`
+  removed**, per the review's item 5: that module now does
+  `from .. import keyring` at module level (verified no cycle: `keyring.py`
+  imports nothing from `runtime/`) and calls `keyring.ensure_keyring_
+  service(...)` etc. directly, instead of reaching through
+  `lifecycle.ensure_keyring_service(...)`. This required repointing 19
+  `mock.patch(...)` call sites across `tests/unit/test_lifecycle.py`,
+  `tests/unit/test_broker.py`, `tests/unit/test_workspace_runtime.py` and
+  `tests/unit/test_login_flow.py`, plus one integration test
+  (`tests/integration/test_startup_auth.py`, which called
+  `lifecycle.ensure_keyring_service` directly in its own pilot-setup code,
+  not just via `mock.patch`) — each repoint verified green, and the
+  pattern red-proven once (§4 item 1 below) by reverting a single patch
+  target and confirming the resulting failure is loud (a real `TypeError`/
+  `PodmanError` from the un-mocked real function executing), never a
+  silent pass.
+- **`diagnostics/checks.py`'s reach for `CREDENTIALS_VOLUME`/
+  `TOOLCACHE_VOLUME` was removed the same way**: `from ..lifecycle import
+  CREDENTIALS_VOLUME, TOOLCACHE_VOLUME, IMAGE, names` became `from
+  ..lifecycle import IMAGE, names` plus a new `from ..runtime.storage
+  import CREDENTIALS_VOLUME, TOOLCACHE_VOLUME` (module level; no cycle,
+  `runtime/storage.py` imports nothing from `diagnostics/`). No test
+  mocked these two constants by name (they are read once and passed
+  straight into `podman.exists("volume", ...)` calls that tests mock
+  instead), so no repoint was needed there — verified by a value-swap red
+  proof instead (temporarily renamed `CREDENTIALS_VOLUME`'s value in
+  `runtime/storage.py` and confirmed `diagnostics.checks.CREDENTIALS_
+  VOLUME` picked up the live value, proving the import is live, not a
+  stale cached copy).
+- **`cli/asb/runtime/sandbox.py:298`'s reach into `lifecycle._origin_of`**
+  (a private symbol of a sibling module — the same shape as the
+  `storage._volume_mountpoint` case Task 6's first pass fixed) now goes
+  through a new public `lifecycle.origin_of(ws, home)`, a one-line wrapper
+  around the existing private `_origin_of`. `lifecycle.py`'s own internal
+  callers (`down`, `pull`, `purge`) still call the private `_origin_of`
+  directly and are unaffected; only the cross-module reach moved.
+
+**What remains in the re-export block, and why, re-derived by symbol —
+every name below was checked by a fresh repo-wide search after all the
+deletions above, not inherited from any earlier list:**
+
+| Name(s) | Production consumer | How reached |
+| :--- | :--- | :--- |
+| `KEYRING_BUS`, `ensure_keyring_runtime_volume`, `ensure_keyring_service`, `credential_mount_args` | `auth.py` | attribute access, `lifecycle.X` |
+| `check_keyring_service` | `doctor.py` **and** `readiness.py` | both `from .lifecycle import check_keyring_service` (readiness.py's import is deferred, inside `probe_workspace`) |
+| `CREDENTIALS_VOLUME`, `ensure_credentials_volume` | `auth.py` **and** `keyring.py` | `auth.py` by attribute access; `keyring.py` by deferred `from .lifecycle import ...` (avoids the `keyring.py` ⇄ `lifecycle.py` cycle) |
+| `CONFIG`, `RuntimeStorage`, `WorkspaceTransaction`, `WorkspaceRuntime` | `lifecycle.py` itself | used directly in `lifecycle.py`'s own body (`SSH_KEY`/`ensure_ssh_key`, `prepare_workspace`'s type hint, `up()`, and the `up`/`down`/`suspend`/`resume` facade methods respectively) — not re-exports for outside consumers, though nothing stops one |
+
+**`readiness.py` as a `check_keyring_service` consumer, and `diagnostics/
+checks.py`/`runtime/workspace.py` as consumers of the block at all, are the
+three items the whole-branch review found that the first pass of this
+report never named** — `readiness.py` remains a genuine consumer today;
+the other two are no longer consumers of the *re-export block* at all,
+because this fix wave repointed them to their owning modules (bullets
+above) rather than merely documenting the gap.
+
+**Ship-as-is, named honestly (not fixed — see §8 "Residual test-only
+re-export bindings" for the full ruling):** `KEYRING_CONTAINER`, `KEYRING_DATA_
+VOLUME`, `KEYRING_PASS`, `KEYRING_RUNTIME_VOLUME`, `KEYRING_SCHEMA`,
+`ensure_keyring_data_volume`, `ensure_keyring_pass`, `ensure_credential_
+dirs`, `ensure_session_volume`, `session_mount_args` — zero production
+consumer each, kept alive only by `mock.patch("asb.lifecycle.X", ...)`
+strings in `test_auth.py`/`test_lifecycle.py`/`test_login_flow.py`.
+
+The comment block in `lifecycle.py` (immediately above `IMAGE = ...`) was
+rewritten to match this table, not the four-name list from the first pass.
 
 ## 4. The three must-do deferred items — what Task 6 did
 
@@ -274,6 +385,18 @@ was removed.
    in `runtime/sandbox.py::session_volume_mountpoint`. No behavior change:
    same `podman volume inspect` call, same error handling.
 
+**A whole-branch review of this three-item pass found six further gaps**
+(a narrowed test guard, ten dead re-exports the first pass missed because
+it inherited a partial inventory instead of re-deriving one, a false
+"`staging.py` is a consumer" claim in three places, a coverage gap in
+`_service_state` this task's own deferral had understated, and two more
+private-symbol/wrong-owner import reaches of the same shape as item 3
+above). That fix wave is documented in place, by topic, rather than as a
+second numbered list: the test-guard fix is §6; the re-export
+re-derivation, the `staging.py` correction and the two import-owner fixes
+are all in §3; the `_service_state` reversal is §7; the honest residual
+of what was deliberately *not* fixed is §8.
+
 ## 5. Must-record items (honest, not fixed)
 
 4. **Residual provider-specific branches remain in `auth.py`** after Task
@@ -302,27 +425,117 @@ was removed.
    body claiming what the diff does not support, so it is recorded here
    per the deferred item's own instruction, rather than silently ignored.
 
-## 6. Deferred coverage gaps and style items — untouched
+## 6. Test guards widened: two hardcoded module lists had narrowed silently
 
-Items 7–18 of `deferred-items.md` (coverage gaps in `diagnostics/checks.py`,
-`runtime/workspace.py`, `diagnostics/report.py`, and the style/structure
-items in `install.py`, `runtime/workspace.py`, `diagnostics/report.py`,
-`diagnostics/checks.py`/`doctor.py`) were left exactly as found. None was
-introduced by this plan; all were relocated pre-existing gaps its own
-tasks' review rounds deferred by ruling. Task 6's brief instructs
-"[t]riage at the final review, do not fix blind" for the coverage gaps and
-"no action required" for the style items — this report does not reopen
-either list.
+**Most important finding of the whole-branch review, per the review
+itself.** `tests/unit/test_readiness.py::TestNoRootlessNetnsAdvice::
+test_diagnostic_modules_never_recommend_the_rootless_netns_unshare` greps
+a hardcoded tuple of module filenames (`readiness.py`, `doctor.py`,
+`runtime_check.py`, `lifecycle.py`) for the string `--rootless-netns` — a
+regression guard against reintroducing advice the R10 pilot disproved.
+This task's Task 5 moved essentially all the advice-bearing diagnostic
+logic out of `doctor.py` into `diagnostics/checks.py`/`diagnostics/
+report.py`, and `test_readiness.py` was never touched by any task in this
+plan (not among the branch's changed files before this fix wave): the
+guard kept passing while scanning modules that no longer carry the risk,
+so its coverage of the module that now does was zero. Fixed: extended the
+tuple to also scan `diagnostics/checks.py`, `diagnostics/report.py`,
+`runtime/workspace.py` and `runtime/storage.py` (the four modules Task 4/5
+moved risk-bearing logic into), keeping the original four. Verified the
+tuple's nested-path entries resolve correctly under `cli / name` (pathlib
+joins `"diagnostics/checks.py"` as a multi-segment relative path without
+special-casing). Red-proven: inserted `--rootless-netns` into
+`diagnostics/checks.py`, confirmed the guard failed naming that exact
+module (`AssertionError: '--rootless-netns' unexpectedly found in ...`),
+removed it, confirmed green again.
 
-## 7. Verification
+**A second instance of the identical shape, found by "look once for the
+same shape elsewhere" as instructed, in the same file:**
+`TestNoDirectPodmanLifecycleAdvice::test_diagnostic_modules_never_tell_
+the_operator_to_drive_podman` walks the AST of a hardcoded five-module
+tuple (`keyring.py`, `doctor.py`, `readiness.py`, `auth.py`,
+`lifecycle.py`) for string literals containing `"podman restart"` or
+`"podman start "` — guarding against remediation text that would drive a
+systemd-supervised container directly instead of through its unit. Same
+narrowing risk, same fix: extended to the same four additional modules,
+kept the original five. Red-proven the same way (inserted a matching
+literal into `diagnostics/checks.py` via an f-string constant segment,
+confirmed the guard named the module and the exact forbidden phrase,
+removed it, confirmed green). No third instance of this shape (a test
+hardcoding a list of module filenames to scan) was found anywhere else in
+`tests/unit/` or `tests/integration/` after a repo-wide search for the
+pattern — these two, both in `test_readiness.py`, were the only ones.
+
+## 7. Deferred coverage gaps and style items
+
+**Item 7 reversed, fixed in this round — the triage authority overruled the
+original deferral.** `deferred-items.md` item 7 (`diagnostics/checks.py`
+520/522, `_service_state`'s `"missing"`/`"stopped"` returns) was originally
+deferred "triage at the final review, do not fix blind." The whole-branch
+final review triaged it and found the gap worse than recorded: **no test
+entered `_service_state` at all** (not merely its missing/stopped
+branches — every existing caller reaches it only through
+`collect_workspaces`, and every one of those mocks `podman.exists`/
+`podman.running` to a constant `True`, so `_service_state` itself, all
+five of its branches, had zero direct coverage). Global Constraint #1
+("preserve exit codes") makes this the branch that flips `svc_healthy`,
+which flips `ws_healthy`, `infra_healthy`, and both aggregate exit codes.
+Fixed: `tests/unit/test_diagnostic_checks.py::TestServiceState`, six
+tests, one per branch (`missing`, `stopped`, `healthy`, `unhealthy`,
+`starting`, no-healthcheck/`process_running`), each asserting the full
+`(healthy, state, remediation)` triple. Red-proven for the two branches
+the review named explicitly (`missing`, `stopped`): flipped each return's
+`healthy` bit to `True` in turn, confirmed the corresponding test fails
+with the exact tuple mismatch, restored. See `task-6-report.md` for the
+full red-proof transcripts.
+
+Items 8–18 of `deferred-items.md` (the remaining coverage gaps in
+`diagnostics/checks.py`, `runtime/workspace.py`, `diagnostics/report.py`,
+and the style/structure items in `install.py`, `runtime/workspace.py`,
+`diagnostics/report.py`, `diagnostics/checks.py`/`doctor.py`) were left
+exactly as found — the final review did not reopen these, only item 7.
+None was introduced by this plan; all are relocated pre-existing gaps
+earlier tasks' review rounds deferred by ruling.
+
+## 8. Residual test-only re-export bindings — honest, not repointed
+
+Beyond the ten dead re-exports this task deletes (§3) and the two the
+review's item 5 fixes deleted as a byproduct, roughly ten more re-exported
+names in `lifecycle.py` have **zero production consumer** and are kept
+alive **only** by `mock.patch("asb.lifecycle.X", ...)` strings in
+`test_auth.py`, `test_lifecycle.py` and `test_login_flow.py`:
+`KEYRING_CONTAINER`, `KEYRING_DATA_VOLUME`, `KEYRING_PASS`,
+`KEYRING_RUNTIME_VOLUME`, `KEYRING_SCHEMA`, `ensure_credential_dirs`,
+`ensure_keyring_data_volume`, `ensure_keyring_pass`, `ensure_session_
+volume`, `session_mount_args`.
+
+**These are not repointed, by explicit ruling of the whole-branch review:**
+repointing `mock.patch` targets across three test files is real churn
+against the surgical-changes constraint (AGENTS.md §3), and each repoint
+carries the same R21 silent-patch hazard demonstrated in §3/§4 above —
+multiplied by roughly ten more call sites with no compatibility-wrapper
+deletion to justify the churn (unlike `start_forwarder`, `CREDENTIAL_DIRS`/
+`SESSION_STATE_DIRS`, and the `keyring.*` reaches in §3, which were
+repointed because a real re-export was being *deleted* or a real
+cross-module private-symbol reach was being closed).
+
+**The plan's completion criterion — "no compatibility wrapper lacks a
+production consumer" — is therefore met for production consumers, and
+explicitly NOT met for these ten test-only bindings.** This report does
+not redefine "production consumer" to include a `mock.patch` string in
+order to claim the criterion is satisfied in full; the honest state is
+recorded here instead, by name, per the review's own instruction.
+
+## 9. Verification
 
 Full command-by-command output, including tracebacks and red-before-green
 proofs, is in `task-6-report.md` in this plan's `.superpowers/sdd/` folder.
 Summary:
 
-- `PYTHONPATH=cli python3 -m unittest discover -s tests/unit -v`: **1479
-  tests, OK** (down from the 1481-test baseline at `54d9688` — 2 tests
-  removed with the deleted `lifecycle.login` wrapper, §8).
+- `PYTHONPATH=cli python3 -m unittest discover -s tests/unit -v`: **1485
+  tests, OK** (baseline at `54d9688`: 1481; -2 for the deleted
+  `lifecycle.login` wrapper's dedicated tests, §10; +6 for the new
+  `TestServiceState` class, §7).
 - `PYTHONPATH=cli python3 -m unittest discover -s tests/integration -v`:
   Ran 53 tests, **FAILED (errors=3, skipped=1)**. The 3 errors
   (`test_session_lifecycle.py::test_start_list_attach_detach_and_stop_a_
@@ -352,7 +565,7 @@ None of the three pre-existing failure categories above touches
 each was confirmed unrelated by diffing the failing code path against
 commit `54d9688` before this task began.
 
-## 8. Tests removed in this task
+## 10. Tests removed in this task
 
 `tests/unit/test_login_flow.py::TestLifecycleLoginReexport` (2 tests) was
 deleted along with the `lifecycle.login()` wrapper it existed solely to

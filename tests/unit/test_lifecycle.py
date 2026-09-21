@@ -293,8 +293,8 @@ class TestLifecycleOrdering(unittest.TestCase):
                 stack.enter_context(mock.patch("cli.asb.lifecycle.podman.exists", side_effect=fake_exists))
                 stack.enter_context(mock.patch("cli.asb.lifecycle.ensure_runtime", return_value=runtime_dir))
                 stack.enter_context(mock.patch("cli.asb.install.remove_project_dropin", return_value=False))
-                stack.enter_context(mock.patch("cli.asb.lifecycle.ensure_keyring_service", side_effect=lambda *a, **k: events.append("ensure_keyring_service")))
-                stack.enter_context(mock.patch("cli.asb.lifecycle.ensure_keyring_runtime_volume", return_value="asb-keyring-runtime"))
+                stack.enter_context(mock.patch("cli.asb.runtime.workspace.keyring.ensure_keyring_service", side_effect=lambda *a, **k: events.append("ensure_keyring_service")))
+                stack.enter_context(mock.patch("cli.asb.runtime.workspace.keyring.ensure_keyring_runtime_volume", return_value="asb-keyring-runtime"))
                 stack.enter_context(mock.patch(
                     "cli.asb.runtime.workspace.RuntimeStorage",
                     return_value=_fake_storage(toolcache="tool-vol")))
@@ -384,7 +384,7 @@ class TestResumeReadinessGate(unittest.TestCase):
                  mock.patch("cli.asb.lifecycle.supervisor.start_workspace"), \
                  mock.patch("cli.asb.lifecycle.subprocess.run", return_value=mock.MagicMock(returncode=0)), \
                  mock.patch("cli.asb.readiness.probe_host", return_value=ProbeResult("host", "healthy", "ok", 0, "")), \
-                 mock.patch("cli.asb.lifecycle.ensure_keyring_service"), \
+                 mock.patch("cli.asb.runtime.workspace.keyring.ensure_keyring_service"), \
                  mock.patch("cli.asb.lifecycle.podman.exists", return_value=True), \
                  mock.patch("cli.asb.lifecycle.podman.run", side_effect=fake_run), \
                  mock.patch("cli.asb.lifecycle.podman.out", return_value="127.0.0.1:2222"), \
@@ -538,23 +538,27 @@ class TestKeyringPreservation(unittest.TestCase):
 
 
 class TestStartForwarder(unittest.TestCase):
+    # Tarefa 6 (rodada final de revisao): `start_forwarder` e definida em
+    # `runtime/workspace.py` desde a Tarefa 4; `lifecycle.py` so a
+    # reexportava. Entra pela fronteira dona (import e alvo do mock.patch),
+    # nao mais por `lifecycle`.
     def test_start_forwarder_no_ports_is_noop(self):
         from unittest import mock
-        from cli.asb.lifecycle import start_forwarder
+        from cli.asb.runtime.workspace import start_forwarder
         from cli.asb.profile import Profile
 
         profile = Profile(host_ports=())
-        with mock.patch("cli.asb.lifecycle.podman.run") as mock_run:
+        with mock.patch("cli.asb.runtime.workspace.podman.run") as mock_run:
             start_forwarder("demo", profile)
             mock_run.assert_not_called()
 
     def test_start_forwarder_invokes_podman_with_sysctl_and_entrypoint(self):
         from unittest import mock
-        from cli.asb.lifecycle import start_forwarder
+        from cli.asb.runtime.workspace import start_forwarder
         from cli.asb.profile import Profile
 
         profile = Profile(host_ports=(80, 5432))
-        with mock.patch("cli.asb.lifecycle.podman.run") as mock_run:
+        with mock.patch("cli.asb.runtime.workspace.podman.run") as mock_run:
             start_forwarder("demo", profile)
             mock_run.assert_called_once()
             args = mock_run.call_args[0]
@@ -568,7 +572,7 @@ class TestStartForwarder(unittest.TestCase):
             self.assertEqual(args[-2:], ("80", "5432"))
 
     def test_start_forwarder_invalid_ports_raise_value_error(self):
-        from cli.asb.lifecycle import start_forwarder
+        from cli.asb.runtime.workspace import start_forwarder
         from cli.asb.profile import Profile
 
         for invalid_port in (0, 70000, -1, "80"):
@@ -642,8 +646,8 @@ class TestSingleRuntimeUp(unittest.TestCase):
             stack.enter_context(mock.patch("cli.asb.runtime.workspace.build_staging", return_value=0))
             stack.enter_context(mock.patch("cli.asb.lifecycle.ensure_ssh_key", return_value=fake_key))
             stack.enter_context(mock.patch("cli.asb.lifecycle.ensure_runtime", return_value=runtime_dir))
-            stack.enter_context(mock.patch("cli.asb.lifecycle.ensure_keyring_service"))
-            stack.enter_context(mock.patch("cli.asb.lifecycle.ensure_keyring_runtime_volume", return_value="k-run"))
+            stack.enter_context(mock.patch("cli.asb.runtime.workspace.keyring.ensure_keyring_service"))
+            stack.enter_context(mock.patch("cli.asb.runtime.workspace.keyring.ensure_keyring_runtime_volume", return_value="k-run"))
             stack.enter_context(mock.patch(
                 "cli.asb.runtime.workspace.RuntimeStorage",
                 return_value=_fake_storage(credentials="c-vol", session="asb-demo-session")))
@@ -788,7 +792,7 @@ class TestSingleRuntimeResume(unittest.TestCase):
                         return_value=(names, tmp / "home", tmp / "origin")), \
              mock.patch("cli.asb.lifecycle.layout_for", return_value=layout), \
              mock.patch("cli.asb.lifecycle.ensure_runtime", return_value=runtime_dir), \
-             mock.patch("cli.asb.lifecycle.ensure_keyring_service",
+             mock.patch("cli.asb.runtime.workspace.keyring.ensure_keyring_service",
                         side_effect=lambda *a, **k: events.append("keyring")) as mock_keyring, \
              mock.patch("cli.asb.lifecycle.subprocess.run", return_value=mock.MagicMock(returncode=0)), \
              mock.patch("cli.asb.lifecycle.supervisor.start_workspace",
@@ -937,8 +941,8 @@ class TestTransactionalRollback(unittest.TestCase):
                 stack.enter_context(mock.patch("cli.asb.runtime.workspace.render", return_value="acl x"))
                 stack.enter_context(mock.patch("cli.asb.runtime.workspace.build_staging", return_value=0))
                 stack.enter_context(mock.patch("cli.asb.lifecycle.ensure_ssh_key", return_value=fake_key))
-                stack.enter_context(mock.patch("cli.asb.lifecycle.ensure_keyring_service"))
-                stack.enter_context(mock.patch("cli.asb.lifecycle.ensure_keyring_runtime_volume", return_value="k-run"))
+                stack.enter_context(mock.patch("cli.asb.runtime.workspace.keyring.ensure_keyring_service"))
+                stack.enter_context(mock.patch("cli.asb.runtime.workspace.keyring.ensure_keyring_runtime_volume", return_value="k-run"))
                 stack.enter_context(mock.patch(
                     "cli.asb.runtime.workspace.RuntimeStorage",
                     return_value=_fake_storage(credentials="c-vol")))
@@ -995,8 +999,8 @@ class TestTransactionalRollback(unittest.TestCase):
                 stack.enter_context(mock.patch("cli.asb.runtime.workspace.render", return_value="acl x"))
                 stack.enter_context(mock.patch("cli.asb.runtime.workspace.build_staging", return_value=0))
                 stack.enter_context(mock.patch("cli.asb.lifecycle.ensure_ssh_key", return_value=fake_key))
-                stack.enter_context(mock.patch("cli.asb.lifecycle.ensure_keyring_service"))
-                stack.enter_context(mock.patch("cli.asb.lifecycle.ensure_keyring_runtime_volume", return_value="k-run"))
+                stack.enter_context(mock.patch("cli.asb.runtime.workspace.keyring.ensure_keyring_service"))
+                stack.enter_context(mock.patch("cli.asb.runtime.workspace.keyring.ensure_keyring_runtime_volume", return_value="k-run"))
                 boom_storage = _fake_storage(credentials="c-vol", session="s-vol")
                 boom_storage.credential_mounts = mock.Mock(side_effect=boom)
                 stack.enter_context(mock.patch(
@@ -1051,8 +1055,8 @@ class TestTransactionalRollback(unittest.TestCase):
                 stack.enter_context(mock.patch("cli.asb.runtime.workspace.render", return_value="acl x"))
                 stack.enter_context(mock.patch("cli.asb.runtime.workspace.build_staging", return_value=0))
                 stack.enter_context(mock.patch("cli.asb.lifecycle.ensure_ssh_key", return_value=fake_key))
-                stack.enter_context(mock.patch("cli.asb.lifecycle.ensure_keyring_service"))
-                stack.enter_context(mock.patch("cli.asb.lifecycle.ensure_keyring_runtime_volume", return_value="k-run"))
+                stack.enter_context(mock.patch("cli.asb.runtime.workspace.keyring.ensure_keyring_service"))
+                stack.enter_context(mock.patch("cli.asb.runtime.workspace.keyring.ensure_keyring_runtime_volume", return_value="k-run"))
                 stack.enter_context(mock.patch(
                     "cli.asb.runtime.workspace.RuntimeStorage",
                     return_value=_fake_storage(credentials="c-vol")))
@@ -1115,8 +1119,8 @@ class TestTransactionalRollback(unittest.TestCase):
                 stack.enter_context(mock.patch("cli.asb.runtime.workspace.render", return_value="acl x"))
                 stack.enter_context(mock.patch("cli.asb.runtime.workspace.build_staging", return_value=0))
                 stack.enter_context(mock.patch("cli.asb.lifecycle.ensure_ssh_key", return_value=fake_key))
-                stack.enter_context(mock.patch("cli.asb.lifecycle.ensure_keyring_service"))
-                stack.enter_context(mock.patch("cli.asb.lifecycle.ensure_keyring_runtime_volume", return_value="k-run"))
+                stack.enter_context(mock.patch("cli.asb.runtime.workspace.keyring.ensure_keyring_service"))
+                stack.enter_context(mock.patch("cli.asb.runtime.workspace.keyring.ensure_keyring_runtime_volume", return_value="k-run"))
                 stack.enter_context(mock.patch(
                     "cli.asb.runtime.workspace.RuntimeStorage",
                     return_value=_fake_storage(credentials="c-vol")))
@@ -1187,8 +1191,8 @@ class TestTransactionalRollback(unittest.TestCase):
                 stack.enter_context(mock.patch("cli.asb.lifecycle.podman.exists", side_effect=fake_exists))
                 stack.enter_context(mock.patch("cli.asb.install.remove_project_dropin", return_value=False))
                 stack.enter_context(mock.patch("cli.asb.lifecycle.ensure_runtime", return_value=runtime_dir))
-                stack.enter_context(mock.patch("cli.asb.lifecycle.ensure_keyring_service"))
-                stack.enter_context(mock.patch("cli.asb.lifecycle.ensure_keyring_runtime_volume", return_value="run-vol"))
+                stack.enter_context(mock.patch("cli.asb.runtime.workspace.keyring.ensure_keyring_service"))
+                stack.enter_context(mock.patch("cli.asb.runtime.workspace.keyring.ensure_keyring_runtime_volume", return_value="run-vol"))
                 stack.enter_context(mock.patch(
                     "cli.asb.runtime.workspace.RuntimeStorage",
                     return_value=_fake_storage(credentials="cred-vol", toolcache="tool-vol")))
@@ -1267,8 +1271,8 @@ class TestTransactionalRollback(unittest.TestCase):
                 stack.enter_context(mock.patch("cli.asb.runtime.workspace.render", return_value="acl x"))
                 stack.enter_context(mock.patch("cli.asb.runtime.workspace.build_staging", return_value=0))
                 stack.enter_context(mock.patch("cli.asb.lifecycle.ensure_ssh_key", return_value=fake_key))
-                stack.enter_context(mock.patch("cli.asb.lifecycle.ensure_keyring_service"))
-                stack.enter_context(mock.patch("cli.asb.lifecycle.ensure_keyring_runtime_volume", return_value="k-run"))
+                stack.enter_context(mock.patch("cli.asb.runtime.workspace.keyring.ensure_keyring_service"))
+                stack.enter_context(mock.patch("cli.asb.runtime.workspace.keyring.ensure_keyring_runtime_volume", return_value="k-run"))
                 stack.enter_context(mock.patch(
                     "cli.asb.runtime.workspace.RuntimeStorage",
                     return_value=_fake_storage(session="s-vol")))
@@ -1540,7 +1544,7 @@ class TestManagedLifecycleCommands(unittest.TestCase):
 
         with mock.patch("cli.asb.lifecycle._require_workspace", return_value=(fake_n, Path("/tmp"), Path("/origin"))), \
              mock.patch("cli.asb.lifecycle.ensure_runtime", return_value=Path("/tmp/runtime/rev1")), \
-             mock.patch("cli.asb.lifecycle.ensure_keyring_service"), \
+             mock.patch("cli.asb.runtime.workspace.keyring.ensure_keyring_service"), \
              mock.patch("subprocess.run", side_effect=fake_subprocess_run), \
              mock.patch("cli.asb.lifecycle.supervisor.start_workspace") as mock_start, \
              mock.patch("cli.asb.lifecycle.layout_for", return_value=fake_layout), \

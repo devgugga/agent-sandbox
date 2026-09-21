@@ -291,7 +291,7 @@ class AgentDriver(ABC):
         self._resume_confirmed = True
         # Diretorio de sessoes do provedor COMO CAMINHO DO HOST: o subpath
         # do volume de sessao do workspace que o container monta sobre o
-        # diretorio do provedor (ver `lifecycle.SESSION_STATE_DIRS`). Sem
+        # diretorio do provedor (ver `runtime.storage.SESSION_STATE_DIRS`). Sem
         # padrao no host: `None` significa "nenhuma evidencia", nunca o
         # `~/.codex`/`~/.claude` do operador, cuja sessao pessoal viraria o
         # id de uma sessao do sandbox.

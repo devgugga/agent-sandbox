@@ -20,8 +20,6 @@ from .keyring import (
     KEYRING_PASS,
     KEYRING_RUNTIME_VOLUME,
     KEYRING_SCHEMA,
-    _inspect_keyring_container,
-    _keyring_mount_contract_issue,
     check_keyring_service,
     ensure_keyring_data_volume,
     ensure_keyring_pass,
@@ -31,29 +29,16 @@ from .keyring import (
 from .profile import load_profile
 from .runtime.connection import ConnectionInfo
 from .runtime.storage import (
-    CREDENTIAL_DIRS,
     CREDENTIALS_VOLUME,
-    LEGACY_ROOT_CREDENTIAL_FILES,
-    SESSION_STATE_DIRS,
-    TOOLCACHE_VOLUME,
     RuntimeStorage,
-    _mkdir_private,
-    _volume_mountpoint,
     credential_mount_args,
     ensure_credential_dirs,
     ensure_credentials_volume,
     ensure_session_volume,
-    ensure_toolcache_volume,
     session_mount_args,
-    warn_about_legacy_credential_layout,
 )
 from .runtime.transaction import WorkspaceTransaction
-from .runtime.workspace import (
-    WorkspaceRuntime,
-    build_proxy,
-    start_forwarder,
-    start_services,
-)
+from .runtime.workspace import WorkspaceRuntime
 from .squid import render
 from .workspace import (
     Layout,
@@ -62,30 +47,48 @@ from .workspace import (
     remove_workspace,
 )
 
-# CONFIG, SSH_KEY e as constantes/funcoes de keyring (KEYRING_*, ensure_keyring_*,
-# check_keyring_service, _inspect_keyring_container, _keyring_mount_contract_issue)
-# foram extraidas para cli/asb/keyring.py (Tarefa A2). CREDENTIALS_VOLUME,
-# TOOLCACHE_VOLUME, CREDENTIAL_DIRS, LEGACY_ROOT_CREDENTIAL_FILES,
-# SESSION_STATE_DIRS e as funcoes ensure_credentials_volume,
-# ensure_credential_dirs, _volume_mountpoint, _mkdir_private,
-# warn_about_legacy_credential_layout, credential_mount_args,
-# ensure_session_volume, session_mount_args e ensure_toolcache_volume foram
-# extraidas para cli/asb/runtime/storage.py (Tarefa 3). `WorkspaceTransaction`
-# foi extraida para cli/asb/runtime/transaction.py, e a implementacao de
-# `prepare_workspace` (junto com `build_proxy`, `start_services` e
-# `start_forwarder`) para cli/asb/runtime/workspace.py::WorkspaceRuntime
+# CONFIG, SSH_KEY e as constantes/funcoes de keyring (KEYRING_*,
+# ensure_keyring_*, check_keyring_service) foram extraidas para
+# cli/asb/keyring.py (Tarefa A2). CREDENTIALS_VOLUME e as funcoes
+# ensure_credentials_volume, ensure_credential_dirs, credential_mount_args,
+# ensure_session_volume e session_mount_args foram extraidas para
+# cli/asb/runtime/storage.py (Tarefa 3). `WorkspaceTransaction` foi extraida
+# para cli/asb/runtime/transaction.py, e a implementacao de
+# `prepare_workspace` para cli/asb/runtime/workspace.py::WorkspaceRuntime
 # (Tarefa 4). `prepare_workspace` continua aqui como uma funcao fina que
 # delega a `WorkspaceRuntime().prepare(...)`.
-# Os nomes acima sao reexports ESTAVEIS, nao transitorios: cada um tem um
-# consumidor de producao nomeado que continua lendo `lifecycle.X` em vez do
-# modulo novo — `auth.py` (KEYRING_*, ensure_credentials_volume,
-# credential_mount_args, IMAGE, SSH_KEY, names), `keyring.py`
-# (CREDENTIALS_VOLUME, ensure_credentials_volume, IMAGE, via import adiado
-# para evitar ciclo), `doctor.py` (check_keyring_service) e `staging.py`
-# (cujo teste de paridade compara `CREDENTIAL_DIRS`/`SESSION_STATE_DIRS`
-# daqui contra a copia local, ja que `staging` nao pode importar `lifecycle`
-# sem fechar um ciclo). Task 6 (remocao de wrappers obsoletos) verificou os
-# quatro e manteve o bloco: nenhum deles perdeu o consumidor.
+#
+# Os nomes acima sao reexports ESTAVEIS, nao transitorios, mas nem todos tem
+# o MESMO motivo para ficar — a rodada final de revisao do plano de
+# decomposicao (2026-09-21) re-derivou o inventario abaixo, repo inteiro,
+# e a Tarefa 6 ja removeu onze nomes que nao tinham consumidor nenhum
+# (LEGACY_ROOT_CREDENTIAL_FILES, _inspect_keyring_container,
+# _keyring_mount_contract_issue, _mkdir_private, _volume_mountpoint,
+# build_proxy, start_forwarder, start_services, ensure_toolcache_volume,
+# warn_about_legacy_credential_layout, TOOLCACHE_VOLUME — o ultimo ficou
+# orfao quando diagnostics/checks.py passou a importar CREDENTIALS_VOLUME/
+# TOOLCACHE_VOLUME de runtime.storage diretamente) e CREDENTIAL_DIRS/
+# SESSION_STATE_DIRS (repontados para runtime.storage nos dois lugares que
+# ainda liam daqui: o teste de paridade de staging.py e dois testes de
+# sessao em test_login_flow.py).
+#
+# Consumidores de PRODUCAO nomeados, por nome reexportado:
+#   - KEYRING_BUS, ensure_keyring_runtime_volume, ensure_keyring_service,
+#     credential_mount_args: `auth.py` (`_client_run_args`/`login`).
+#   - check_keyring_service: `doctor.py` (`diagnose()`) e `readiness.py`
+#     (`probe_workspace`), ambos via `from .lifecycle import
+#     check_keyring_service` (import adiado em `readiness.py`).
+#   - CREDENTIALS_VOLUME, ensure_credentials_volume: `auth.py` E
+#     `keyring.py` (import adiado, evita o ciclo keyring<->lifecycle).
+#
+# Sem consumidor de producao, mantidos porque ~10 testes em test_auth.py/
+# test_lifecycle.py/test_login_flow.py ainda usam `mock.patch("asb.lifecycle.X")`
+# como alvo (repontar esses alvos e churn real contra a norma de mudancas
+# cirurgicas — ver o relatorio de validacao para a lista nomeada e a
+# ressalva honesta): KEYRING_CONTAINER, KEYRING_DATA_VOLUME, KEYRING_PASS,
+# KEYRING_RUNTIME_VOLUME, KEYRING_SCHEMA, ensure_keyring_data_volume,
+# ensure_keyring_pass, ensure_credential_dirs, ensure_session_volume,
+# session_mount_args.
 IMAGE = "agent-sandbox:latest"
 PROXY_IMAGE = "agent-sandbox-proxy:latest"
 PROXY_PORT = 3128
@@ -140,6 +143,17 @@ def _origin_of(ws: str, home: Path) -> Path | None:
     o layout, e um workspace sem estado nao e erro: nao ha o que limpar."""
     marker = home / ".local" / "state" / "agent-sandbox" / ws / "origin"
     return Path(marker.read_text().strip()) if marker.is_file() else None
+
+
+def origin_of(ws: str, home: Path) -> Path | None:
+    """Fronteira PUBLICA de `_origin_of`, para quem precisa ler o caminho de
+    origem de um workspace a partir de FORA deste modulo (ex:
+    `runtime/sandbox.py::SandboxRuntime.sandbox_absent`). Antes da Tarefa 6
+    (rodada final de revisao) esse chamador alcancava `_origin_of`
+    diretamente — simbolo privado de um modulo irmao, o mesmo padrao que
+    `runtime/storage.py::volume_mountpoint` corrigiu para
+    `_volume_mountpoint`."""
+    return _origin_of(ws, home)
 
 
 def _sweep_containers(ws: str) -> None:

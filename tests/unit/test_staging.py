@@ -141,10 +141,17 @@ class TestMountPointDestinationsAreRefused(Fixture):
 
     def test_the_refused_destinations_match_every_mount_point(self):
         """Guarda de deriva: `staging` repete a lista em vez de importar
-        `lifecycle` (que importa `staging` — o import inverso fecharia um
-        ciclo). Cobre as DUAS familias: se qualquer uma crescer sem a lista
-        crescer junto, este teste cai."""
-        from asb.lifecycle import CREDENTIAL_DIRS, SESSION_STATE_DIRS
+        `runtime.storage` (que `lifecycle` importa, e que importa `staging`
+        transitivamente via `lifecycle` — o import direto de `staging`
+        fecharia um ciclo). Cobre as DUAS familias: se qualquer uma crescer
+        sem a lista crescer junto, este teste cai.
+
+        Tarefa 6 (rodada final de revisao): repontado de `asb.lifecycle`
+        para `asb.runtime.storage`, o modulo DONO de `CREDENTIAL_DIRS`/
+        `SESSION_STATE_DIRS` — `lifecycle.py` so os reexportava, e essa
+        reexportacao nao tinha nenhum consumidor de PRODUCAO (so este
+        teste, indiretamente)."""
+        from asb.runtime.storage import CREDENTIAL_DIRS, SESSION_STATE_DIRS
         from asb.staging import _mount_point_destinations
 
         self.assertEqual(

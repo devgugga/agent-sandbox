@@ -181,20 +181,33 @@ class TestLifecycleHostApi(unittest.TestCase):
                 return False
             return orig_exists(p)
 
+        # Tarefa 4: a IMPLEMENTACAO de `prepare_workspace` mudou de casa para
+        # `runtime/workspace.py::WorkspaceRuntime.prepare()`. `up()` chama
+        # `layout_for`/`load_profile` DIRETAMENTE tambem (a propria variavel
+        # `layout` usada depois do `try`, e `declared_ports` para o gate de
+        # portas) — por isso os dois continuam mockados em `asb.lifecycle.*`
+        # E ganham um segundo mock em `asb.runtime.workspace.*` com o MESMO
+        # resultado, para que as duas chamadas (a de `up()` e a interna de
+        # `prepare()`) enxerguem o mesmo fake. `build_proxy`/`prepare_clone`
+        # so existem mais em `runtime/workspace.py`.
+        fake_layout = mock.MagicMock()
+        fake_layout.state = Path("/tmp/dummy-asb-state")
+        fake_layout.mount = Path("/tmp/dummy-asb-mount")
+        fake_layout.project_root = Path("/tmp/dummy-asb-mount")
+
         with mock.patch("asb.lifecycle.load_profile", return_value=fake_profile), \
+             mock.patch("asb.runtime.workspace.load_profile", return_value=fake_profile), \
              mock.patch("asb.install.remove_project_dropin", return_value=False), \
              mock.patch("asb.readiness.wait_until", return_value=mock.MagicMock(state="healthy", code="ok")), \
              mock.patch("asb.podman.exists", side_effect=fake_exists), \
              mock.patch("asb.podman.run"), \
-             mock.patch("asb.lifecycle.build_proxy"), \
-             mock.patch("asb.lifecycle.prepare_clone"), \
-             mock.patch("asb.lifecycle.layout_for") as mock_layout, \
+             mock.patch("asb.runtime.workspace.build_proxy"), \
+             mock.patch("asb.runtime.workspace.prepare_clone"), \
+             mock.patch("asb.lifecycle.layout_for", return_value=fake_layout), \
+             mock.patch("asb.runtime.workspace.layout_for", return_value=fake_layout), \
              mock.patch("pathlib.Path.write_text"), \
              mock.patch("pathlib.Path.chmod"), \
              mock.patch.object(Path, "exists", fake_path_exists):
-            mock_layout.return_value.state = Path("/tmp/dummy-asb-state")
-            mock_layout.return_value.mount = Path("/tmp/dummy-asb-mount")
-            mock_layout.return_value.project_root = Path("/tmp/dummy-asb-mount")
             with self.assertRaises(podman.PodmanError) as ctx:
                 lifecycle._up(root, "ws-test", root)
             self.assertIn('host_api = "read" pede o broker', str(ctx.exception))
@@ -213,18 +226,30 @@ class TestLifecycleHostApi(unittest.TestCase):
         def fake_run(*args, **kwargs):
             runs.append(args)
 
+        # Tarefa 4: mesma explicacao do teste anterior — `build_proxy`/
+        # `prepare_clone`/`RuntimeStorage`/`build_staging` so existem mais em
+        # `runtime/workspace.py`; `load_profile`/`layout_for` ganham um
+        # segundo mock la (com o MESMO resultado) porque `up()` tambem os
+        # chama diretamente.
+        fake_layout = mock.MagicMock()
+        fake_layout.state = Path("/tmp/dummy-asb-state")
+        fake_layout.mount = Path("/tmp/dummy-asb-mount")
+        fake_layout.project_root = Path("/tmp/dummy-asb-mount")
+
         from contextlib import ExitStack
         with ExitStack() as stack:
             stack.enter_context(mock.patch("asb.lifecycle.load_profile", return_value=fake_profile))
+            stack.enter_context(mock.patch("asb.runtime.workspace.load_profile", return_value=fake_profile))
             stack.enter_context(mock.patch("asb.podman.exists", side_effect=fake_exists))
             stack.enter_context(mock.patch("asb.install.remove_project_dropin", return_value=False))
             stack.enter_context(mock.patch("asb.lifecycle.ensure_runtime", return_value=Path("/tmp/dummy-runtime/rev1")))
             stack.enter_context(mock.patch("asb.podman.run", side_effect=fake_run))
             stack.enter_context(mock.patch("asb.podman.out", return_value="127.0.0.1:2222\n"))
-            stack.enter_context(mock.patch("asb.lifecycle.build_proxy"))
-            stack.enter_context(mock.patch("asb.lifecycle.prepare_clone"))
-            mock_layout = stack.enter_context(mock.patch("asb.lifecycle.layout_for"))
-            stack.enter_context(mock.patch("asb.lifecycle.build_staging", return_value=0))
+            stack.enter_context(mock.patch("asb.runtime.workspace.build_proxy"))
+            stack.enter_context(mock.patch("asb.runtime.workspace.prepare_clone"))
+            stack.enter_context(mock.patch("asb.lifecycle.layout_for", return_value=fake_layout))
+            stack.enter_context(mock.patch("asb.runtime.workspace.layout_for", return_value=fake_layout))
+            stack.enter_context(mock.patch("asb.runtime.workspace.build_staging", return_value=0))
             stack.enter_context(mock.patch("asb.lifecycle.ensure_ssh_key"))
             stack.enter_context(mock.patch("asb.lifecycle.ensure_keyring_service"))
             stack.enter_context(mock.patch("asb.lifecycle.ensure_keyring_runtime_volume", return_value="asb-keyring-runtime"))
@@ -237,7 +262,7 @@ class TestLifecycleHostApi(unittest.TestCase):
             fake_storage.ensure_credentials = mock.Mock(return_value="asb-credentials")
             fake_storage.credential_mounts = mock.Mock(return_value=[])
             fake_storage.ensure_sessions = mock.Mock(return_value="asb-test-ws-session")
-            stack.enter_context(mock.patch("asb.lifecycle.RuntimeStorage", return_value=fake_storage))
+            stack.enter_context(mock.patch("asb.runtime.workspace.RuntimeStorage", return_value=fake_storage))
             stack.enter_context(mock.patch("asb.readiness.wait_until", return_value=mock.MagicMock(state="healthy", code="ok")))
             stack.enter_context(mock.patch("asb.lifecycle.supervisor.install_workspace", return_value=[]))
             stack.enter_context(mock.patch("asb.lifecycle.supervisor.start_workspace"))
@@ -245,9 +270,6 @@ class TestLifecycleHostApi(unittest.TestCase):
             stack.enter_context(mock.patch("pathlib.Path.write_text"))
             stack.enter_context(mock.patch("pathlib.Path.read_text", return_value="ssh-ed25519 AAAA"))
             stack.enter_context(mock.patch("pathlib.Path.chmod"))
-            mock_layout.return_value.state = Path("/tmp/dummy-asb-state")
-            mock_layout.return_value.mount = Path("/tmp/dummy-asb-mount")
-            mock_layout.return_value.project_root = Path("/tmp/dummy-asb-mount")
             ret = lifecycle._up(root, "ws-test", root)
             self.assertEqual(ret, 0)
 

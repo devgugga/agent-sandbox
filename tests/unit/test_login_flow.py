@@ -44,6 +44,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "cli"))
 from asb import auth, keyring, lifecycle  # noqa: E402
 from asb.auth import AuthResult  # noqa: E402
 from asb.runtime import storage as runtime_storage  # noqa: E402
+from asb.runtime import workspace as runtime_workspace  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 ENTRYPOINT = ROOT / "image" / "entrypoint.sh"
@@ -160,11 +161,22 @@ def prepare_workspace_harness(ws: str):
             stack.enter_context(mock.patch.object(lifecycle.supervisor, "install_workspace", return_value=[]))
             stack.enter_context(mock.patch.object(lifecycle.podman, "run", side_effect=fake_run))
             stack.enter_context(mock.patch.object(lifecycle.podman, "out", return_value=str(mountpoint)))
-            stack.enter_context(mock.patch.object(lifecycle, "load_profile", return_value=profile))
-            stack.enter_context(mock.patch.object(lifecycle, "layout_for", return_value=layout))
-            stack.enter_context(mock.patch.object(lifecycle, "prepare_clone"))
-            stack.enter_context(mock.patch.object(lifecycle, "render", return_value="acl x"))
-            stack.enter_context(mock.patch.object(lifecycle, "build_staging", return_value=0))
+            # Tarefa 4: a IMPLEMENTACAO de `prepare_workspace` mudou de casa
+            # para `runtime/workspace.py::WorkspaceRuntime.prepare()`.
+            # `load_profile`, `layout_for`, `prepare_clone`, `render` e
+            # `build_staging` chegam la por import PROPRIO do modulo (nomes
+            # copiados, nao um atributo do modulo `lifecycle` alcancado em
+            # tempo de chamada) — mockar o reexport em `lifecycle` nao os
+            # alcanca mais. `ensure_runtime`/`ensure_ssh_key`/
+            # `ensure_keyring_service`/`ensure_keyring_runtime_volume`
+            # continuam em `lifecycle.py`, e `WorkspaceRuntime.prepare()` os
+            # alcanca por import ADIADO (`lifecycle.X`, atributo do modulo em
+            # tempo de chamada) — por isso continuam mockados aqui, sem mudar.
+            stack.enter_context(mock.patch.object(runtime_workspace, "load_profile", return_value=profile))
+            stack.enter_context(mock.patch.object(runtime_workspace, "layout_for", return_value=layout))
+            stack.enter_context(mock.patch.object(runtime_workspace, "prepare_clone"))
+            stack.enter_context(mock.patch.object(runtime_workspace, "render", return_value="acl x"))
+            stack.enter_context(mock.patch.object(runtime_workspace, "build_staging", return_value=0))
             stack.enter_context(mock.patch.object(lifecycle, "ensure_ssh_key", return_value=key))
             stack.enter_context(mock.patch.object(lifecycle, "ensure_keyring_service"))
             stack.enter_context(mock.patch.object(lifecycle, "ensure_keyring_runtime_volume", return_value="asb-keyring-runtime"))
@@ -176,6 +188,8 @@ def prepare_workspace_harness(ws: str):
             # `lifecycle` nao os alcanca mais.
             stack.enter_context(mock.patch.object(runtime_storage, "ensure_credentials_volume", return_value=FAKE_CREDENTIALS_VOLUME))
             stack.enter_context(mock.patch.object(runtime_storage, "ensure_toolcache_volume", return_value="asb-test-toolcache"))
+            # `os.path` e um unico modulo compartilhado: este patch alcanca
+            # tambem a chamada equivalente dentro de `WorkspaceRuntime.prepare()`.
             stack.enter_context(mock.patch.object(lifecycle.os.path, "expanduser", return_value=str(home)))
             stack.enter_context(redirect_stderr(io.StringIO()))
             lifecycle.prepare_workspace(tmp / "root", ws, tmp / "origin")

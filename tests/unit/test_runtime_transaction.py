@@ -186,14 +186,25 @@ class TestRollbackOrder(unittest.TestCase):
                     events.append("volume")
                 return mock.MagicMock(returncode=0)
 
-            with mock.patch("cli.asb.runtime.transaction.podman.run", side_effect=fake_run), \
+            # `path.write_text` e uma escrita REAL (nunca mockada em
+            # producao); para pinar a ORDEM sem trocar o comportamento,
+            # a instrumentacao chama o metodo original por baixo e so
+            # acrescenta o marcador "files" em volta dele.
+            original_write_text = Path.write_text
+
+            def tracking_write_text(self, *args, **kwargs):
+                events.append("files")
+                return original_write_text(self, *args, **kwargs)
+
+            with mock.patch.object(Path, "write_text", tracking_write_text), \
+                 mock.patch("cli.asb.runtime.transaction.podman.run", side_effect=fake_run), \
                  mock.patch("cli.asb.runtime.transaction.podman.exists", return_value=True), \
                  mock.patch("cli.asb.runtime.transaction.supervisor.remove_workspace_units",
                             side_effect=lambda ws: events.append("units")):
                 tx.rollback()
 
             self.assertEqual(gate.read_text(), "BEFORE\n")
-        self.assertEqual(events, ["container", "network", "volume", "units"])
+        self.assertEqual(events, ["container", "network", "volume", "files", "units"])
 
 
 class TestPartialRollbackFailures(unittest.TestCase):

@@ -73,6 +73,23 @@ class HarmlessDriver(AgentDriver):
     def discover_session_id(self, evidence: SessionEvidence) -> str | None:
         return None
 
+    # Tarefa 6: `parse_auth_status`/`login_argv`/`verify_argv` viraram
+    # `@abstractmethod` em `AgentDriver` (os tres drivers reais ja tinham
+    # implementacao desde a Tarefa 2). Este driver de teste so exercita
+    # sessao, nunca autenticacao — as tres permanecem NotImplementedError
+    # explicito, igual ao comportamento antigo do default da base.
+    def parse_auth_status(self, completed):
+        raise NotImplementedError(
+            "HarmlessDriver: driver de teste de sessao, nunca autenticacao")
+
+    def login_argv(self) -> tuple[str, ...]:
+        raise NotImplementedError(
+            "HarmlessDriver: driver de teste de sessao, nunca autenticacao")
+
+    def verify_argv(self) -> tuple[str, ...]:
+        raise NotImplementedError(
+            "HarmlessDriver: driver de teste de sessao, nunca autenticacao")
+
 
 def _git(repo: Path, *args: str) -> None:
     subprocess.run(["git", "-C", str(repo), *args], check=True,

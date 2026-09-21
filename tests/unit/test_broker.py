@@ -209,7 +209,7 @@ class TestLifecycleHostApi(unittest.TestCase):
              mock.patch("pathlib.Path.chmod"), \
              mock.patch.object(Path, "exists", fake_path_exists):
             with self.assertRaises(podman.PodmanError) as ctx:
-                lifecycle._up(root, "ws-test", root)
+                lifecycle.up(root, "ws-test", root)
             self.assertIn('host_api = "read" pede o broker', str(ctx.exception))
 
     def test_lifecycle_up_starts_relay_when_broker_socket_present(self):
@@ -270,7 +270,7 @@ class TestLifecycleHostApi(unittest.TestCase):
             stack.enter_context(mock.patch("pathlib.Path.write_text"))
             stack.enter_context(mock.patch("pathlib.Path.read_text", return_value="ssh-ed25519 AAAA"))
             stack.enter_context(mock.patch("pathlib.Path.chmod"))
-            ret = lifecycle._up(root, "ws-test", root)
+            ret = lifecycle.up(root, "ws-test", root)
             self.assertEqual(ret, 0)
 
             # Check relay container was started

@@ -89,11 +89,13 @@ def session_volume_mountpoint(workspace: str) -> Path:
     E por ele que o host le a evidencia de sessao dos provedores (os
     subpaths de `storage.SESSION_STATE_DIRS` que o container monta sobre
     `~/.codex/sessions` e `~/.claude/projects`). Reusa `lifecycle.names` e
-    `storage._volume_mountpoint`; nunca cria o volume — um volume ausente
-    levanta `podman.PodmanError`."""
+    `storage.volume_mountpoint` (fronteira publica, Tarefa 6 — antes
+    alcancava `storage._volume_mountpoint`, simbolo privado do modulo
+    irmao); nunca cria o volume — um volume ausente levanta
+    `podman.PodmanError`."""
     from .. import lifecycle  # tardio: mesmo padrao de resolve_connection
 
-    return storage._volume_mountpoint(lifecycle.names(workspace)["session"])
+    return storage.volume_mountpoint(lifecycle.names(workspace)["session"])
 
 
 @dataclass

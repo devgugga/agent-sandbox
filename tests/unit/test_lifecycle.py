@@ -236,7 +236,7 @@ class TestLifecycleOrdering(unittest.TestCase):
 
     def test_up_ensures_keyring_service_before_creating_the_agent_and_mounts_runtime_without_pass(self):
         from unittest import mock
-        from cli.asb.lifecycle import _up
+        from cli.asb.lifecycle import up
         from cli.asb.profile import Profile
         from cli.asb.workspace import Layout
 
@@ -313,7 +313,7 @@ class TestLifecycleOrdering(unittest.TestCase):
                 stack.enter_context(mock.patch("cli.asb.lifecycle.emit", return_value=0))
                 stack.enter_context(mock.patch("cli.asb.lifecycle.supervisor.install_workspace", return_value=[]))
                 stack.enter_context(mock.patch("cli.asb.lifecycle.supervisor.start_workspace"))
-                rc = _up(fake_root, "test-ws", fake_repo)
+                rc = up(fake_root, "test-ws", fake_repo)
                 self.assertEqual(rc, 0)
 
             self.assertIn("ensure_keyring_service", events)

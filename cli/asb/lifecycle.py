@@ -76,8 +76,16 @@ from .workspace import (
 # `start_forwarder`) para cli/asb/runtime/workspace.py::WorkspaceRuntime
 # (Tarefa 4). `prepare_workspace` continua aqui como uma funcao fina que
 # delega a `WorkspaceRuntime().prepare(...)`.
-# Os nomes acima sao reexports temporarios: mantem `lifecycle.X` funcionando para
-# quem ja importava daqui, sem duplicar a logica.
+# Os nomes acima sao reexports ESTAVEIS, nao transitorios: cada um tem um
+# consumidor de producao nomeado que continua lendo `lifecycle.X` em vez do
+# modulo novo — `auth.py` (KEYRING_*, ensure_credentials_volume,
+# credential_mount_args, IMAGE, SSH_KEY, names), `keyring.py`
+# (CREDENTIALS_VOLUME, ensure_credentials_volume, IMAGE, via import adiado
+# para evitar ciclo), `doctor.py` (check_keyring_service) e `staging.py`
+# (cujo teste de paridade compara `CREDENTIAL_DIRS`/`SESSION_STATE_DIRS`
+# daqui contra a copia local, ja que `staging` nao pode importar `lifecycle`
+# sem fechar um ciclo). Task 6 (remocao de wrappers obsoletos) verificou os
+# quatro e manteve o bloco: nenhum deles perdeu o consumidor.
 IMAGE = "agent-sandbox:latest"
 PROXY_IMAGE = "agent-sandbox-proxy:latest"
 PROXY_PORT = 3128
@@ -344,10 +352,6 @@ def up(root: Path, ws: str, repo: Path) -> int:
         raise
 
 
-def _up(root: Path, ws: str, repo: Path) -> int:
-    return up(root, ws, repo)
-
-
 def emit(ws: str, layout: Layout, port: str | None = None) -> int:
     """A linha que o recipe do Orca consome. A porta e LIDA do podman, nunca
     inventada: o Orca guarda a que o create devolveu e disca nela para sempre.
@@ -561,26 +565,6 @@ def purge(ws: str, confirmed: bool) -> int:
     remove_workspace(layout)
     print(f"removido: {layout.mount}", file=sys.stderr)
     return 0
-
-
-def login(root: Path, provider: str = "all") -> int:
-    """Reexport de `auth.login` (Tarefa A3).
-
-    O fluxo de login inteiro mudou de casa: ele vive agora ao lado do
-    diagnostico que o verifica, em `cli/asb/auth.py`, e nao mais no meio do
-    ciclo de vida dos workspaces. Este invólucro existe apenas para nao
-    quebrar quem ja importava `lifecycle.login`; o import e adiado porque
-    `auth` importa `lifecycle`.
-
-    A tabela `LOGIN_CHECKS` que ficava aqui foi REMOVIDA, e nao migrada: as
-    checagens `claude -p ping` e `agy -p ping` mandavam um PROMPT ao modelo
-    para descobrir se havia sessao, e A1 mediu que a do agy bloqueia 60s
-    quando deslogado. A verificacao correta e `auth.verify_fresh_client`, que
-    pergunta a um cliente NOVO usando o status nativo do fornecedor.
-    """
-    from . import auth
-
-    return auth.login(root, provider)
 
 
 def list_workspaces() -> int:

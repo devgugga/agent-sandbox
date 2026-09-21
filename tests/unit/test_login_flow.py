@@ -912,18 +912,6 @@ class TestImageProviderInstall(unittest.TestCase):
             self.assertNotIn(label, self.code)
 
 
-class TestLifecycleLoginReexport(unittest.TestCase):
-    def test_lifecycle_login_delegates_to_auth_login(self):
-        with mock.patch("asb.auth.login", return_value=0) as delegated:
-            self.assertEqual(lifecycle.login(FAKE_ROOT), 0)
-        delegated.assert_called_once_with(FAKE_ROOT, "all")
-
-    def test_lifecycle_no_longer_carries_the_dead_login_checks(self):
-        """`claude -p ping` e `agy -p ping` mandavam PROMPT ao modelo para
-        checar sessao, e o do agy bloqueia 60s quando deslogado."""
-        self.assertFalse(hasattr(lifecycle, "LOGIN_CHECKS"))
-
-
 class TestAggregateExitCodeDeniesByDefault(unittest.TestCase):
     """C1: o agregado nega por padrao.
 

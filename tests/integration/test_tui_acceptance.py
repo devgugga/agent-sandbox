@@ -85,6 +85,23 @@ class _Harmless(AgentDriver):
     def discover_session_id(self, evidence: SessionEvidence) -> str | None:
         return None
 
+    # Task 6: `parse_auth_status`/`login_argv`/`verify_argv` became
+    # `@abstractmethod` on `AgentDriver` (the three real drivers already had
+    # implementations since Task 2). This test driver only exercises
+    # sessions, never authentication — all three stay an explicit
+    # NotImplementedError, matching the old default behavior on the base.
+    def parse_auth_status(self, completed):
+        raise NotImplementedError(
+            "_Harmless: session-only test driver, never authentication")
+
+    def login_argv(self) -> tuple[str, ...]:
+        raise NotImplementedError(
+            "_Harmless: session-only test driver, never authentication")
+
+    def verify_argv(self) -> tuple[str, ...]:
+        raise NotImplementedError(
+            "_Harmless: session-only test driver, never authentication")
+
 
 class CodexFake(_Harmless):
     kind = AgentKind.CODEX

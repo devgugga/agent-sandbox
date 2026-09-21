@@ -100,3 +100,31 @@ asb-agent login --agent codex   # only one
   ([R3](./known-regressions.md)).
 - `agy` inside SSH sessions: the `asb-agy` wrapper unsets `SSH_CONNECTION`,
   `SSH_CLIENT` and `SSH_TTY`, which otherwise force a new device-auth flow.
+
+---
+
+## 4. Internal Module Boundaries
+
+`cli/asb/auth.py` orchestrates all three questions above — locking, the
+ephemeral client's lifecycle, the aggregate exit code and sanitized
+rendering — but holds none of the provider-specific rules itself. Each
+provider's status command, login command, verify command and evidence
+markers live in its own `AgentDriver` subclass:
+`cli/asb/agents/claude.py`, `cli/asb/agents/codex.py` and
+`cli/asb/agents/antigravity.py`. The shared `AuthResult` type and the
+verification-classification pipeline (network markers, rate limits,
+service errors, evidence markers — identical logic across providers, only
+the markers differ) live in `cli/asb/agents/base.py`; the three
+auth-specific driver methods (`parse_auth_status`, `login_argv`,
+`verify_argv`) are `@abstractmethod`, so a driver missing one of them fails
+at instantiation, not the first time `auth.py` calls it.
+
+Two provider-specific branches remain in `auth.py` itself, outside the
+driver boundary: `verify_fresh_client` special-cases `agy` to return
+`state="pending"` (no status command exists to check a fresh client
+against — see the `unknown`/`pending` row above), and `login` prints an
+extra operator warning only for `claude` (the "Quick safety check" prompt).
+Both are pre-existing and intentionally out of scope for the driver
+migration; see
+[`docs/validation/2026-09-17-module-decomposition.md`](../../validation/2026-09-17-module-decomposition.md)
+for the full module map.

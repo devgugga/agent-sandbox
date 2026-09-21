@@ -17,11 +17,13 @@ as REGRAS de autenticacao do seu fornecedor (Tarefa 2 da decomposicao de
 `auth.py`): `parse_auth_status(completed)` interpreta a saida do comando de
 status nativo (quando existe: ver `status_command`), `login_argv()` e o
 comando de login interativo, e `verify_argv()`/`classify_verification()`
-cobrem a chamada real de verificacao e sua classificacao. Nenhuma dessas
-tres e `@abstractmethod`: durante a decomposicao (Tarefa 2) um driver por
-vez recebe a implementacao, e uma ABC forcaria os tres a migrar juntos. O
-padrao default aqui levanta `NotImplementedError` explicito em vez de
-deixar a chamada cair num `AttributeError` cru.
+cobrem a chamada real de verificacao e sua classificacao. As tres sao
+`@abstractmethod`: durante a decomposicao (Tarefa 2) um driver por vez
+recebia a implementacao, e uma ABC teria forcado os tres a migrar juntos,
+entao o default levantava `NotImplementedError` explicito. Essa razao
+expirou quando os tres drivers (claude, codex, agy) migraram — Tarefa 6
+promoveu os tres a `@abstractmethod`, entao um driver que esquecer algum
+deles falha na INSTANCIACAO, nunca dentro de `classify_verification`.
 
 `classify_verification` E CONCRETO aqui, nao por driver: o pipeline de
 classificacao (rede, limite de taxa, erro de servico) e IDENTICO entre os
@@ -330,27 +332,22 @@ class AgentDriver(ABC):
 
     # -- autenticacao (Tarefa 2): regras do fornecedor --------------------
 
+    @abstractmethod
     def parse_auth_status(self, completed) -> AuthResult:
         """Interpreta a saida de `status_command` (um objeto com
         `.returncode`, `.stdout` e `.stderr`, tipicamente um
-        `subprocess.CompletedProcess`). Nao e `@abstractmethod` (ver
-        docstring do modulo); o default so existe para reportar alto e
-        claro um driver ainda nao migrado."""
-        raise NotImplementedError(
-            f"{self.kind}: parse_auth_status nao implementado")
+        `subprocess.CompletedProcess`)."""
 
+    @abstractmethod
     def login_argv(self) -> tuple[str, ...]:
         """Comando de login interativo deste fornecedor."""
-        raise NotImplementedError(
-            f"{self.kind}: login_argv nao implementado")
 
+    @abstractmethod
     def verify_argv(self) -> tuple[str, ...]:
         """Argv final (apos o transporte SSH) da chamada real de
         verificacao: tipicamente uma tupla de um elemento so, o script
         remoto completo — SSH trata o ultimo argumento como a linha de
         comando remota, entao nao ha o que "separar" alem disso."""
-        raise NotImplementedError(
-            f"{self.kind}: verify_argv nao implementado")
 
     def _verify_success(self, output: str) -> bool:
         """A saida da chamada real bate com o formato de sucesso deste

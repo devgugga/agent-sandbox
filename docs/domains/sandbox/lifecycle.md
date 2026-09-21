@@ -434,3 +434,44 @@ reconciled only after its export refs prove integration. A missing
 worktree without that evidence is `blocked` and needs manual recovery.
 An interrupted `worktree remove` is `cleanup_pending` and names the
 path to inspect.
+
+---
+
+## 8. Internal Module Boundaries
+
+`cli/asb/lifecycle.py` is the CLI-facing facade: it owns `up`, `down`,
+`suspend`, `resume`, `pull`, `purge`, `reload-allowlist` and `list`, and the
+printing and exit-code policy for all of them. It delegates:
+
+- Workspace preparation (clone, networks, containers, manifest) to
+  `cli/asb/runtime/workspace.py::WorkspaceRuntime` (`prepare_workspace`
+  stays here as a thin function so existing callers of
+  `lifecycle.prepare_workspace(...)` keep working, but it does nothing
+  beyond calling `WorkspaceRuntime().prepare(...)`).
+- Credential, session and toolcache volume ownership to
+  `cli/asb/runtime/storage.py::RuntimeStorage`.
+- The creation-rollback ledger to
+  `cli/asb/runtime/transaction.py::WorkspaceTransaction`.
+- Login and verification to `cli/asb/auth.py`, which itself delegates the
+  provider-specific commands (status/login/verify argv, evidence markers)
+  to `AgentDriver` subclasses in `cli/asb/agents/{claude,codex,antigravity}.py`.
+
+`asb-agent doctor` collects structured checks in
+`cli/asb/diagnostics/checks.py` (data only, never prints) and renders text
+or JSON plus the exit-code policy in `cli/asb/diagnostics/report.py`;
+`cli/asb/doctor.py` only composes the two, in a fixed order, once per
+invocation.
+
+`lifecycle.py` still re-exports several names it no longer defines
+(`KEYRING_*`, `CREDENTIALS_VOLUME`, `_volume_mountpoint`, `WorkspaceRuntime`,
+etc.) — this is deliberate, not leftover scaffolding: `auth.py`, `keyring.py`,
+`doctor.py` and `staging.py` still read them as `lifecycle.X`, and each of
+those four is a named, verified consumer.
+
+**Known defect, preserved deliberately:** `asb-agent doctor --json` and the
+text-mode `asb-agent doctor` can disagree on the process exit code when the
+`network_gate` check fails — a pre-existing divergence, not introduced by
+this module split. Do not script against the exit code alone for that
+check; read the `network_gate` entry itself. See
+[`docs/validation/2026-09-17-module-decomposition.md`](../../validation/2026-09-17-module-decomposition.md)
+for the measured before/after and the full module map.

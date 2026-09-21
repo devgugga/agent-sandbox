@@ -134,6 +134,17 @@ def _volume_mountpoint(vol: str) -> Path:
     return mountpoint
 
 
+def volume_mountpoint(vol: str) -> Path:
+    """Fronteira PUBLICA de `_volume_mountpoint`, para quem precisa resolver
+    o mountpoint de um volume por nome a partir de FORA deste modulo (ex:
+    `runtime/sandbox.py::session_volume_mountpoint`). Antes da Tarefa 6 esse
+    chamador alcancava `_volume_mountpoint` diretamente — simbolo privado de
+    um modulo irmao; agora que `RuntimeStorage` e a fronteira real deste
+    modulo, este acessor publico e o seam correto, sem duplicar a logica de
+    `podman volume inspect`."""
+    return _volume_mountpoint(vol)
+
+
 def _mkdir_private(mountpoint: Path, subs: Iterable[str], vol: str) -> None:
     """`mkdir -m 700` de cada subpath, com erro TRADUZIDO.
 

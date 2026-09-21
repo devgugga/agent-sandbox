@@ -19,6 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "cli"))
 
 from asb import doctor as doc_mod  # noqa: E402
 from asb import lifecycle  # noqa: E402
+from asb.diagnostics import checks as diag_checks  # noqa: E402
 from asb.podman import PodmanError  # noqa: E402
 
 CLI_PATH = Path(__file__).resolve().parents[2] / "cli" / "asb-agent"
@@ -59,11 +60,11 @@ class TestDoctor(unittest.TestCase):
         self.tmp.cleanup()
 
     @mock.patch("asb.doctor.Path.home")
-    @mock.patch("asb.doctor.podman.running", return_value=False)
-    @mock.patch("asb.doctor.podman.exists", return_value=True)
-    @mock.patch("asb.doctor.podman.out", return_value="podman version 5.0.0")
-    @mock.patch("asb.doctor.shutil.which", return_value="/usr/bin/mock")
-    @mock.patch("asb.doctor.subprocess.run")
+    @mock.patch("asb.diagnostics.checks.podman.running", return_value=False)
+    @mock.patch("asb.diagnostics.checks.podman.exists", return_value=True)
+    @mock.patch("asb.diagnostics.checks.podman.out", return_value="podman version 5.0.0")
+    @mock.patch("asb.diagnostics.checks.shutil.which", return_value="/usr/bin/mock")
+    @mock.patch("asb.diagnostics.checks.subprocess.run")
     def test_doctor_all_healthy(
         self, mock_run, mock_which, mock_out, mock_exists, mock_running, mock_home
     ):
@@ -71,7 +72,7 @@ class TestDoctor(unittest.TestCase):
         mock_run.return_value = mock.Mock(stdout="enabled\n")
 
         with mock.patch("asb.doctor.check_keyring_service", return_value=(True, "Secret Service (asb-keyring)", "")), \
-             mock.patch("asb.doctor.third_party_netns_producers", return_value=[]):
+             mock.patch("asb.diagnostics.checks.third_party_netns_producers", return_value=[]):
             out = io.StringIO()
             with mock.patch("sys.stdout", out):
                 code = doc_mod.doctor(self.fake_root)
@@ -88,11 +89,11 @@ class TestDoctor(unittest.TestCase):
         self.assertIn("guarda asb-claude aponta para este checkout", output)
 
     @mock.patch("asb.doctor.Path.home")
-    @mock.patch("asb.doctor.podman.running", return_value=False)
-    @mock.patch("asb.doctor.podman.exists", return_value=True)
-    @mock.patch("asb.doctor.podman.out", return_value="podman version 5.0.0")
-    @mock.patch("asb.doctor.shutil.which", return_value="/usr/bin/mock")
-    @mock.patch("asb.doctor.subprocess.run")
+    @mock.patch("asb.diagnostics.checks.podman.running", return_value=False)
+    @mock.patch("asb.diagnostics.checks.podman.exists", return_value=True)
+    @mock.patch("asb.diagnostics.checks.podman.out", return_value="podman version 5.0.0")
+    @mock.patch("asb.diagnostics.checks.shutil.which", return_value="/usr/bin/mock")
+    @mock.patch("asb.diagnostics.checks.subprocess.run")
     def test_doctor_acusa_asb_agent_fora_do_path(
         self, mock_run, mock_which, mock_out, mock_exists, mock_running, mock_home
     ):
@@ -110,10 +111,10 @@ class TestDoctor(unittest.TestCase):
         self.assertIn("FALTA", out.getvalue())
 
     @mock.patch("asb.doctor.Path.home")
-    @mock.patch("asb.doctor.podman.exists", return_value=True)
-    @mock.patch("asb.doctor.podman.out", return_value="podman version 5.0.0")
-    @mock.patch("asb.doctor.shutil.which")
-    @mock.patch("asb.doctor.subprocess.run")
+    @mock.patch("asb.diagnostics.checks.podman.exists", return_value=True)
+    @mock.patch("asb.diagnostics.checks.podman.out", return_value="podman version 5.0.0")
+    @mock.patch("asb.diagnostics.checks.shutil.which")
+    @mock.patch("asb.diagnostics.checks.subprocess.run")
     def test_doctor_missing_podman(
         self, mock_run, mock_which, mock_out, mock_exists, mock_home
     ):
@@ -130,10 +131,10 @@ class TestDoctor(unittest.TestCase):
         self.assertIn("FALTA podman instalado  ->  instale o podman (>= 4.0)", output)
 
     @mock.patch("asb.doctor.Path.home")
-    @mock.patch("asb.doctor.podman.exists", return_value=True)
-    @mock.patch("asb.doctor.podman.out", return_value="podman version 3.4.4")
-    @mock.patch("asb.doctor.shutil.which", return_value="/usr/bin/mock")
-    @mock.patch("asb.doctor.subprocess.run")
+    @mock.patch("asb.diagnostics.checks.podman.exists", return_value=True)
+    @mock.patch("asb.diagnostics.checks.podman.out", return_value="podman version 3.4.4")
+    @mock.patch("asb.diagnostics.checks.shutil.which", return_value="/usr/bin/mock")
+    @mock.patch("asb.diagnostics.checks.subprocess.run")
     def test_doctor_old_podman(
         self, mock_run, mock_which, mock_out, mock_exists, mock_home
     ):
@@ -152,11 +153,11 @@ class TestDoctor(unittest.TestCase):
         )
 
     @mock.patch("asb.doctor.Path.home")
-    @mock.patch("asb.doctor.podman.running", return_value=False)
-    @mock.patch("asb.doctor.podman.exists")
-    @mock.patch("asb.doctor.podman.out", return_value="podman version 5.0.0")
-    @mock.patch("asb.doctor.shutil.which", return_value="/usr/bin/mock")
-    @mock.patch("asb.doctor.subprocess.run")
+    @mock.patch("asb.diagnostics.checks.podman.running", return_value=False)
+    @mock.patch("asb.diagnostics.checks.podman.exists")
+    @mock.patch("asb.diagnostics.checks.podman.out", return_value="podman version 5.0.0")
+    @mock.patch("asb.diagnostics.checks.shutil.which", return_value="/usr/bin/mock")
+    @mock.patch("asb.diagnostics.checks.subprocess.run")
     def test_doctor_missing_image_and_volume(
         self, mock_run, mock_which, mock_out, mock_exists, mock_running, mock_home
     ):
@@ -174,11 +175,11 @@ class TestDoctor(unittest.TestCase):
         self.assertIn("FALTA volume asb-credentials  ->  asb-agent login", output)
 
     @mock.patch("asb.doctor.Path.home")
-    @mock.patch("asb.doctor.podman.running", return_value=False)
-    @mock.patch("asb.doctor.podman.exists", return_value=True)
-    @mock.patch("asb.doctor.podman.out", return_value="podman version 5.0.0")
-    @mock.patch("asb.doctor.shutil.which", return_value="/usr/bin/mock")
-    @mock.patch("asb.doctor.subprocess.run")
+    @mock.patch("asb.diagnostics.checks.podman.running", return_value=False)
+    @mock.patch("asb.diagnostics.checks.podman.exists", return_value=True)
+    @mock.patch("asb.diagnostics.checks.podman.out", return_value="podman version 5.0.0")
+    @mock.patch("asb.diagnostics.checks.shutil.which", return_value="/usr/bin/mock")
+    @mock.patch("asb.diagnostics.checks.subprocess.run")
     def test_doctor_guards_invalid(
         self, mock_run, mock_which, mock_out, mock_exists, mock_running, mock_home
     ):
@@ -201,13 +202,13 @@ class TestDoctor(unittest.TestCase):
             output,
         )
 
-    @mock.patch("asb.doctor.check_workspace_egress", return_value=(True, "ws-running: rodando (egresso ok)", ""))
+    @mock.patch("asb.diagnostics.checks.check_workspace_egress", return_value=(True, "ws-running: rodando (egresso ok)", ""))
     @mock.patch("asb.doctor.Path.home")
-    @mock.patch("asb.doctor.podman.running")
-    @mock.patch("asb.doctor.podman.exists")
-    @mock.patch("asb.doctor.podman.out", return_value="podman version 5.0.0")
-    @mock.patch("asb.doctor.shutil.which", return_value="/usr/bin/mock")
-    @mock.patch("asb.doctor.subprocess.run")
+    @mock.patch("asb.diagnostics.checks.podman.running")
+    @mock.patch("asb.diagnostics.checks.podman.exists")
+    @mock.patch("asb.diagnostics.checks.podman.out", return_value="podman version 5.0.0")
+    @mock.patch("asb.diagnostics.checks.shutil.which", return_value="/usr/bin/mock")
+    @mock.patch("asb.diagnostics.checks.subprocess.run")
     def test_doctor_workspace_listing(
         self, mock_run, mock_which, mock_out, mock_exists, mock_running, mock_home, mock_egress
     ):
@@ -233,7 +234,7 @@ class TestDoctor(unittest.TestCase):
         mock_running.side_effect = fake_running
 
         with mock.patch("asb.doctor.check_keyring_service", return_value=(True, "Secret Service (asb-keyring)", "")), \
-             mock.patch("asb.doctor.check_legacy_agent_container", return_value=(False, "")):
+             mock.patch("asb.diagnostics.checks.check_legacy_agent_container", return_value=(False, "")):
             out = io.StringIO()
             with mock.patch("sys.stdout", out):
                 code = doc_mod.doctor(self.fake_root)
@@ -244,13 +245,13 @@ class TestDoctor(unittest.TestCase):
         self.assertIn("ws-running: rodando", output)
         self.assertIn("ws-stopped: parado  ->  asb-agent resume --workspace ws-stopped", output)
 
-    @mock.patch("asb.doctor.check_workspace_egress")
+    @mock.patch("asb.diagnostics.checks.check_workspace_egress")
     @mock.patch("asb.doctor.Path.home")
-    @mock.patch("asb.doctor.podman.running", return_value=True)
-    @mock.patch("asb.doctor.podman.exists", return_value=True)
-    @mock.patch("asb.doctor.podman.out", return_value="podman version 5.0.0")
-    @mock.patch("asb.doctor.shutil.which", return_value="/usr/bin/mock")
-    @mock.patch("asb.doctor.subprocess.run")
+    @mock.patch("asb.diagnostics.checks.podman.running", return_value=True)
+    @mock.patch("asb.diagnostics.checks.podman.exists", return_value=True)
+    @mock.patch("asb.diagnostics.checks.podman.out", return_value="podman version 5.0.0")
+    @mock.patch("asb.diagnostics.checks.shutil.which", return_value="/usr/bin/mock")
+    @mock.patch("asb.diagnostics.checks.subprocess.run")
     def test_doctor_fails_when_workspace_egress_fails(
         self, mock_run, mock_which, mock_out, mock_exists, mock_running, mock_home, mock_egress
     ):
@@ -270,7 +271,7 @@ class TestDoctor(unittest.TestCase):
 
         out = io.StringIO()
         with mock.patch("asb.doctor.check_keyring_service", return_value=(True, "Secret Service (asb-keyring)", "")), \
-             mock.patch("asb.doctor.check_legacy_agent_container", return_value=(False, "")), \
+             mock.patch("asb.diagnostics.checks.check_legacy_agent_container", return_value=(False, "")), \
              mock.patch("sys.stdout", out):
             code = doc_mod.doctor(self.fake_root)
 
@@ -283,72 +284,72 @@ class TestDoctor(unittest.TestCase):
 
 
 class TestCheckWorkspaceEgress(unittest.TestCase):
-    @mock.patch("asb.doctor.podman.running", return_value=False)
+    @mock.patch("asb.diagnostics.checks.podman.running", return_value=False)
     def test_proxy_stopped(self, mock_running):
-        ok, label, fix = doc_mod.check_workspace_egress("demo")
+        ok, label, fix = diag_checks.check_workspace_egress("demo")
         self.assertFalse(ok)
         self.assertIn("demo: proxy parado", label)
         self.assertIn("asb-agent resume --workspace demo", fix)
 
-    @mock.patch("asb.doctor.podman.running", return_value=True)
-    @mock.patch("asb.doctor.podman.require_binary", return_value="/usr/bin/podman")
-    @mock.patch("asb.doctor.subprocess.run")
+    @mock.patch("asb.diagnostics.checks.podman.running", return_value=True)
+    @mock.patch("asb.diagnostics.checks.podman.require_binary", return_value="/usr/bin/podman")
+    @mock.patch("asb.diagnostics.checks.subprocess.run")
     def test_egress_ok(self, mock_run, mock_bin, mock_running):
         mock_run.return_value = mock.Mock(returncode=0, stdout="OK\n")
-        ok, label, fix = doc_mod.check_workspace_egress("demo")
+        ok, label, fix = diag_checks.check_workspace_egress("demo")
         self.assertTrue(ok)
         self.assertIn("demo: rodando (egresso ok)", label)
         self.assertEqual(fix, "")
 
-    @mock.patch("asb.doctor.podman.running", return_value=True)
-    @mock.patch("asb.doctor.podman.require_binary", return_value="/usr/bin/podman")
-    @mock.patch("asb.doctor.subprocess.run")
+    @mock.patch("asb.diagnostics.checks.podman.running", return_value=True)
+    @mock.patch("asb.diagnostics.checks.podman.require_binary", return_value="/usr/bin/podman")
+    @mock.patch("asb.diagnostics.checks.subprocess.run")
     def test_egress_uplink_unreachable(self, mock_run, mock_bin, mock_running):
         mock_run.return_value = mock.Mock(returncode=2, stdout="UNREACHABLE\n")
-        ok, label, fix = doc_mod.check_workspace_egress("demo")
+        ok, label, fix = diag_checks.check_workspace_egress("demo")
         self.assertFalse(ok)
         self.assertIn("demo: uplink rootless morto (Network is unreachable)", label)
         self.assertNotIn("--rootless-netns", fix)
         self.assertIn("asb-agent suspend", fix)
         self.assertIn("asb-agent resume", fix)
 
-    @mock.patch("asb.doctor.podman.running", return_value=True)
-    @mock.patch("asb.doctor.podman.require_binary", return_value="/usr/bin/podman")
-    @mock.patch("asb.doctor.subprocess.run", side_effect=OSError("sonda quebrou"))
+    @mock.patch("asb.diagnostics.checks.podman.running", return_value=True)
+    @mock.patch("asb.diagnostics.checks.podman.require_binary", return_value="/usr/bin/podman")
+    @mock.patch("asb.diagnostics.checks.subprocess.run", side_effect=OSError("sonda quebrou"))
     def test_egress_probe_error_points_at_the_proxy_logs(self, mock_run, mock_bin, mock_running):
         # Causa desconhecida: nao e necessariamente o uplink, entao a orientacao
         # e diagnostica e nunca manda recriar nem reinicializar o namespace.
-        ok, label, fix = doc_mod.check_workspace_egress("demo")
+        ok, label, fix = diag_checks.check_workspace_egress("demo")
         self.assertFalse(ok)
         self.assertIn("sonda quebrou", label)
         self.assertNotIn("--rootless-netns", fix)
         self.assertEqual(fix, "podman logs --tail 50 asb-demo-proxy")
 
-    @mock.patch("asb.doctor.podman.running", return_value=True)
-    @mock.patch("asb.doctor.podman.require_binary", return_value="/usr/bin/podman")
-    @mock.patch("asb.doctor.subprocess.run")
+    @mock.patch("asb.diagnostics.checks.podman.running", return_value=True)
+    @mock.patch("asb.diagnostics.checks.podman.require_binary", return_value="/usr/bin/podman")
+    @mock.patch("asb.diagnostics.checks.subprocess.run")
     def test_egress_domain_denied(self, mock_run, mock_bin, mock_running):
         mock_run.return_value = mock.Mock(returncode=3, stdout="DENIED\n")
-        ok, label, fix = doc_mod.check_workspace_egress("demo")
+        ok, label, fix = diag_checks.check_workspace_egress("demo")
         self.assertFalse(ok)
         self.assertIn("demo: dominio github.com bloqueado pelo Squid (TCP_DENIED)", label)
         self.assertIn("[network] allow", fix)
 
-    @mock.patch("asb.doctor.podman.running", return_value=True)
-    @mock.patch("asb.doctor.podman.require_binary", return_value="/usr/bin/podman")
-    @mock.patch("asb.doctor.subprocess.run")
+    @mock.patch("asb.diagnostics.checks.podman.running", return_value=True)
+    @mock.patch("asb.diagnostics.checks.podman.require_binary", return_value="/usr/bin/podman")
+    @mock.patch("asb.diagnostics.checks.subprocess.run")
     def test_egress_squid_down(self, mock_run, mock_bin, mock_running):
         mock_run.return_value = mock.Mock(returncode=4, stdout="SQUID_DOWN\n")
-        ok, label, fix = doc_mod.check_workspace_egress("demo")
+        ok, label, fix = diag_checks.check_workspace_egress("demo")
         self.assertFalse(ok)
         self.assertIn("demo: proxy Squid nao responde na porta 3128", label)
         self.assertIn("asb-agent resume --workspace demo", fix)
 
-    @mock.patch("asb.doctor.podman.running", return_value=True)
-    @mock.patch("asb.doctor.podman.require_binary", return_value="/usr/bin/podman")
-    @mock.patch("asb.doctor.subprocess.run", side_effect=doc_mod.subprocess.TimeoutExpired(cmd="mock", timeout=5))
+    @mock.patch("asb.diagnostics.checks.podman.running", return_value=True)
+    @mock.patch("asb.diagnostics.checks.podman.require_binary", return_value="/usr/bin/podman")
+    @mock.patch("asb.diagnostics.checks.subprocess.run", side_effect=subprocess.TimeoutExpired(cmd="mock", timeout=5))
     def test_egress_timeout(self, mock_run, mock_bin, mock_running):
-        ok, label, fix = doc_mod.check_workspace_egress("demo")
+        ok, label, fix = diag_checks.check_workspace_egress("demo")
         self.assertFalse(ok)
         self.assertIn("demo: uplink rootless morto (timeout na sonda de egresso)", label)
         self.assertNotIn("--rootless-netns", fix)
@@ -519,22 +520,22 @@ class TestToolDrift(unittest.TestCase):
 
     def test_host_sem_a_ferramenta_nao_diz_nada(self):
         # Nem todo host usa rtk. Avisar aqui seria ruido, nao diagnostico.
-        self.assertIsNone(doc_mod.tool_drift("rtk", "0.46.0", None))
+        self.assertIsNone(diag_checks.tool_drift("rtk", "0.46.0", None))
 
     def test_ferramenta_ausente_na_imagem_pede_build(self):
-        ok, label, fix = doc_mod.tool_drift("rtk", None, "0.46.0")
+        ok, label, fix = diag_checks.tool_drift("rtk", None, "0.46.0")
         self.assertFalse(ok)
         self.assertIn("rtk", label)
         self.assertEqual("asb-agent build", fix)
 
     def test_versoes_iguais_reportam_ok(self):
-        ok, label, fix = doc_mod.tool_drift("graphify", "0.9.51", "0.9.51")
+        ok, label, fix = diag_checks.tool_drift("graphify", "0.9.51", "0.9.51")
         self.assertTrue(ok)
         self.assertIn("0.9.51", label)
         self.assertEqual("", fix)
 
     def test_versoes_diferentes_citam_as_duas_e_pedem_build(self):
-        ok, label, fix = doc_mod.tool_drift("rtk", "0.46.0", "0.48.1")
+        ok, label, fix = diag_checks.tool_drift("rtk", "0.46.0", "0.48.1")
         self.assertFalse(ok)
         self.assertIn("0.46.0", label)
         self.assertIn("0.48.1", label)
@@ -565,11 +566,11 @@ class TestDoctorSecretService(unittest.TestCase):
         self.tmp.cleanup()
 
     @mock.patch("asb.doctor.Path.home")
-    @mock.patch("asb.doctor.podman.running", return_value=False)
-    @mock.patch("asb.doctor.podman.exists", return_value=True)
-    @mock.patch("asb.doctor.podman.out", return_value="podman version 5.0.0")
-    @mock.patch("asb.doctor.shutil.which", return_value="/usr/bin/mock")
-    @mock.patch("asb.doctor.subprocess.run")
+    @mock.patch("asb.diagnostics.checks.podman.running", return_value=False)
+    @mock.patch("asb.diagnostics.checks.podman.exists", return_value=True)
+    @mock.patch("asb.diagnostics.checks.podman.out", return_value="podman version 5.0.0")
+    @mock.patch("asb.diagnostics.checks.shutil.which", return_value="/usr/bin/mock")
+    @mock.patch("asb.diagnostics.checks.subprocess.run")
     def test_doctor_secret_service_healthy(
         self, mock_run, mock_which, mock_out, mock_exists, mock_running, mock_home
     ):
@@ -585,11 +586,11 @@ class TestDoctorSecretService(unittest.TestCase):
             self.assertIn("ok   Secret Service (asb-keyring)", out.getvalue())
 
     @mock.patch("asb.doctor.Path.home")
-    @mock.patch("asb.doctor.podman.running", return_value=False)
-    @mock.patch("asb.doctor.podman.exists", return_value=True)
-    @mock.patch("asb.doctor.podman.out", return_value="podman version 5.0.0")
-    @mock.patch("asb.doctor.shutil.which", return_value="/usr/bin/mock")
-    @mock.patch("asb.doctor.subprocess.run")
+    @mock.patch("asb.diagnostics.checks.podman.running", return_value=False)
+    @mock.patch("asb.diagnostics.checks.podman.exists", return_value=True)
+    @mock.patch("asb.diagnostics.checks.podman.out", return_value="podman version 5.0.0")
+    @mock.patch("asb.diagnostics.checks.shutil.which", return_value="/usr/bin/mock")
+    @mock.patch("asb.diagnostics.checks.subprocess.run")
     def test_doctor_secret_service_container_missing(
         self, mock_run, mock_which, mock_out, mock_exists, mock_running, mock_home
     ):
@@ -605,11 +606,11 @@ class TestDoctorSecretService(unittest.TestCase):
             self.assertIn("FALTA container asb-keyring  ->  asb-agent login", out.getvalue())
 
     @mock.patch("asb.doctor.Path.home")
-    @mock.patch("asb.doctor.podman.running", return_value=False)
-    @mock.patch("asb.doctor.podman.exists", return_value=True)
-    @mock.patch("asb.doctor.podman.out", return_value="podman version 5.0.0")
-    @mock.patch("asb.doctor.shutil.which", return_value="/usr/bin/mock")
-    @mock.patch("asb.doctor.subprocess.run")
+    @mock.patch("asb.diagnostics.checks.podman.running", return_value=False)
+    @mock.patch("asb.diagnostics.checks.podman.exists", return_value=True)
+    @mock.patch("asb.diagnostics.checks.podman.out", return_value="podman version 5.0.0")
+    @mock.patch("asb.diagnostics.checks.shutil.which", return_value="/usr/bin/mock")
+    @mock.patch("asb.diagnostics.checks.subprocess.run")
     def test_doctor_secret_service_container_stopped(
         self, mock_run, mock_which, mock_out, mock_exists, mock_running, mock_home
     ):
@@ -625,11 +626,11 @@ class TestDoctorSecretService(unittest.TestCase):
             self.assertIn("FALTA asb-keyring parado  ->  asb-agent login", out.getvalue())
 
     @mock.patch("asb.doctor.Path.home")
-    @mock.patch("asb.doctor.podman.running", return_value=False)
-    @mock.patch("asb.doctor.podman.exists", return_value=True)
-    @mock.patch("asb.doctor.podman.out", return_value="podman version 5.0.0")
-    @mock.patch("asb.doctor.shutil.which", return_value="/usr/bin/mock")
-    @mock.patch("asb.doctor.subprocess.run")
+    @mock.patch("asb.diagnostics.checks.podman.running", return_value=False)
+    @mock.patch("asb.diagnostics.checks.podman.exists", return_value=True)
+    @mock.patch("asb.diagnostics.checks.podman.out", return_value="podman version 5.0.0")
+    @mock.patch("asb.diagnostics.checks.shutil.which", return_value="/usr/bin/mock")
+    @mock.patch("asb.diagnostics.checks.subprocess.run")
     def test_doctor_secret_service_socket_missing(
         self, mock_run, mock_which, mock_out, mock_exists, mock_running, mock_home
     ):
@@ -645,11 +646,11 @@ class TestDoctorSecretService(unittest.TestCase):
             self.assertIn("FALTA socket do Secret Service (asb-keyring)  ->  asb-agent login", out.getvalue())
 
     @mock.patch("asb.doctor.Path.home")
-    @mock.patch("asb.doctor.podman.running", return_value=False)
-    @mock.patch("asb.doctor.podman.exists", return_value=True)
-    @mock.patch("asb.doctor.podman.out", return_value="podman version 5.0.0")
-    @mock.patch("asb.doctor.shutil.which", return_value="/usr/bin/mock")
-    @mock.patch("asb.doctor.subprocess.run")
+    @mock.patch("asb.diagnostics.checks.podman.running", return_value=False)
+    @mock.patch("asb.diagnostics.checks.podman.exists", return_value=True)
+    @mock.patch("asb.diagnostics.checks.podman.out", return_value="podman version 5.0.0")
+    @mock.patch("asb.diagnostics.checks.shutil.which", return_value="/usr/bin/mock")
+    @mock.patch("asb.diagnostics.checks.subprocess.run")
     def test_doctor_secret_service_unresponsive(
         self, mock_run, mock_which, mock_out, mock_exists, mock_running, mock_home
     ):
@@ -665,11 +666,11 @@ class TestDoctorSecretService(unittest.TestCase):
             self.assertIn("FALTA Secret Service sem resposta (asb-keyring)  ->  asb-agent login", out.getvalue())
 
     @mock.patch("asb.doctor.Path.home")
-    @mock.patch("asb.doctor.podman.running", return_value=False)
-    @mock.patch("asb.doctor.podman.exists", return_value=True)
-    @mock.patch("asb.doctor.podman.out", return_value="podman version 5.0.0")
-    @mock.patch("asb.doctor.shutil.which", return_value="/usr/bin/mock")
-    @mock.patch("asb.doctor.subprocess.run")
+    @mock.patch("asb.diagnostics.checks.podman.running", return_value=False)
+    @mock.patch("asb.diagnostics.checks.podman.exists", return_value=True)
+    @mock.patch("asb.diagnostics.checks.podman.out", return_value="podman version 5.0.0")
+    @mock.patch("asb.diagnostics.checks.shutil.which", return_value="/usr/bin/mock")
+    @mock.patch("asb.diagnostics.checks.subprocess.run")
     def test_doctor_never_starts_or_mutates_secret_service(
         self, mock_run, mock_which, mock_out, mock_exists, mock_running, mock_home
     ):
@@ -689,88 +690,88 @@ class TestDoctorSecretService(unittest.TestCase):
                 if "run" in args:
                     self.assertNotIn("-d", args)
 
-    @mock.patch("asb.doctor.podman.out")
+    @mock.patch("asb.diagnostics.checks.podman.out")
     def test_check_legacy_agent_container_fails_closed_on_inspect_error(self, mock_out):
         mock_out.side_effect = Exception("container inspect failure")
-        is_legacy, reason = doc_mod.check_legacy_agent_container("asb-ws-agent")
+        is_legacy, reason = diag_checks.check_legacy_agent_container("asb-ws-agent")
         self.assertTrue(is_legacy)
         self.assertIn("falha ao inspecionar container", reason)
 
-    @mock.patch("asb.doctor.podman.out", return_value="[]")
+    @mock.patch("asb.diagnostics.checks.podman.out", return_value="[]")
     def test_check_legacy_agent_container_fails_closed_on_unexpected_json_shape(self, mock_out):
-        is_legacy, reason = doc_mod.check_legacy_agent_container("asb-ws-agent")
+        is_legacy, reason = diag_checks.check_legacy_agent_container("asb-ws-agent")
         self.assertTrue(is_legacy)
         self.assertIn("falha ao inspecionar container", reason)
 
-    @mock.patch("asb.doctor.podman.out")
+    @mock.patch("asb.diagnostics.checks.podman.out")
     def test_check_legacy_agent_container_detects_missing_keyring_mount(self, mock_out):
         mock_out.return_value = '{"Mounts": [{"Destination": "/run/asb-credentials"}], "HostConfig": {"Tmpfs": {"/run/asb-credentials/keyrings": "ro,mode=000"}}, "Config": {"Env": ["DBUS_SESSION_BUS_ADDRESS=unix:path=/run/asb-keyring/bus"]}}'
-        is_legacy, reason = doc_mod.check_legacy_agent_container("asb-ws-agent")
+        is_legacy, reason = diag_checks.check_legacy_agent_container("asb-ws-agent")
         self.assertTrue(is_legacy)
         self.assertIn("mount /run/asb-keyring ausente", reason)
 
-    @mock.patch("asb.doctor.podman.out")
+    @mock.patch("asb.diagnostics.checks.podman.out")
     def test_check_legacy_agent_container_detects_missing_keyring_mask(self, mock_out):
         mock_out.return_value = '{"Mounts": [{"Destination": "/run/asb-keyring", "RW": false}, {"Destination": "/run/asb-credentials", "RW": true}], "HostConfig": {"Tmpfs": {}}, "Config": {"Env": ["DBUS_SESSION_BUS_ADDRESS=unix:path=/run/asb-keyring/bus"]}}'
-        is_legacy, reason = doc_mod.check_legacy_agent_container("asb-ws-agent")
+        is_legacy, reason = diag_checks.check_legacy_agent_container("asb-ws-agent")
         self.assertTrue(is_legacy)
         self.assertIn("mascara de isolamento de keyrings ausente", reason)
 
-    @mock.patch("asb.doctor.podman.out")
+    @mock.patch("asb.diagnostics.checks.podman.out")
     def test_check_legacy_agent_container_rejects_bind_mount_as_keyring_mask(self, mock_out):
         mock_out.return_value = '{"Mounts": [{"Type": "volume", "Name": "asb-keyring-runtime", "Destination": "/run/asb-keyring", "RW": false}, {"Type": "volume", "Name": "asb-credentials", "Destination": "/run/asb-credentials", "RW": true}, {"Type": "bind", "Destination": "/run/asb-credentials/keyrings", "RW": false}], "HostConfig": {"Tmpfs": {}}, "Config": {"Env": ["DBUS_SESSION_BUS_ADDRESS=unix:path=/run/asb-keyring/bus"]}}'
-        is_legacy, reason = doc_mod.check_legacy_agent_container("asb-ws-agent")
+        is_legacy, reason = diag_checks.check_legacy_agent_container("asb-ws-agent")
         self.assertTrue(is_legacy)
         self.assertIn("mascara", reason)
 
-    @mock.patch("asb.doctor.podman.out")
+    @mock.patch("asb.diagnostics.checks.podman.out")
     def test_check_legacy_agent_container_rejects_permissive_tmpfs_mask(self, mock_out):
         mock_out.return_value = '{"Mounts": [{"Type": "volume", "Name": "asb-keyring-runtime", "Destination": "/run/asb-keyring", "RW": false}, {"Type": "volume", "Name": "asb-credentials", "Destination": "/run/asb-credentials", "RW": true}], "HostConfig": {"Tmpfs": {"/run/asb-credentials/keyrings": "rw,mode=777"}}, "Config": {"CreateCommand": ["podman", "run", "--mount", "type=tmpfs,destination=/run/asb-credentials/keyrings,rw,notmpcopyup,tmpfs-mode=777"], "Env": ["DBUS_SESSION_BUS_ADDRESS=unix:path=/run/asb-keyring/bus"]}}'
-        is_legacy, reason = doc_mod.check_legacy_agent_container("asb-ws-agent")
+        is_legacy, reason = diag_checks.check_legacy_agent_container("asb-ws-agent")
         self.assertTrue(is_legacy)
         self.assertIn("mascara", reason)
 
-    @mock.patch("asb.doctor.podman.out")
+    @mock.patch("asb.diagnostics.checks.podman.out")
     def test_check_legacy_agent_container_requires_notmpcopyup(self, mock_out):
         mock_out.return_value = '{"Mounts": [{"Type": "volume", "Name": "asb-keyring-runtime", "Destination": "/run/asb-keyring", "RW": false}, {"Type": "volume", "Name": "asb-credentials", "Destination": "/run/asb-credentials", "RW": true}], "HostConfig": {"Tmpfs": {"/run/asb-credentials/keyrings": "ro,mode=000"}}, "Config": {"CreateCommand": ["podman", "run", "--mount", "type=tmpfs,destination=/run/asb-credentials/keyrings,ro,tmpfs-mode=000"], "Env": ["DBUS_SESSION_BUS_ADDRESS=unix:path=/run/asb-keyring/bus"]}}'
-        is_legacy, reason = doc_mod.check_legacy_agent_container("asb-ws-agent")
+        is_legacy, reason = diag_checks.check_legacy_agent_container("asb-ws-agent")
         self.assertTrue(is_legacy)
         self.assertIn("notmpcopyup", reason)
 
-    @mock.patch("asb.doctor.podman.out")
+    @mock.patch("asb.diagnostics.checks.podman.out")
     def test_check_legacy_agent_container_requires_read_only_runtime_mount(self, mock_out):
         mock_out.return_value = '{"Mounts": [{"Type": "volume", "Name": "asb-keyring-runtime", "Destination": "/run/asb-keyring", "RW": true}, {"Type": "volume", "Name": "asb-credentials", "Destination": "/run/asb-credentials", "RW": true}], "HostConfig": {"Tmpfs": {"/run/asb-credentials/keyrings": "ro,mode=000"}}, "Config": {"CreateCommand": ["podman", "run", "--mount", "type=tmpfs,destination=/run/asb-credentials/keyrings,ro,notmpcopyup,tmpfs-mode=000"], "Env": ["DBUS_SESSION_BUS_ADDRESS=unix:path=/run/asb-keyring/bus"]}}'
-        is_legacy, reason = doc_mod.check_legacy_agent_container("asb-ws-agent")
+        is_legacy, reason = diag_checks.check_legacy_agent_container("asb-ws-agent")
         self.assertTrue(is_legacy)
         self.assertIn("somente leitura", reason)
 
-    @mock.patch("asb.doctor.podman.out")
+    @mock.patch("asb.diagnostics.checks.podman.out")
     def test_check_legacy_agent_container_detects_bad_dbus_env(self, mock_out):
         mock_out.return_value = '{"Mounts": [{"Destination": "/run/asb-keyring", "RW": false}, {"Destination": "/run/asb-credentials", "RW": true}], "HostConfig": {"Tmpfs": {"/run/asb-credentials/keyrings": "ro,mode=000"}}, "Config": {"CreateCommand": ["podman", "run", "--mount", "type=tmpfs,destination=/run/asb-credentials/keyrings,ro,notmpcopyup,tmpfs-mode=000"], "Env": []}}'
-        is_legacy, reason = doc_mod.check_legacy_agent_container("asb-ws-agent")
+        is_legacy, reason = diag_checks.check_legacy_agent_container("asb-ws-agent")
         self.assertTrue(is_legacy)
         self.assertIn("DBUS_SESSION_BUS_ADDRESS", reason)
 
-    @mock.patch("asb.doctor.podman.out")
+    @mock.patch("asb.diagnostics.checks.podman.out")
     def test_check_legacy_agent_container_detects_keyring_pass_env(self, mock_out):
         mock_out.return_value = '{"Mounts": [{"Destination": "/run/asb-keyring", "RW": false}, {"Destination": "/run/asb-credentials", "RW": true}], "HostConfig": {"Tmpfs": {"/run/asb-credentials/keyrings": "ro,mode=000"}}, "Config": {"CreateCommand": ["podman", "run", "--mount", "type=tmpfs,destination=/run/asb-credentials/keyrings,ro,notmpcopyup,tmpfs-mode=000"], "Env": ["DBUS_SESSION_BUS_ADDRESS=unix:path=/run/asb-keyring/bus", "ASB_KEYRING_PASS=secret"]}}'
-        is_legacy, reason = doc_mod.check_legacy_agent_container("asb-ws-agent")
+        is_legacy, reason = diag_checks.check_legacy_agent_container("asb-ws-agent")
         self.assertTrue(is_legacy)
         self.assertIn("ASB_KEYRING_PASS", reason)
 
-    @mock.patch("asb.doctor.podman.out")
+    @mock.patch("asb.diagnostics.checks.podman.out")
     def test_check_legacy_agent_container_modern_passes(self, mock_out):
         mock_out.return_value = '{"Mounts": [{"Type": "volume", "Name": "asb-keyring-runtime", "Destination": "/run/asb-keyring", "RW": false}, {"Type": "volume", "Name": "asb-credentials", "Destination": "/run/asb-credentials", "RW": true}], "HostConfig": {"Tmpfs": {"/run/asb-credentials/keyrings": "ro,mode=000"}}, "Config": {"CreateCommand": ["podman", "run", "--mount", "type=tmpfs,destination=/run/asb-credentials/keyrings,ro,notmpcopyup,tmpfs-mode=000"], "Env": ["DBUS_SESSION_BUS_ADDRESS=unix:path=/run/asb-keyring/bus"]}}'
-        is_legacy, reason = doc_mod.check_legacy_agent_container("asb-ws-agent")
+        is_legacy, reason = diag_checks.check_legacy_agent_container("asb-ws-agent")
         self.assertFalse(is_legacy)
         self.assertEqual(reason, "")
 
     @mock.patch("asb.doctor.Path.home")
-    @mock.patch("asb.doctor.podman.running", return_value=True)
-    @mock.patch("asb.doctor.podman.exists", return_value=True)
-    @mock.patch("asb.doctor.podman.out", return_value="podman version 5.0.0")
-    @mock.patch("asb.doctor.shutil.which", return_value="/usr/bin/mock")
-    @mock.patch("asb.doctor.subprocess.run")
+    @mock.patch("asb.diagnostics.checks.podman.running", return_value=True)
+    @mock.patch("asb.diagnostics.checks.podman.exists", return_value=True)
+    @mock.patch("asb.diagnostics.checks.podman.out", return_value="podman version 5.0.0")
+    @mock.patch("asb.diagnostics.checks.shutil.which", return_value="/usr/bin/mock")
+    @mock.patch("asb.diagnostics.checks.subprocess.run")
     def test_doctor_reports_legacy_workspace_container(
         self, mock_run, mock_which, mock_out, mock_exists, mock_running, mock_home
     ):
@@ -782,7 +783,7 @@ class TestDoctorSecretService(unittest.TestCase):
         (ws_dir / "origin").write_text("/fake/repo with space")
 
         with mock.patch("asb.doctor.check_keyring_service", return_value=(True, "Secret Service (asb-keyring)", "")), \
-             mock.patch("asb.doctor.check_legacy_agent_container", return_value=(True, "mount /run/asb-keyring ausente")):
+             mock.patch("asb.diagnostics.checks.check_legacy_agent_container", return_value=(True, "mount /run/asb-keyring ausente")):
             out = io.StringIO()
             with mock.patch("sys.stdout", out):
                 code = doc_mod.doctor(self.fake_root)
@@ -793,11 +794,11 @@ class TestDoctorSecretService(unittest.TestCase):
             self.assertIn("asb-agent up --workspace test-ws --repo '/fake/repo with space'", output)
 
     @mock.patch("asb.doctor.Path.home")
-    @mock.patch("asb.doctor.podman.running", return_value=False)
-    @mock.patch("asb.doctor.podman.exists", return_value=True)
-    @mock.patch("asb.doctor.podman.out", return_value="podman version 5.0.0")
-    @mock.patch("asb.doctor.shutil.which", return_value="/usr/bin/mock")
-    @mock.patch("asb.doctor.subprocess.run")
+    @mock.patch("asb.diagnostics.checks.podman.running", return_value=False)
+    @mock.patch("asb.diagnostics.checks.podman.exists", return_value=True)
+    @mock.patch("asb.diagnostics.checks.podman.out", return_value="podman version 5.0.0")
+    @mock.patch("asb.diagnostics.checks.shutil.which", return_value="/usr/bin/mock")
+    @mock.patch("asb.diagnostics.checks.subprocess.run")
     def test_doctor_json_schema1_and_separation(
         self, mock_run, mock_which, mock_out, mock_exists, mock_running, mock_home
     ):
@@ -820,11 +821,11 @@ class TestDoctorSecretService(unittest.TestCase):
         self.assertIn("agy", data["providers"])
 
     @mock.patch("asb.doctor.Path.home")
-    @mock.patch("asb.doctor.podman.running")
-    @mock.patch("asb.doctor.podman.exists", return_value=True)
-    @mock.patch("asb.doctor.podman.out")
-    @mock.patch("asb.doctor.shutil.which", return_value="/usr/bin/mock")
-    @mock.patch("asb.doctor.subprocess.run")
+    @mock.patch("asb.diagnostics.checks.podman.running")
+    @mock.patch("asb.diagnostics.checks.podman.exists", return_value=True)
+    @mock.patch("asb.diagnostics.checks.podman.out")
+    @mock.patch("asb.diagnostics.checks.shutil.which", return_value="/usr/bin/mock")
+    @mock.patch("asb.diagnostics.checks.subprocess.run")
     def test_doctor_service_without_healthcheck_is_process_running(
         self, mock_run, mock_which, mock_out, mock_exists, mock_running, mock_home
     ):
@@ -849,9 +850,9 @@ class TestDoctorSecretService(unittest.TestCase):
         mock_out.side_effect = fake_out
 
         with mock.patch("asb.doctor.check_keyring_service", return_value=(True, "Secret Service (asb-keyring)", "")), \
-             mock.patch("asb.doctor.check_legacy_agent_container", return_value=(False, "")), \
-             mock.patch("asb.doctor.check_workspace_egress", return_value=(True, "egresso ok", "")), \
-             mock.patch("asb.doctor.third_party_netns_producers", return_value=[]), \
+             mock.patch("asb.diagnostics.checks.check_legacy_agent_container", return_value=(False, "")), \
+             mock.patch("asb.diagnostics.checks.check_workspace_egress", return_value=(True, "egresso ok", "")), \
+             mock.patch("asb.diagnostics.checks.third_party_netns_producers", return_value=[]), \
              mock.patch("asb.podman.run") as mock_podman_run:
             out = io.StringIO()
             with mock.patch("sys.stdout", out):
@@ -887,15 +888,15 @@ class TestDoctorServiceBlockNeverSwallows(unittest.TestCase):
         (repo_dir / ".agent-sandbox.toml").write_text(toml_text)
 
         with mock.patch("asb.doctor.Path.home", return_value=self.fake_home), \
-             mock.patch("asb.doctor.shutil.which", return_value="/usr/bin/mock"), \
-             mock.patch("asb.doctor.subprocess.run", return_value=mock.Mock(stdout="enabled\n")), \
-             mock.patch("asb.doctor.podman.exists", return_value=True), \
-             mock.patch("asb.doctor.podman.running", return_value=True), \
-             mock.patch("asb.doctor.podman.out", side_effect=out_side_effect), \
+             mock.patch("asb.diagnostics.checks.shutil.which", return_value="/usr/bin/mock"), \
+             mock.patch("asb.diagnostics.checks.subprocess.run", return_value=mock.Mock(stdout="enabled\n")), \
+             mock.patch("asb.diagnostics.checks.podman.exists", return_value=True), \
+             mock.patch("asb.diagnostics.checks.podman.running", return_value=True), \
+             mock.patch("asb.diagnostics.checks.podman.out", side_effect=out_side_effect), \
              mock.patch("asb.doctor.check_keyring_service", return_value=(True, "Secret Service (asb-keyring)", "")), \
-             mock.patch("asb.doctor.check_legacy_agent_container", return_value=(False, "")), \
-             mock.patch("asb.doctor.check_workspace_egress", return_value=(True, "egresso ok", "")), \
-             mock.patch("asb.doctor.third_party_netns_producers", return_value=[]):
+             mock.patch("asb.diagnostics.checks.check_legacy_agent_container", return_value=(False, "")), \
+             mock.patch("asb.diagnostics.checks.check_workspace_egress", return_value=(True, "egresso ok", "")), \
+             mock.patch("asb.diagnostics.checks.third_party_netns_producers", return_value=[]):
             out = io.StringIO()
             with mock.patch("sys.stdout", out):
                 code = doc_mod.doctor(self.fake_root, as_json=True)
@@ -922,7 +923,7 @@ class TestDoctorServiceBlockNeverSwallows(unittest.TestCase):
             if any("{{.State.Health.Status}}" in str(a) for a in args):
                 calls["n"] += 1
                 if calls["n"] == 1:
-                    raise doc_mod.podman.PodmanError("inspect falhou")
+                    raise PodmanError("inspect falhou")
                 return "unhealthy"
             return ""
 
@@ -952,36 +953,36 @@ class TestEmendaAChecks(unittest.TestCase):
         self.addCleanup(env.stop)
 
     def test_absent_project_dropin_is_healthy(self):
-        check = doc_mod.check_project_dropin_absent()
-        self.assertEqual(check["name"], "project_dropin_absent")
-        self.assertTrue(check["healthy"])
-        self.assertEqual(check["remediation"], "")
+        check = diag_checks.check_project_dropin_absent()
+        self.assertEqual(check.name, "project_dropin_absent")
+        self.assertTrue(check.healthy)
+        self.assertEqual(check.remediation, "")
 
     def test_present_project_dropin_is_an_infrastructure_failure(self):
         self.dropin_dir.mkdir(parents=True)
         (self.dropin_dir / "agent-sandbox.conf").write_text(self.PROJECT_DROPIN)
-        check = doc_mod.check_project_dropin_absent()
-        self.assertFalse(check["healthy"])
-        self.assertIn("daemon-reload", check["remediation"])
+        check = diag_checks.check_project_dropin_absent()
+        self.assertFalse(check.healthy)
+        self.assertIn("daemon-reload", check.remediation)
 
     def test_failed_network_gate_is_an_infrastructure_failure(self):
         """Toda unidade de workspace tem Requires=asb-network.service: com a
         espera em `failed`, nenhum workspace sobe, e o doctor dizia 'saudavel'."""
-        with mock.patch("asb.doctor.subprocess.run",
+        with mock.patch("asb.diagnostics.checks.subprocess.run",
                         return_value=mock.Mock(stdout="failed\n")):
-            check = doc_mod.check_network_gate()
-        self.assertFalse(check["healthy"])
-        self.assertIn("failed", check["label"])
-        self.assertIn("journalctl", check["remediation"])
+            check = diag_checks.check_network_gate()
+        self.assertFalse(check.healthy)
+        self.assertIn("failed", check.label)
+        self.assertIn("journalctl", check.remediation)
 
     def test_network_gate_state_is_reported_without_failing_health(self):
-        with mock.patch("asb.doctor.subprocess.run",
+        with mock.patch("asb.diagnostics.checks.subprocess.run",
                         return_value=mock.Mock(stdout="activating\n")):
-            check = doc_mod.check_network_gate()
-        self.assertEqual(check["name"], "network_gate")
-        self.assertTrue(check["healthy"])
-        self.assertIn("activating", check["label"])
-        self.assertIn("aguardando", check["remediation"])
+            check = diag_checks.check_network_gate()
+        self.assertEqual(check.name, "network_gate")
+        self.assertTrue(check.healthy)
+        self.assertIn("activating", check.label)
+        self.assertIn("aguardando", check.remediation)
 
     def test_third_party_producers_exclude_asb_workspaces_and_networkless_containers(self):
         self.dropin_dir.mkdir(parents=True)
@@ -992,33 +993,35 @@ class TestEmendaAChecks(unittest.TestCase):
             "foreign-app|app=x|podman\n"
             "networkless||\n"
         ))
-        with mock.patch("asb.doctor.podman.run", return_value=ps) as run:
-            producers = doc_mod.third_party_netns_producers()
+        with mock.patch("asb.diagnostics.checks.podman.run", return_value=ps) as run:
+            producers = diag_checks.third_party_netns_producers()
         self.assertEqual(producers, ["dropin:other.conf", "container:foreign-app"])
         self.assertEqual(run.call_args.args[:4], ("ps", "-a", "--filter", "should-start-on-boot=true"))
 
     def test_check_project_dropin_absent_handles_runtime_error(self):
         with mock.patch("asb.install.read_project_dropin",
                         side_effect=RuntimeError("symlink outside root")):
-            check = doc_mod.check_project_dropin_absent()
-        self.assertFalse(check["healthy"])
-        self.assertIn("symlink outside root", check["remediation"])
+            check = diag_checks.check_project_dropin_absent()
+        self.assertFalse(check.healthy)
+        self.assertIn("symlink outside root", check.remediation)
 
     def test_third_party_producers_handles_podman_error(self):
-        with mock.patch("asb.doctor.podman.run",
-                        side_effect=doc_mod.podman.PodmanError("podman down")):
-            producers = doc_mod.third_party_netns_producers()
+        with mock.patch("asb.diagnostics.checks.podman.run",
+                        side_effect=PodmanError("podman down")):
+            producers = diag_checks.third_party_netns_producers()
         self.assertEqual(producers, ["desconhecido: podman ps falhou (podman down)"])
 
     def test_diagnose_with_third_party_producers_reports_label_and_remediation(self):
-        with mock.patch("asb.doctor.third_party_netns_producers",
+        with mock.patch("asb.diagnostics.checks.third_party_netns_producers",
                         return_value=["container:foreign-app"]), \
-             mock.patch("asb.doctor.check_project_dropin_absent",
-                        return_value={"name": "dropin", "healthy": True, "label": "ok", "remediation": ""}), \
-             mock.patch("asb.doctor.check_network_gate",
-                        return_value={"name": "gate", "healthy": True, "label": "ok", "remediation": ""}), \
-             mock.patch("asb.doctor.podman.run", return_value=mock.Mock(returncode=0)), \
-             mock.patch("asb.doctor.podman.exists", return_value=True), \
+             mock.patch("asb.diagnostics.checks.check_project_dropin_absent",
+                        return_value=diag_checks.CheckResult(
+                            name="dropin", healthy=True, label="ok", remediation="")), \
+             mock.patch("asb.diagnostics.checks.check_network_gate",
+                        return_value=diag_checks.CheckResult(
+                            name="gate", healthy=True, label="ok", remediation="")), \
+             mock.patch("asb.diagnostics.checks.podman.run", return_value=mock.Mock(returncode=0)), \
+             mock.patch("asb.diagnostics.checks.podman.exists", return_value=True), \
              mock.patch("asb.doctor.check_keyring_service", return_value=(True, "ok", "")):
             report = doc_mod.diagnose(self.config_root)
         netns_checks = [c for c in report["infrastructure"]["checks"] if c["name"] == "netns_producers_third_party"]

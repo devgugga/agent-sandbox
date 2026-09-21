@@ -154,6 +154,17 @@ class _OptionalContainersResult:
     docker_name: str
 
 
+@dataclass
+class _AgentResult:
+    """Resultado de §5: staging, chave SSH, diretorio do runtime e o id do
+    container do agente — so estrutura de passagem de valor."""
+
+    stage: Path
+    key: Path
+    runtime_dir: Path
+    agent_cid: str
+
+
 class WorkspaceRuntime:
     """Orquestra o preparo de recursos de um workspace: containers, redes,
     volumes, manifesto e unidades systemd. Extraido de `lifecycle.py`
@@ -300,37 +311,26 @@ class WorkspaceRuntime:
             services_manifest=services_manifest, fwd_name=fwd_name,
             fwd_cid=fwd_cid, docker_cid=docker_cid, docker_name=docker_name)
 
-    def prepare(
+    def _create_agent_container(
         self,
         root: Path,
         ws: str,
-        repo: Path,
-        tx: WorkspaceTransaction | None = None,
-        storage: RuntimeStorage | None = None,
-    ) -> None:
-        """Prepara clone, redes, containers e manifesto sem restauracao
-        global. Movido verbatim de `lifecycle.prepare_workspace`."""
+        n: dict[str, str],
+        home: Path,
+        layout: Layout,
+        profile: Profile,
+        storage: RuntimeStorage,
+        cmd_action: str,
+        cmd_flags: list[str],
+        restart_policy: str,
+        tx: WorkspaceTransaction | None,
+    ) -> "_AgentResult":
+        """§5: staging, chave SSH, keyring, e o container do agente —
+        inclusive a emenda de nested-mode, POSICIONAL (`agent_args[-1:-1]`
+        insere logo ANTES da imagem, que precisa continuar sendo o ultimo
+        elemento de `agent_args`)."""
         from .. import lifecycle
 
-        setup = self._prepare_setup_and_network(root, ws, repo, tx, storage)
-        home, storage, profile, layout, conf, n = (
-            setup.home, setup.storage, setup.profile, setup.layout,
-            setup.conf, setup.n)
-        cmd_action, cmd_flags, restart_policy = (
-            setup.cmd_action, setup.cmd_flags, setup.restart_policy)
-
-        # 1. Proxy
-        proxy_cid = self._create_proxy_container(
-            n, ws, conf, cmd_action, cmd_flags, restart_policy, tx)
-
-        # 2-4. Servicos adicionais, forwarder e broker Docker
-        optional = self._create_optional_containers(
-            ws, n, profile, cmd_action, cmd_flags, restart_policy, tx)
-        services_manifest, fwd_name, fwd_cid, docker_cid, docker_name = (
-            optional.services_manifest, optional.fwd_name, optional.fwd_cid,
-            optional.docker_cid, optional.docker_name)
-
-        # 5. Staging, SSH, Keyring
         stage = layout.state / "staging"
         shutil.rmtree(stage, ignore_errors=True)
         staged = build_staging(root / "profiles" / "provision.toml", stage, home)
@@ -394,6 +394,44 @@ class WorkspaceRuntime:
         agent_cid = _get_container_id(n["agent"])
         if tx:
             tx.record_container(agent_cid)
+
+        return _AgentResult(stage=stage, key=key, runtime_dir=runtime_dir,
+                            agent_cid=agent_cid)
+
+    def prepare(
+        self,
+        root: Path,
+        ws: str,
+        repo: Path,
+        tx: WorkspaceTransaction | None = None,
+        storage: RuntimeStorage | None = None,
+    ) -> None:
+        """Prepara clone, redes, containers e manifesto sem restauracao
+        global. Movido verbatim de `lifecycle.prepare_workspace`."""
+        setup = self._prepare_setup_and_network(root, ws, repo, tx, storage)
+        home, storage, profile, layout, conf, n = (
+            setup.home, setup.storage, setup.profile, setup.layout,
+            setup.conf, setup.n)
+        cmd_action, cmd_flags, restart_policy = (
+            setup.cmd_action, setup.cmd_flags, setup.restart_policy)
+
+        # 1. Proxy
+        proxy_cid = self._create_proxy_container(
+            n, ws, conf, cmd_action, cmd_flags, restart_policy, tx)
+
+        # 2-4. Servicos adicionais, forwarder e broker Docker
+        optional = self._create_optional_containers(
+            ws, n, profile, cmd_action, cmd_flags, restart_policy, tx)
+        services_manifest, fwd_name, fwd_cid, docker_cid, docker_name = (
+            optional.services_manifest, optional.fwd_name, optional.fwd_cid,
+            optional.docker_cid, optional.docker_name)
+
+        # 5. Staging, SSH, Keyring, container do agente
+        agent = self._create_agent_container(
+            root, ws, n, home, layout, profile, storage,
+            cmd_action, cmd_flags, restart_policy, tx)
+        stage, key, runtime_dir, agent_cid = (
+            agent.stage, agent.key, agent.runtime_dir, agent.agent_cid)
 
         # 6. Gravar manifesto runtime.json
         manifest_containers: dict[str, dict[str, str]] = {

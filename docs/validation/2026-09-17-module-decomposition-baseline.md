@@ -27,7 +27,7 @@ Tarefa 1 (a própria Tarefa 1 não adiciona linhas a estes três arquivos).
 
 ### 2.1 `cli/asb/lifecycle.py`
 
-**Funções (34):** `names`, `ensure_ssh_key`, `ensure_credentials_volume`,
+**Funções (35):** `names`, `ensure_ssh_key`, `ensure_credentials_volume`,
 `ensure_credential_dirs`, `_volume_mountpoint`, `_mkdir_private`,
 `warn_about_legacy_credential_layout`, `credential_mount_args`,
 `ensure_session_volume`, `session_mount_args`, `ensure_toolcache_volume`,
@@ -52,7 +52,7 @@ dos símbolos de `lifecycle.py`; fica registrado aqui que sua origem real é
 
 ### 2.2 `cli/asb/auth.py`
 
-**Funções (24):** `_now_iso`, `parse_claude_status`, `parse_codex_status`,
+**Funções (25):** `_now_iso`, `parse_claude_status`, `parse_codex_status`,
 `check_status`, `_aggregate_exit_code`, `status`, `login_command`,
 `_lock_path`, `operator_lock`, `_client_name`, `_client_run_args`,
 `verify_fresh_client`, `_run_interactive_login`, `_report_login`, `login`,

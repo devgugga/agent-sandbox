@@ -103,6 +103,26 @@ def _ok(returncode: int = 0, stdout: str = "", stderr: str = ""):
     return mock.Mock(returncode=returncode, stdout=stdout, stderr=stderr)
 
 
+def _mixed_verify_ssh_response(argv, **_kwargs):
+    """`subprocess.run` fake para `TestAuthJsonContract`'s 2-sobre-1: o
+    portao de transporte (`[*ssh_base, "true"]`) sempre passa; a chamada
+    REAL por fornecedor (`[*ssh_base, _verify_command(provider)]`, texto
+    distinto por fornecedor) recebe uma resposta por fornecedor, sem
+    depender de nenhuma constante privada de `asb.auth`."""
+    tail = argv[-1]
+    if tail == "true":
+        return _ok(0)
+    if "claude" in tail:
+        return _ok(1, stdout="authentication_error: invalid x-api-key")
+    if "codex" in tail:
+        # 255: transporte SSH caiu durante a chamada (verify_client trata
+        # isso como "unreachable" ANTES de olhar para classify_verification).
+        return _ok(255)
+    if "agy" in tail:
+        return _ok(1, stdout="authentication required")
+    raise AssertionError(f"comando SSH inesperado no fake: {tail!r}")
+
+
 class TestRegisteredCliSurface(unittest.TestCase):
     """Comandos que `cli/asb-agent` registra hoje — o inventario que a
     Tarefa 1 (Passo 1) pede, congelado como conjunto para nao depender da
@@ -170,6 +190,9 @@ class TestAuthJsonContract(unittest.TestCase):
         self.assertEqual(set(report),
                          {"schemaVersion", "workspace", "checkedAt", "results"})
         self.assertEqual(code, 0)
+        self.assertEqual(set(report["results"][0]), {
+            "provider", "state", "checkedAt", "evidence", "remediation",
+        })
         self.assertEqual(report["results"][0]["state"], "authenticated")
 
     def test_status_single_provider_unauthenticated_exits_one(self):
@@ -217,6 +240,53 @@ class TestAuthJsonContract(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assertEqual(report["results"][0]["state"], "unreachable")
 
+    def test_verify_all_exercises_infrastructure_over_account_absence(self):
+        """A precedencia 2 > 1 exige DOIS fornecedores no mesmo relatorio:
+        um em estado de ausencia de conta (`unauthenticated`/`pending`,
+        categoria 1) e outro em infraestrutura/desconhecido (`unknown`,
+        `unreachable`, `provider_error`, categoria 2). Nenhuma chamada de
+        fornecedor UNICO alcanca essa mistura — precisa de `--agent all`.
+
+        `auth status --agent all` NAO serve: `check_status("agy")` devolve
+        sempre `unknown` sem tocar podman (ver
+        `test_status_all_never_reaches_zero_or_one_today`), entao todo `all`
+        de `status` contamina para 2 antes mesmo de perguntar a claude ou
+        codex — nunca sobra um 1 para competir.
+
+        `auth verify --agent all` e diferente: `verify_client` NAO tem esse
+        atalho para `agy` — os tres fornecedores passam pelo MESMO pipeline
+        (portao de transporte SSH, depois uma chamada real), e
+        `classify_verification` so trata `agy` de forma especial ao validar
+        o FORMATO de sucesso, nunca para forcar um estado sem chamada (visto
+        lendo `cli/asb/auth.py:975-1123` e `:860-940` por inteiro; confirmado
+        empiricamente rodando este cenario antes de integra-lo). Por isso
+        este teste forca claude e agy a `unauthenticated` (evidencia propria
+        do fornecedor, mesmo marcador de
+        `test_verify_key_set_and_infra_precedence`'s vizinho em
+        `tests/unit/test_auth_verify.py`) e codex a `unreachable` (codigo
+        255 do proprio `verify_client`, antes de chegar em
+        `classify_verification`) — sem tocar `asb.auth` nem `asb.lifecycle`,
+        so `asb.podman`, `asb.readiness` e `subprocess.run`/`Path.is_file`
+        globais, como o resto deste arquivo."""
+        healthy = asb_readiness.ProbeResult("proxy", "healthy", "ok", 5, "")
+        with mock.patch.object(asb_podman, "running", return_value=True), \
+                mock.patch.object(asb_podman, "out",
+                                  return_value="0.0.0.0:2222"), \
+                mock.patch.object(asb_readiness, "probe_proxy",
+                                  return_value=healthy), \
+                mock.patch("pathlib.Path.is_file", return_value=True), \
+                mock.patch("subprocess.run",
+                           side_effect=_mixed_verify_ssh_response):
+            code, report = self._verify("demo", "all")
+
+        states = {r["provider"]: r["state"] for r in report["results"]}
+        self.assertEqual(states, {
+            "claude": "unauthenticated",
+            "codex": "unreachable",
+            "agy": "unauthenticated",
+        })
+        self.assertEqual(code, 2)
+
 
 class TestDoctorJsonContract(unittest.TestCase):
     """Congela o schema JSON do `doctor` e a ordem dos seus checks (Passo 1).
@@ -259,6 +329,10 @@ class TestDoctorJsonContract(unittest.TestCase):
         self.assertFalse(report["healthy"])
         self.assertEqual(code, 1)
         self.assertEqual(set(report["providers"]), {"claude", "codex", "agy"})
+        self.assertEqual(set(report["infrastructure"]),
+                         {"healthy", "checks", "workspaces"})
+        self.assertEqual(set(report["providers"]["claude"]),
+                         {"state", "healthy", "remediation"})
 
         check_names = [c["name"] for c in report["infrastructure"]["checks"]]
         self.assertEqual(check_names, [

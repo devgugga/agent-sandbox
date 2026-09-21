@@ -43,6 +43,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "cli"))
 
 from asb import auth, keyring, lifecycle  # noqa: E402
 from asb.auth import AuthResult  # noqa: E402
+from asb.runtime import storage as runtime_storage  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[2]
 ENTRYPOINT = ROOT / "image" / "entrypoint.sh"
@@ -167,8 +168,14 @@ def prepare_workspace_harness(ws: str):
             stack.enter_context(mock.patch.object(lifecycle, "ensure_ssh_key", return_value=key))
             stack.enter_context(mock.patch.object(lifecycle, "ensure_keyring_service"))
             stack.enter_context(mock.patch.object(lifecycle, "ensure_keyring_runtime_volume", return_value="asb-keyring-runtime"))
-            stack.enter_context(mock.patch.object(lifecycle, "ensure_credentials_volume", return_value=FAKE_CREDENTIALS_VOLUME))
-            stack.enter_context(mock.patch.object(lifecycle, "ensure_toolcache_volume", return_value="asb-test-toolcache"))
+            # Tarefa 3: `ensure_credentials_volume`/`ensure_toolcache_volume`
+            # moraram para `runtime/storage.py`. `credential_mount_args`,
+            # `ensure_credential_dirs`, `ensure_session_volume` e
+            # `session_mount_args` residem la tambem e chamam ESSES nomes
+            # pelo namespace do proprio modulo — mockar o reexport em
+            # `lifecycle` nao os alcanca mais.
+            stack.enter_context(mock.patch.object(runtime_storage, "ensure_credentials_volume", return_value=FAKE_CREDENTIALS_VOLUME))
+            stack.enter_context(mock.patch.object(runtime_storage, "ensure_toolcache_volume", return_value="asb-test-toolcache"))
             stack.enter_context(mock.patch.object(lifecycle.os.path, "expanduser", return_value=str(home)))
             stack.enter_context(redirect_stderr(io.StringIO()))
             lifecycle.prepare_workspace(tmp / "root", ws, tmp / "origin")
@@ -667,9 +674,9 @@ class TestCredentialDirectoryMounts(unittest.TestCase):
     sobrevive."""
 
     def test_credential_mount_args_mount_directories_by_subpath(self):
-        with mock.patch.object(lifecycle, "ensure_credentials_volume",
+        with mock.patch.object(runtime_storage, "ensure_credentials_volume",
                                return_value="asb-credentials"), \
-                mock.patch.object(lifecycle, "ensure_credential_dirs"):
+                mock.patch.object(runtime_storage, "ensure_credential_dirs"):
             args = lifecycle.credential_mount_args(Path("/home/tester"))
 
         joined = " ".join(args)
@@ -681,9 +688,9 @@ class TestCredentialDirectoryMounts(unittest.TestCase):
         self.assertEqual(args.count("--mount"), 2)
 
     def test_credential_mounts_are_never_single_files(self):
-        with mock.patch.object(lifecycle, "ensure_credentials_volume",
+        with mock.patch.object(runtime_storage, "ensure_credentials_volume",
                                return_value="asb-credentials"), \
-                mock.patch.object(lifecycle, "ensure_credential_dirs"):
+                mock.patch.object(runtime_storage, "ensure_credential_dirs"):
             joined = " ".join(lifecycle.credential_mount_args(Path("/home/t")))
         self.assertNotIn(".credentials.json", joined)
         self.assertNotIn("auth.json", joined)
@@ -709,9 +716,9 @@ class TestCredentialDirectoryMounts(unittest.TestCase):
         podman reporta). Todo teste que chama `credential_mount_args` tem de
         mocka-lo; esta guarda existe para que a delegacao nao suma em
         silencio e leve os outros testes a escrever num volume de verdade."""
-        with mock.patch.object(lifecycle, "ensure_credentials_volume",
+        with mock.patch.object(runtime_storage, "ensure_credentials_volume",
                                return_value="asb-credentials"), \
-                mock.patch.object(lifecycle, "ensure_credential_dirs") as dirs:
+                mock.patch.object(runtime_storage, "ensure_credential_dirs") as dirs:
             lifecycle.credential_mount_args(Path("/home/t"))
         dirs.assert_called_once_with("asb-credentials")
 

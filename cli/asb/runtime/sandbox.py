@@ -26,6 +26,7 @@ from ..checkouts.model import Checkout
 from ..projects.model import Project
 from ..projects.registry import CheckoutBinding, ProjectRegistry
 from ..workspace import layout_for
+from . import storage
 from .connection import ConnectionInfo, resolve_connection
 
 Runner = Callable[[Sequence[str]], "subprocess.CompletedProcess[str]"]
@@ -86,13 +87,13 @@ def session_volume_mountpoint(workspace: str) -> Path:
     """Mountpoint, no host, do volume de sessao de `workspace`.
 
     E por ele que o host le a evidencia de sessao dos provedores (os
-    subpaths de `lifecycle.SESSION_STATE_DIRS` que o container monta sobre
+    subpaths de `storage.SESSION_STATE_DIRS` que o container monta sobre
     `~/.codex/sessions` e `~/.claude/projects`). Reusa `lifecycle.names` e
-    `lifecycle._volume_mountpoint`; nunca cria o volume — um volume ausente
+    `storage._volume_mountpoint`; nunca cria o volume — um volume ausente
     levanta `podman.PodmanError`."""
     from .. import lifecycle  # tardio: mesmo padrao de resolve_connection
 
-    return lifecycle._volume_mountpoint(lifecycle.names(workspace)["session"])
+    return storage._volume_mountpoint(lifecycle.names(workspace)["session"])
 
 
 @dataclass

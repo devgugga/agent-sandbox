@@ -9,6 +9,8 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "cli"))
 
+from asb.runtime.storage import RuntimeStorage  # noqa: E402
+
 BROKER_PATH = Path(__file__).resolve().parents[2] / "broker" / "asb-docker-broker.py"
 spec = importlib.util.spec_from_file_location("asb_docker_broker", BROKER_PATH)
 broker_mod = importlib.util.module_from_spec(spec)
@@ -226,9 +228,16 @@ class TestLifecycleHostApi(unittest.TestCase):
             stack.enter_context(mock.patch("asb.lifecycle.ensure_ssh_key"))
             stack.enter_context(mock.patch("asb.lifecycle.ensure_keyring_service"))
             stack.enter_context(mock.patch("asb.lifecycle.ensure_keyring_runtime_volume", return_value="asb-keyring-runtime"))
-            stack.enter_context(mock.patch("asb.lifecycle.ensure_credentials_volume", return_value="asb-credentials"))
-            stack.enter_context(mock.patch("asb.lifecycle.credential_mount_args", return_value=[]))
-            stack.enter_context(mock.patch("asb.lifecycle.ensure_session_volume", return_value="asb-test-ws-session"))
+            # `RuntimeStorage` REAL, com so os tres pontos que este teste ja
+            # mockava (credenciais e sessao) trocados por valores fixos;
+            # `session_mounts` e `ensure_toolcache` ficam reais, exatamente
+            # como antes da Tarefa 3 (nenhum dos dois era mockado aqui: os
+            # dois batiam em `asb.podman`, que ja esta mockado acima).
+            fake_storage = RuntimeStorage(Path(os.path.expanduser("~")))
+            fake_storage.ensure_credentials = mock.Mock(return_value="asb-credentials")
+            fake_storage.credential_mounts = mock.Mock(return_value=[])
+            fake_storage.ensure_sessions = mock.Mock(return_value="asb-test-ws-session")
+            stack.enter_context(mock.patch("asb.lifecycle.RuntimeStorage", return_value=fake_storage))
             stack.enter_context(mock.patch("asb.readiness.wait_until", return_value=mock.MagicMock(state="healthy", code="ok")))
             stack.enter_context(mock.patch("asb.lifecycle.supervisor.install_workspace", return_value=[]))
             stack.enter_context(mock.patch("asb.lifecycle.supervisor.start_workspace"))

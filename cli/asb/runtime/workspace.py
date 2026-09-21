@@ -28,13 +28,14 @@ import json
 import os
 import shutil
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 from .. import podman, supervisor
 from ..profile import Profile, load_profile
 from ..squid import render
 from ..staging import build_staging
-from ..workspace import layout_for, prepare_clone
+from ..workspace import Layout, layout_for, prepare_clone
 from .storage import RuntimeStorage
 from .transaction import WorkspaceTransaction
 
@@ -124,21 +125,41 @@ def _get_container_id(name: str) -> str:
     return name
 
 
+@dataclass
+class _SetupResult:
+    """Valores produzidos pela preparacao inicial (imagem, clone,
+    squid.conf, redes) que as secoes seguintes de `prepare()` consomem —
+    so estrutura de passagem de valor, nenhuma logica nova."""
+
+    home: Path
+    storage: RuntimeStorage
+    profile: Profile
+    layout: Layout
+    conf: Path
+    n: dict[str, str]
+    cmd_action: str
+    cmd_flags: list[str]
+    restart_policy: str
+
+
 class WorkspaceRuntime:
     """Orquestra o preparo de recursos de um workspace: containers, redes,
     volumes, manifesto e unidades systemd. Extraido de `lifecycle.py`
     (Tarefa 4 da decomposicao de modulos) para deixa-lo uma fachada real."""
 
-    def prepare(
+    def _prepare_setup_and_network(
         self,
         root: Path,
         ws: str,
         repo: Path,
-        tx: WorkspaceTransaction | None = None,
-        storage: RuntimeStorage | None = None,
-    ) -> None:
-        """Prepara clone, redes, containers e manifesto sem restauracao
-        global. Movido verbatim de `lifecycle.prepare_workspace`."""
+        tx: WorkspaceTransaction | None,
+        storage: RuntimeStorage | None,
+    ) -> _SetupResult:
+        """Checa a imagem, garante o proxy, prepara o clone, grava o
+        squid.conf e cria as duas redes do workspace — a parte NAO numerada
+        de `prepare_workspace`, seguida do bloco que fixa `cmd_action`/
+        `cmd_flags`/`restart_policy` (Emenda A: todo container nasce
+        parado, sem politica de reinicio do Podman)."""
         from .. import lifecycle
 
         if not podman.exists("image", lifecycle.IMAGE):
@@ -177,6 +198,30 @@ class WorkspaceRuntime:
         cmd_action = "create"
         cmd_flags: list[str] = []
         restart_policy = "no"
+
+        return _SetupResult(home=home, storage=storage, profile=profile,
+                            layout=layout, conf=conf, n=n,
+                            cmd_action=cmd_action, cmd_flags=cmd_flags,
+                            restart_policy=restart_policy)
+
+    def prepare(
+        self,
+        root: Path,
+        ws: str,
+        repo: Path,
+        tx: WorkspaceTransaction | None = None,
+        storage: RuntimeStorage | None = None,
+    ) -> None:
+        """Prepara clone, redes, containers e manifesto sem restauracao
+        global. Movido verbatim de `lifecycle.prepare_workspace`."""
+        from .. import lifecycle
+
+        setup = self._prepare_setup_and_network(root, ws, repo, tx, storage)
+        home, storage, profile, layout, conf, n = (
+            setup.home, setup.storage, setup.profile, setup.layout,
+            setup.conf, setup.n)
+        cmd_action, cmd_flags, restart_policy = (
+            setup.cmd_action, setup.cmd_flags, setup.restart_policy)
 
         # 1. Proxy
         proxy_args = [

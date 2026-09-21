@@ -480,5 +480,39 @@ class TestPrepareManifestAndAgentArgvMatchPreExtraction(unittest.TestCase):
             self.assertIn("asb-demo-containers", h.tx.created_volumes)
 
 
+class TestRemoveResources(unittest.TestCase):
+    """`WorkspaceRuntime.remove_resources()` — o subconjunto que `down()` e
+    `purge()` compartilham (Tarefa 4, commit de start/suspend/resume/
+    remove_resources). Achado durante o red-proof deste commit: nada
+    verificava que AMBAS as redes do workspace (net e net-out) sao
+    removidas, so o volume-preservation em test_lifecycle.py."""
+
+    def test_removes_units_both_networks_and_sweeps_containers_never_volumes(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp = Path(tmp_dir)
+            home = tmp / "home"
+            home.mkdir()
+            calls: list[tuple] = []
+
+            def fake_run(*args, **kwargs):
+                calls.append(args)
+                return mock.MagicMock(returncode=0)
+
+            with mock.patch("cli.asb.runtime.workspace.supervisor.remove_workspace_units") as remove_units, \
+                 mock.patch("cli.asb.lifecycle._sweep_containers",
+                            side_effect=lambda ws: calls.append(("sweep", ws))) as sweep, \
+                 mock.patch("cli.asb.runtime.workspace.podman.exists", return_value=True), \
+                 mock.patch("cli.asb.runtime.workspace.podman.run", side_effect=fake_run):
+                WorkspaceRuntime().remove_resources("demo", home)
+
+            remove_units.assert_called_once_with(
+                "demo", state_dir=home / ".local" / "state" / "agent-sandbox" / "demo")
+            sweep.assert_called_once_with("demo")
+            network_removals = {
+                c[-1] for c in calls if c[:2] == ("network", "rm")}
+            self.assertEqual(network_removals, {"asb-demo", "asb-demo-out"})
+            self.assertEqual([c for c in calls if c[:1] == ("volume",)], [])
+
+
 if __name__ == "__main__":
     unittest.main()

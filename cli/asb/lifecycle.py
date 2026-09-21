@@ -283,7 +283,7 @@ def up(root: Path, ws: str, repo: Path) -> int:
     layout = layout_for(repo, ws, home)
     try:
         prepare_workspace(root, ws, repo, tx=tx)
-        supervisor.start_workspace(ws, enable=True)
+        WorkspaceRuntime().start(ws, enable=True)
 
         # 1. Sonda de conectividade do proxy antes de operacoes que exigem rede (ex: mise install)
         proxy_res = readiness.wait_until(
@@ -379,26 +379,16 @@ def down(ws: str) -> int:
 
     NAO remove ~/asb-agent/<proj>/<ws>: ali vive o trabalho do agente.
     NUNCA remove auth global nem keyring singleton compartilhado.
+
+    Delega a `WorkspaceRuntime.remove_resources()` (Tarefa 4 da
+    decomposicao de modulos) a parte de unidades/containers/redes; a
+    remocao do ESTADO em disco (arquivos, nao recursos de Podman/systemd)
+    continua aqui.
     """
-    n = names(ws)
     home = Path(os.path.expanduser("~"))
 
-    # Runtime unico (Emenda A): todo workspace tem unidades. `down` e a saida
-    # de emergencia de um workspace quebrado, entao a remocao das unidades e
-    # best-effort e nunca aborta a limpeza de containers e redes abaixo —
-    # nem com `daemon-reload` falhando, nem sem `systemctl` no PATH, nem com
-    # manifesto corrompido.
-    try:
-        supervisor.remove_workspace_units(
-            ws, state_dir=home / ".local" / "state" / "agent-sandbox" / ws)
-    except Exception as exc:
-        print(f"aviso: falha ao remover unidades systemd de {ws}: {exc}; "
-              "seguindo com limpeza local", file=sys.stderr)
+    WorkspaceRuntime().remove_resources(ws, home)
 
-    _sweep_containers(ws)
-    for network in (n["net"], n["out"]):
-        if podman.exists("network", network):
-            podman.run("network", "rm", "-f", network, check=False)
     # O volume de containers aninhados guarda o que o agente puxou e
     # construiu: e dado do workspace, como a sessao, e `down` preserva dado.
     # So `purge` o remove.
@@ -421,59 +411,14 @@ def _require_workspace(ws: str) -> tuple[dict[str, str], Path, Path]:
 
 
 def suspend(ws: str) -> int:
-    """Para o workspace: desabilita e para o target systemd e verifica que todos os containers pararam."""
+    """Para o workspace: desabilita e para o target systemd e verifica que todos os containers pararam.
+
+    Delega a `WorkspaceRuntime.suspend()` (Tarefa 4 da decomposicao de
+    modulos) a partir da resolucao de `n`, que fica aqui — e validacao de
+    fachada (`_require_workspace`), nao orquestracao de recursos.
+    """
     n, _, _ = _require_workspace(ws)
-
-    target = f"asb-{ws}.target"
-
-    def _systemctl(*args: str):
-        return subprocess.run(["systemctl", "--user", *args],
-                              check=False, capture_output=True, text=True)
-
-    # A saida ia para /dev/null: um systemctl que falha (hook sem barramento
-    # do usuario, por exemplo) era invisivel, e a verificacao seguinte
-    # perguntava ao Podman — subsistema errado. Quem devolve o container e o
-    # `Restart=always` da unidade, entao e a unidade que precisa estar fora.
-    for verb in ("disable", "stop"):
-        res = _systemctl(verb, target)
-        if res.returncode != 0 and (res.stderr or "").strip():
-            print(f"aviso: systemctl --user {verb} {target} falhou: "
-                  f"{res.stderr.strip()}", file=sys.stderr)
-
-    state = (_systemctl("is-active", target).stdout or "").strip()
-    if state in ("active", "activating", "reloading"):
-        print(
-            f"erro: falha ao suspender workspace {ws}: a unidade {target} "
-            f"continua {state}, e o systemd devolve os containers em segundos. "
-            f"Veja 'systemctl --user status {target}'.",
-            file=sys.stderr,
-        )
-        return 1
-
-    containers = podman.out(
-        "ps", "--filter", f"label=asb.workspace={ws}",
-        "--format", "{{.Names}}").splitlines()
-    found = {c.strip() for c in containers if c.strip()}
-    found.update({n["agent"], n["proxy"]})
-    for container in sorted(found):
-        if podman.exists("container", container) and podman.running(container):
-            podman.run("stop", "-t", "5", container, check=False)
-
-    # Verificar que os containers do workspace realmente pararam: o brief
-    # exige a verificacao, nao apenas o disparo do stop/disable.
-    still_running = sorted(
-        c for c in found
-        if podman.exists("container", c) and podman.running(c)
-    )
-    if still_running:
-        print(
-            f"erro: falha ao suspender workspace {ws}: containers ainda em "
-            f"execucao: {', '.join(still_running)}",
-            file=sys.stderr,
-        )
-        return 1
-
-    return 0
+    return WorkspaceRuntime().suspend(ws, n)
 
 
 def resume(root: Path, ws: str) -> int:
@@ -483,62 +428,15 @@ def resume(root: Path, ws: str) -> int:
     executa reset-failed nas unidades do workspace e inicia o target. O JSON
     de conexao so e emitido depois que readiness.probe_workspace reporta tudo
     saudavel.
+
+    Delega a `WorkspaceRuntime.resume()` (Tarefa 4 da decomposicao de
+    modulos) a partir da resolucao de `layout`, que fica aqui — e validacao
+    de fachada (`_require_workspace`/`layout_for`), nao orquestracao de
+    recursos.
     """
     _, home, origin = _require_workspace(ws)
     layout = layout_for(origin, ws, home)
-
-    # Emenda A §4: mesmo motivo do `up`. Sem rede, `systemctl start` ficaria
-    # preso na espera sem limite; aqui a falha e imediata e nada e tocado.
-    host_res = readiness.wait_until(
-        lambda to: readiness.probe_host(timeout=to), timeout=30.0)
-    if host_res.state != "healthy":
-        print(f"erro: sem conectividade real ({host_res.code}); conecte a rede "
-              "e rode 'asb-agent resume' de novo", file=sys.stderr)
-        return 1
-
-    ensure_keyring_service(ensure_runtime(root))
-
-    target = f"asb-{ws}.target"
-    subprocess.run(["systemctl", "--user", "enable", target], check=True)
-    reset_units = [target]
-    manifest_file = layout.state / "runtime.json"
-    if manifest_file.is_file():
-        try:
-            manifest = json.loads(manifest_file.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError) as exc:
-            raise podman.PodmanError(
-                f"manifesto de runtime corrompido: {exc}"
-            ) from exc
-        if not isinstance(manifest, dict):
-            raise podman.PodmanError("manifesto de runtime corrompido: raiz deve ser um objeto JSON")
-        for info in manifest.get("containers", {}).values():
-            if isinstance(info, dict) and "unit" in info:
-                reset_units.append(info["unit"])
-    subprocess.run(
-        ["systemctl", "--user", "reset-failed", *reset_units],
-        check=False,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-    )
-    supervisor.start_workspace(ws)
-
-    # Gate de prontidao: `resume` so publica conexao depois que host, proxy,
-    # SSH e keyring respondem. Infraestrutura quebrada impede emitir conexao
-    # (spec T1): stdout vazio, diagnostico em stderr, retorno 1 — e NENHUM
-    # dado do workspace destruido, os containers ficam de pe para diagnose.
-    def check_ws(to: float) -> readiness.ProbeResult:
-        probes = readiness.probe_workspace(ws)
-        for probe in probes:
-            if probe.state != "healthy":
-                return probe
-        return readiness.ProbeResult("workspace", "healthy", "ok", 0, "")
-
-    probe_res = readiness.wait_until(check_ws, timeout=30.0)
-    if probe_res.state != "healthy":
-        print(f"erro: falha na prontidao do workspace ({probe_res.component}: {probe_res.code}): {probe_res.remediation}", file=sys.stderr)
-        return 1
-
-    return emit(ws, layout)
+    return WorkspaceRuntime().resume(root, ws, layout)
 
 
 def reload_allowlist(root: Path, ws: str) -> int:

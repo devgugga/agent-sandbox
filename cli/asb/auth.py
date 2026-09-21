@@ -46,26 +46,26 @@ import shlex
 import subprocess
 import sys
 from contextlib import contextmanager
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
 from . import keyring, lifecycle, podman, readiness
+from .agents.base import AuthResult, _VERIFY_PROMPT, _VERIFY_PROVIDER_TIMEOUT
+from .agents.claude import ClaudeDriver
 
-
-@dataclass(frozen=True)
-class AuthResult:
-    provider: str
-    state: str
-    checked_at: str
-    evidence: str
-    remediation: str
-
+# `AuthResult` e `AgentDriver.classify_verification` moraram aqui ate a
+# Tarefa 2 da decomposicao de `auth.py`; agora vivem em
+# `cli/asb/agents/base.py` (compartilhados pelos tres drivers) e sao
+# reexportados por `auth.py` porque este modulo continua sendo a fronteira
+# publica de autenticacao (`tests/unit/test_auth_verify.py` e
+# `tests/unit/test_login_flow.py` importam `AuthResult` daqui).
 
 # Comandos de LEITURA de status, um por fornecedor. Nenhum aqui muta estado:
-# nao ha `/login`, `login --device-auth` nem `logout` nesta tabela.
+# nao ha `/login`, `login --device-auth` nem `logout` nesta tabela. Cada
+# fornecedor migrado para seu driver (Tarefa 2) sai desta tabela: seu
+# comando passa a viver em `<Driver>.status_command`.
 STATUS_COMMANDS: dict[str, str] = {
-    "claude": "claude auth status --json",
     "codex": "codex login status",
 }
 
@@ -86,53 +86,6 @@ _EXEC_HOST_TIMEOUT = 15
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def parse_claude_status(returncode: int, stdout: str) -> AuthResult:
-    """Interpreta `claude auth status --json` (A1: contrato estavel, JSON
-    limpo em stdout com o campo `loggedIn`).
-
-    A saida negativa explicita (`loggedIn: false`) e suficiente para
-    `unauthenticated` sozinha. Ja `authenticated` exige ACORDO entre o
-    payload (`loggedIn: true`) e o codigo de saida (0): um `loggedIn: true`
-    com codigo != 0 e contraditorio e vira `unknown`, nunca um falso
-    positivo. Qualquer coisa que nao seja JSON valido com o campo
-    `loggedIn` (JSON invalido, saida vazia por timeout/comando ausente,
-    formato inesperado) tambem vira `unknown`.
-    """
-    checked_at = _now_iso()
-    text = stdout if isinstance(stdout, str) else ""
-    data = None
-    if text.strip():
-        try:
-            data = json.loads(text)
-        except (json.JSONDecodeError, TypeError, ValueError):
-            data = None
-    logged_in = data.get("loggedIn") if isinstance(data, dict) else None
-
-    if logged_in is False:
-        return AuthResult(
-            provider="claude",
-            state="unauthenticated",
-            checked_at=checked_at,
-            evidence="claude auth status --json reportou loggedIn=false",
-            remediation="asb-agent login",
-        )
-    if logged_in is True and returncode == 0:
-        return AuthResult(
-            provider="claude",
-            state="authenticated",
-            checked_at=checked_at,
-            evidence="claude auth status --json reportou loggedIn=true (codigo 0)",
-            remediation="",
-        )
-    return AuthResult(
-        provider="claude",
-        state="unknown",
-        checked_at=checked_at,
-        evidence=f"saida nao reconhecida de 'claude auth status --json' (codigo {returncode})",
-        remediation="asb-agent auth status --workspace <id> --agent claude --json",
-    )
 
 
 def parse_codex_status(returncode: int, stdout: str, stderr: str) -> AuthResult:
@@ -243,7 +196,8 @@ def check_status(provider: str, container: str) -> AuthResult:
             remediation=f"asb-agent resume --workspace {ws_hint}",
         )
 
-    command = STATUS_COMMANDS[provider]
+    command = ClaudeDriver().status_command if provider == "claude" \
+        else STATUS_COMMANDS[provider]
     try:
         result = podman.run(
             "exec", "-u", "1000", container,
@@ -262,14 +216,12 @@ def check_status(provider: str, container: str) -> AuthResult:
             remediation="asb-agent doctor",
         )
 
-    stdout = result.stdout or ""
-    stderr = getattr(result, "stderr", "") or ""
-    returncode = result.returncode
-
     if provider == "claude":
-        parsed = parse_claude_status(returncode, stdout)
+        parsed = ClaudeDriver().parse_auth_status(result)
     else:
-        parsed = parse_codex_status(returncode, stdout, stderr)
+        stdout = result.stdout or ""
+        stderr = getattr(result, "stderr", "") or ""
+        parsed = parse_codex_status(result.returncode, stdout, stderr)
     return replace(parsed, checked_at=checked_at)
 
 
@@ -364,8 +316,10 @@ def status(ws: str, provider: str, *, json_output: bool) -> int:
 # alcanca, e trava.
 # `agy`: o binario nu abre a TUI, que autentica no primeiro uso. Nao ha
 # subcomando `login`; `agy login` falha com "unexpected argument".
+#
+# Cada fornecedor migrado para seu driver (Tarefa 2) sai desta tabela: seu
+# comando passa a viver em `<Driver>.login_argv()`.
 LOGIN_COMMANDS: dict[str, tuple[str, ...]] = {
-    "claude": ("claude", "auth", "login"),
     "codex": ("codex", "login", "--device-auth"),
     "agy": ("agy",),
 }
@@ -387,8 +341,13 @@ class LoginBusy(Exception):
 
 
 def login_command(provider: str) -> tuple[str, ...]:
-    """Comando interativo de login de UM fornecedor. 'all' e rejeitado: quem
-    resolve o conjunto e `login()`, uma chamada por fornecedor."""
+    """Comando interativo de login de UM fornecedor AINDA nao migrado para
+    seu driver (Tarefa 2). 'all' e rejeitado: quem resolve o conjunto e
+    `login()`, uma chamada por fornecedor.
+
+    `_run_interactive_login` chama `<Driver>.login_argv()` diretamente para
+    os fornecedores ja migrados, entao esta funcao nunca e chamada para
+    eles."""
     try:
         return LOGIN_COMMANDS[provider]
     except KeyError:
@@ -515,6 +474,8 @@ def _run_interactive_login(provider: str) -> None:
     """
     name = _client_name("login", provider)
     home = str(Path(os.path.expanduser("~")))
+    argv = ClaudeDriver().login_argv() if provider == "claude" \
+        else login_command(provider)
     try:
         podman.run(*_client_run_args(name))
         # `bash -lc` nao e decoracao: sem shell de login o agy nao esta no
@@ -524,7 +485,7 @@ def _run_interactive_login(provider: str) -> None:
         result = subprocess.run(
             [podman.require_binary(), "exec", "-it", "-u", "1000",
              "-w", home, name, "bash", "-lc",
-             " ".join(login_command(provider))])
+             " ".join(argv)])
         if result.returncode == _SIGINT_EXIT:
             raise KeyboardInterrupt
     finally:
@@ -684,8 +645,11 @@ def _verify_command(provider: str) -> str:
 
     Cada flag usada aqui foi confirmada na versao fixada, offline, sem
     tocar rede (`agy --help`, `codex exec --help`): `agy models`,
-    `codex exec --skip-git-repo-check --sandbox read-only -o <file>`,
-    `claude -p`. Nenhuma e uma flag imaginada.
+    `codex exec --skip-git-repo-check --sandbox read-only -o <file>`.
+    Nenhuma e uma flag imaginada.
+
+    So resolve fornecedores AINDA nao migrados para seu driver (Tarefa 2):
+    `claude` ja saiu daqui, para `ClaudeDriver.verify_argv()`.
     """
     prompt = shlex.quote(_VERIFY_PROMPT)
     setup = (
@@ -693,9 +657,6 @@ def _verify_command(provider: str) -> str:
         "trap 'rm -rf \"$WORKDIR\"' EXIT HUP INT TERM; "
         "cd \"$WORKDIR\" || exit 70; "
     )
-    if provider == "claude":
-        return (f"{setup}timeout {_VERIFY_PROVIDER_TIMEOUT} "
-                f"asb-claude -p {prompt} < /dev/null")
     if provider == "codex":
         # O stdout do `codex exec` nao participa da prova: algumas versoes
         # tambem transmitem eventos/resposta ali. Somente o arquivo de `-o`
@@ -719,7 +680,7 @@ def _verify_command(provider: str) -> str:
                 "asb-agy models < /dev/null")
     raise ValueError(
         f"provedor invalido para verificacao real: {provider!r} "
-        "(use 'claude', 'codex' ou 'agy')")
+        "(use 'codex' ou 'agy'; 'claude' ja migrou para ClaudeDriver)")
 
 
 # Marcadores de rede: aparecem na saida real de qualquer CLI de fornecedor
@@ -772,12 +733,10 @@ def _contains_code(text: str, codes: tuple[str, ...]) -> bool:
 # Evidencia PROPRIA de cada fornecedor de que a credencial e invalida. Um
 # 401/403 puro NAO entra aqui de proposito: ele tambem e a assinatura de uma
 # negativa de ACL do proxy, e o brief exige a evidencia do FORNECEDOR — nunca
-# o codigo de um intermediario.
+# o codigo de um intermediario. Cada fornecedor migrado para seu driver
+# (Tarefa 2) sai desta tabela: seus marcadores passam a viver em
+# `<Driver>.auth_evidence_markers`.
 _AUTH_EVIDENCE_MARKERS: dict[str, tuple[str, ...]] = {
-    "claude": (
-        "invalid x-api-key", "authentication_error", "not logged in",
-        "please run /login", "invalid bearer token",
-    ),
     "codex": (
         "not logged in", "invalid_api_key", "incorrect api key provided",
         "no codex credentials were found",
@@ -1019,6 +978,12 @@ def verify_client(provider: str, container: str, *,
         agent_container=container, proxy_container=proxy_container)
     network_ok = probe.state == "healthy"
     if not network_ok:
+        if provider == "claude":
+            synthetic = subprocess.CompletedProcess((), 1, "", "")
+            return replace(
+                ClaudeDriver().classify_verification(
+                    synthetic, network_state=False),
+                checked_at=checked_at)
         return replace(
             classify_verification(provider, 1, "", network_ok=False),
             checked_at=checked_at)
@@ -1082,12 +1047,14 @@ def verify_client(provider: str, container: str, *,
                      "fornecedor foi tentada",
             remediation="asb-agent doctor")
 
-    command = _verify_command(provider)
+    command_argv = ClaudeDriver().verify_argv() if provider == "claude" \
+        else (_verify_command(provider),)
     _spend_call(provider)
     try:
         result = subprocess.run(
-            [*ssh_base, command], stdin=subprocess.DEVNULL, capture_output=True,
-            text=True, timeout=_VERIFY_EXEC_HOST_TIMEOUT, check=False,
+            [*ssh_base, *command_argv], stdin=subprocess.DEVNULL,
+            capture_output=True, text=True,
+            timeout=_VERIFY_EXEC_HOST_TIMEOUT, check=False,
         )
     except subprocess.TimeoutExpired:
         return AuthResult(
@@ -1103,23 +1070,27 @@ def verify_client(provider: str, container: str, *,
                      "verificacao real",
             remediation="asb-agent doctor")
 
-    stdout = result.stdout or ""
-    stderr = getattr(result, "stderr", "") or ""
-    returncode = result.returncode
-    combined = f"{stdout}\n{stderr}"
-
     # 255 e reservado pelo cliente OpenSSH para falhas do proprio transporte.
     # O comando remoto ja foi contado porque o gate havia passado, mas sua
     # saida nunca e tratada como resposta do fornecedor.
-    if returncode == 255:
+    if result.returncode == 255:
         return AuthResult(
             provider=provider, state="unreachable", checked_at=checked_at,
             evidence="transporte SSH caiu durante a chamada ao fornecedor; "
                      "nunca interpretado como logout",
             remediation="asb-agent doctor")
 
+    if provider == "claude":
+        return replace(
+            ClaudeDriver().classify_verification(result, network_state=True),
+            checked_at=checked_at)
+
+    stdout = result.stdout or ""
+    stderr = getattr(result, "stderr", "") or ""
+    combined = f"{stdout}\n{stderr}"
     return replace(
-        classify_verification(provider, returncode, combined, network_ok=True),
+        classify_verification(provider, result.returncode, combined,
+                              network_ok=True),
         checked_at=checked_at)
 
 

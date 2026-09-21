@@ -61,18 +61,14 @@ def _gate_then(result):
 
 
 class TestClassifyVerification(unittest.TestCase):
-    """O teste verbatim do brief: rede ruim nunca vira logout."""
+    """O teste verbatim do brief: rede ruim nunca vira logout.
 
-    def test_bad_network_never_becomes_unauthenticated(self):
-        result = auth.classify_verification(
-            "claude", 1, "connection timed out", network_ok=False)
-        self.assertEqual(result.state, "unreachable")
-        self.assertNotEqual(result.remediation, "login")
-
-    def test_rate_limit_is_provider_error_not_unauthenticated(self):
-        rate_limited = auth.classify_verification(
-            "claude", 1, "HTTP 429", network_ok=True)
-        self.assertEqual(rate_limited.state, "provider_error")
+    Os casos que usavam "claude" como fornecedor migraram para
+    tests/unit/test_agent_drivers.py::TestClaudeClassifyVerification junto
+    com o proprio pipeline de classificacao, que saiu de `auth.py` para
+    `AgentDriver.classify_verification` (base.py, compartilhado pelos tres
+    drivers) na Tarefa 2. Os casos abaixo continuam usando "codex"/"agy"
+    porque esses dois fornecedores ainda nao migraram."""
 
     def test_rate_limit_never_recommends_removing_the_credential(self):
         result = auth.classify_verification("codex", 1, "HTTP 429", network_ok=True)
@@ -100,23 +96,19 @@ class TestClassifyVerification(unittest.TestCase):
         self.assertEqual(result.state, "unreachable")
         self.assertNotEqual(result.state, "unauthenticated")
 
-    def test_bare_403_is_never_unauthenticated(self):
-        """403 puro tambem e a assinatura de uma negativa de ACL do proxy.
-        So a evidencia PROPRIA do fornecedor pode virar `unauthenticated`."""
-        result = auth.classify_verification(
-            "claude", 1, "HTTP/1.1 403 Forbidden", network_ok=True)
-        self.assertNotEqual(result.state, "unauthenticated")
-        self.assertNotIn("login", result.remediation.lower())
-
     def test_bare_401_is_never_unauthenticated(self):
+        """401/403 puro tambem e a assinatura de uma negativa de ACL do
+        proxy. So a evidencia PROPRIA do fornecedor pode virar
+        `unauthenticated`."""
         result = auth.classify_verification(
             "codex", 1, "401 Unauthorized", network_ok=True)
         self.assertNotEqual(result.state, "unauthenticated")
         self.assertNotIn("login", result.remediation.lower())
 
     def test_provider_own_evidence_of_invalid_credential_is_unauthenticated(self):
+        # "claude" migrou para
+        # test_agent_drivers.py::TestClaudeClassifyVerification.
         cases = {
-            "claude": "authentication_error: invalid x-api-key",
             "codex": "Not logged in",
             "agy": "authentication required",
         }
@@ -125,12 +117,6 @@ class TestClassifyVerification(unittest.TestCase):
                 result = auth.classify_verification(provider, 1, text, network_ok=True)
                 self.assertEqual(result.state, "unauthenticated")
                 self.assertEqual(result.remediation, "asb-agent login")
-
-    def test_success_is_returncode_zero_with_no_error_markers(self):
-        result = auth.classify_verification("claude", 0, "ASB_AUTH_VERIFY_OK",
-                                            network_ok=True)
-        self.assertEqual(result.state, "authenticated")
-        self.assertEqual(result.remediation, "")
 
     def test_the_word_timeout_alone_does_not_false_positive_on_success(self):
         """Mesmo espirito do R4 (docs/domains/sandbox/known-regressions.md),
@@ -144,29 +130,15 @@ class TestClassifyVerification(unittest.TestCase):
         self.assertNotEqual(result.state, "provider_error")
         self.assertNotEqual(result.state, "unreachable")
 
-    def test_429_substring_in_a_port_number_does_not_false_positive(self):
+    def test_503_substring_in_a_byte_count_does_not_false_positive(self):
         """R4 do catalogo de regressoes (docs/domains/sandbox/known-
         regressions.md): `"403" in output` tambem casava a porta 40300.
-        Aqui, uma porta ou id que contenha "429" como substring nao pode
-        virar `provider_error` por limite de taxa."""
-        result = auth.classify_verification(
-            "claude", 0, "listening on port 14290, connected", network_ok=True)
-        self.assertEqual(result.state, "unknown")
-        self.assertNotEqual(result.state, "provider_error")
-
-    def test_503_substring_in_a_byte_count_does_not_false_positive(self):
+        Aqui, uma contagem de bytes que contenha "503" como substring nao
+        pode virar `provider_error` por erro de servico."""
         result = auth.classify_verification(
             "codex", 0, "processed 5003 bytes successfully", network_ok=True)
         self.assertEqual(result.state, "unknown")
         self.assertNotEqual(result.state, "provider_error")
-
-    def test_delimited_429_still_matches_as_rate_limit(self):
-        """Guarda do proprio guarda: a delimitacao nao pode se tornar tao
-        estrita a ponto de parar de reconhecer o codigo real."""
-        for text in ("HTTP 429", "429 Too Many Requests", "status=429,"):
-            with self.subTest(text=text):
-                result = auth.classify_verification("claude", 1, text, network_ok=True)
-                self.assertEqual(result.state, "provider_error")
 
     def test_delimited_503_still_matches_as_service_error(self):
         for text in ("HTTP/1.1 503 Service Unavailable", "(503)"):
@@ -174,26 +146,13 @@ class TestClassifyVerification(unittest.TestCase):
                 result = auth.classify_verification("codex", 1, text, network_ok=True)
                 self.assertEqual(result.state, "provider_error")
 
-    def test_unrecognized_nonzero_output_is_unknown_not_unauthenticated(self):
-        result = auth.classify_verification("claude", 1, "algo inesperado",
-                                            network_ok=True)
-        self.assertEqual(result.state, "unknown")
-        self.assertNotEqual(result.state, "unauthenticated")
-
-    def test_evidence_never_carries_the_raw_output(self):
+    def test_evidence_never_carries_the_raw_output_codex(self):
         """A evidencia e sempre texto enlatado (categoria), nunca o `output`
         interpolado -- e ali que um token ou codigo OAuth apareceria."""
         secret = "sk-ant-oat01-SEGREDO-DE-VERDADE"
-        for state_probe in (
-            ("connection timed out", False),
-            ("HTTP 429 " + secret, True),
-            ("Not logged in " + secret, True),
-        ):
-            output, network_ok = state_probe
-            with self.subTest(output=output):
-                result = auth.classify_verification("claude", 1, output,
-                                                    network_ok=network_ok)
-                self.assertNotIn(secret, result.evidence)
+        result = auth.classify_verification(
+            "codex", 1, "Not logged in " + secret, network_ok=True)
+        self.assertNotIn(secret, result.evidence)
 
     def test_every_state_produced_fits_the_deny_by_default_aggregate(self):
         """Guarda contra estado inventado: cada estado que classify_verification
@@ -814,12 +773,14 @@ class TestVerifyClientCommands(_SSHInfraCase):
         self.assertIn("/dev/null", command)
 
     def test_no_verify_command_uses_the_dead_slash_login(self):
-        for provider in ("claude", "codex", "agy"):
+        # "claude" migrou para
+        # test_agent_drivers.py::TestClaudeVerifyArgv (ClaudeDriver.verify_argv).
+        for provider in ("codex", "agy"):
             with self.subTest(provider=provider):
                 self.assertNotIn("/login", auth._verify_command(provider))
 
     def test_no_verify_command_uses_a_version_query(self):
-        for provider in ("claude", "codex", "agy"):
+        for provider in ("codex", "agy"):
             with self.subTest(provider=provider):
                 self.assertNotIn("--version", auth._verify_command(provider))
 

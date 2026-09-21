@@ -36,46 +36,9 @@ class TestAuthResult(unittest.TestCase):
             result.state = "unknown"
 
 
-class TestParseClaudeStatus(unittest.TestCase):
-    """Exemplos verbatim do brief da tarefa A2."""
-
-    def test_brief_example_unauthenticated(self):
-        result = auth.parse_claude_status(1, '{"loggedIn": false}')
-        self.assertEqual(result.state, "unauthenticated")
-
-    def test_brief_example_unknown_on_timeout(self):
-        unexpected = auth.parse_claude_status(124, "")
-        self.assertEqual(unexpected.state, "unknown")
-
-    def test_authenticated(self):
-        result = auth.parse_claude_status(0, '{"loggedIn": true}')
-        self.assertEqual(result.state, "authenticated")
-        self.assertEqual(result.provider, "claude")
-        self.assertEqual(result.remediation, "")
-
-    def test_unauthenticated_stands_on_explicit_negative_even_with_rc_zero(self):
-        # A saida explicita (loggedIn:false) prevalece mesmo se o codigo de
-        # saida (por algum motivo) fosse 0 -- nunca vira falso positivo.
-        result = auth.parse_claude_status(0, '{"loggedIn": false}')
-        self.assertEqual(result.state, "unauthenticated")
-
-    def test_authenticated_requires_agreement_between_rc_and_payload(self):
-        # loggedIn:true com codigo de saida != 0 e contraditorio: fica
-        # "unknown", nunca "authenticated" por otimismo.
-        result = auth.parse_claude_status(1, '{"loggedIn": true}')
-        self.assertEqual(result.state, "unknown")
-
-    def test_json_invalido(self):
-        result = auth.parse_claude_status(1, "isto nao e json")
-        self.assertEqual(result.state, "unknown")
-
-    def test_saida_inesperada_com_codigo_zero(self):
-        result = auth.parse_claude_status(0, '{"foo": "bar"}')
-        self.assertEqual(result.state, "unknown")
-
-    def test_unauthenticated_points_at_login(self):
-        result = auth.parse_claude_status(1, '{"loggedIn": false}')
-        self.assertIn("login", result.remediation)
+# TestParseClaudeStatus migrou para tests/unit/test_agent_drivers.py
+# (classe TestClaudeParseAuthStatus) junto com o proprio parser, que saiu
+# de auth.py para ClaudeDriver.parse_auth_status na Tarefa 2.
 
 
 class TestParseCodexStatus(unittest.TestCase):
@@ -191,7 +154,8 @@ class TestCheckStatus(unittest.TestCase):
         self.assertEqual(result.state, "authenticated")
 
     def test_status_commands_never_carry_a_mutating_verb(self):
-        self.assertEqual(auth.STATUS_COMMANDS["claude"], "claude auth status --json")
+        # "claude" migrou para ClaudeDriver.status_command (Tarefa 2); ver
+        # tests/unit/test_agent_drivers.py::TestClaudeParseAuthStatus.
         self.assertEqual(auth.STATUS_COMMANDS["codex"], "codex login status")
         for command in auth.STATUS_COMMANDS.values():
             self.assertNotIn("logout", command)

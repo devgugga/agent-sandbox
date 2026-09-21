@@ -1,9 +1,16 @@
-"""Testes dos drivers de provedor de agente (Tarefa 5).
+"""Testes dos drivers de provedor de agente (Tarefa 5; auth desde a Tarefa 2).
 
 Um `AgentDriver` apenas RETORNA `LaunchCommand`; nenhum teste aqui inicia um
 processo real, envia um prompt ou contata a API de um provedor. `probe()`
 recebe sempre um runner falso injetado. Os caminhos de estado de sessao
 (Codex/Claude) usam arvores `tempfile`, nunca o estado real do operador.
+
+As regras de autenticacao de cada fornecedor (`parse_auth_status`,
+`login_argv`, `verify_argv`, `classify_verification`) migraram de
+`cli/asb/auth.py` para os drivers na Tarefa 2 da decomposicao (um
+fornecedor por vez: Claude, depois Codex, depois Antigravity). Nenhum teste
+aqui inicia um subprocesso, chama podman ou faz SSH real: `classify_verification`
+e `parse_auth_status` recebem sempre um `CompletedProcess` sintetico.
 """
 from __future__ import annotations
 
@@ -22,11 +29,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "cli"))
 
 from asb.agents.antigravity import AntigravityDriver  # noqa: E402
 from asb.agents.base import (  # noqa: E402
-    AgentAvailability, LaunchCommand, Lifetime, ResumeUnsupported,
+    AgentAvailability, AuthResult, LaunchCommand, Lifetime, ResumeUnsupported,
     SessionEvidence,
 )
 from asb.agents.claude import ClaudeDriver  # noqa: E402
 from asb.agents.codex import CodexDriver  # noqa: E402
+
+
+def _completed(returncode: int, stdout: str = "", stderr: str = "") \
+        -> subprocess.CompletedProcess:
+    """`CompletedProcess` sintetico: nenhum teste de classificacao aqui
+    executa um processo real."""
+    return subprocess.CompletedProcess((), returncode, stdout, stderr)
 
 
 class _FakeRun:
@@ -962,6 +976,260 @@ class TestHostileSessionVolume(unittest.TestCase):
             after = driver.capture_after(baseline)
             self.assertEqual(after.new_paths, frozenset())
             self.assertIsNone(driver.discover_session_id(after))
+
+# ---------------------------------------------------------------------------
+# Autenticacao — Claude (Tarefa 2, commit 1). Exemplos verbatim herdados de
+# tests/unit/test_auth_status.py::TestParseClaudeStatus e
+# tests/unit/test_auth_verify.py::TestClassifyVerification /
+# tests/unit/test_login_flow.py::TestLoginCommandTable.
+# ---------------------------------------------------------------------------
+
+
+class TestClaudeParseAuthStatus(unittest.TestCase):
+    """Exemplos verbatim do brief da tarefa A2, agora contra o driver."""
+
+    def test_brief_example_unauthenticated(self):
+        result = ClaudeDriver().parse_auth_status(_completed(1, '{"loggedIn": false}'))
+        self.assertEqual(result.state, "unauthenticated")
+
+    def test_brief_example_unknown_on_timeout(self):
+        unexpected = ClaudeDriver().parse_auth_status(_completed(124, ""))
+        self.assertEqual(unexpected.state, "unknown")
+
+    def test_authenticated(self):
+        result = ClaudeDriver().parse_auth_status(_completed(0, '{"loggedIn": true}'))
+        self.assertEqual(result.state, "authenticated")
+        self.assertEqual(result.provider, "claude")
+        self.assertEqual(result.remediation, "")
+
+    def test_unauthenticated_stands_on_explicit_negative_even_with_rc_zero(self):
+        # A saida explicita (loggedIn:false) prevalece mesmo se o codigo de
+        # saida (por algum motivo) fosse 0 -- nunca vira falso positivo.
+        result = ClaudeDriver().parse_auth_status(_completed(0, '{"loggedIn": false}'))
+        self.assertEqual(result.state, "unauthenticated")
+
+    def test_authenticated_requires_agreement_between_rc_and_payload(self):
+        # loggedIn:true com codigo de saida != 0 e contraditorio: fica
+        # "unknown", nunca "authenticated" por otimismo.
+        result = ClaudeDriver().parse_auth_status(_completed(1, '{"loggedIn": true}'))
+        self.assertEqual(result.state, "unknown")
+
+    def test_json_invalido(self):
+        result = ClaudeDriver().parse_auth_status(_completed(1, "isto nao e json"))
+        self.assertEqual(result.state, "unknown")
+
+    def test_saida_inesperada_com_codigo_zero(self):
+        result = ClaudeDriver().parse_auth_status(_completed(0, '{"foo": "bar"}'))
+        self.assertEqual(result.state, "unknown")
+
+    def test_unauthenticated_points_at_login(self):
+        result = ClaudeDriver().parse_auth_status(_completed(1, '{"loggedIn": false}'))
+        self.assertIn("login", result.remediation)
+
+    def test_status_command_never_carries_a_mutating_verb(self):
+        self.assertEqual(ClaudeDriver.status_command, "claude auth status --json")
+        self.assertNotIn("logout", ClaudeDriver.status_command)
+        self.assertNotIn("/login", ClaudeDriver.status_command)
+
+    def test_no_status_command_is_a_version_query(self):
+        """Herdado de TestVerificacaoDeLogin: `--version` responde 0 com o
+        agente deslogado, e um falso verde e pior que nenhuma checagem."""
+        self.assertNotIn("--version", ClaudeDriver.status_command)
+
+
+class TestClaudeLoginArgv(unittest.TestCase):
+    """O contrato exato do comando de login, verbatim do brief da A3."""
+
+    def test_login_argv(self):
+        self.assertEqual(ClaudeDriver().login_argv(), ("claude", "auth", "login"))
+
+    def test_login_argv_is_not_the_dead_slash_login(self):
+        """`claude /login` sai com 0 SEM logar (A1): um falso verde que
+        manda o operador embora achando que a credencial foi gravada."""
+        self.assertNotIn("/login", ClaudeDriver().login_argv())
+
+    def test_login_argv_never_selects_api_billing(self):
+        """`--console` seleciona faturamento por API em vez da assinatura."""
+        self.assertNotIn("--console", ClaudeDriver().login_argv())
+
+    def test_login_argv_is_not_a_version_query(self):
+        self.assertNotIn("--version", ClaudeDriver().login_argv())
+
+
+class TestClaudeVerifyArgv(unittest.TestCase):
+    def test_verify_argv_uses_dash_p_and_closes_stdin(self):
+        argv = ClaudeDriver().verify_argv()
+        self.assertEqual(len(argv), 1)
+        command = argv[0]
+        self.assertIn("asb-claude -p", command)
+        self.assertIn("/dev/null", command)
+        self.assertIn("timeout", command)
+
+    def test_verify_argv_uses_the_dead_slash_login(self):
+        self.assertNotIn("/login", ClaudeDriver().verify_argv()[0])
+
+    def test_verify_argv_is_not_a_version_query(self):
+        self.assertNotIn("--version", ClaudeDriver().verify_argv()[0])
+
+    def test_verify_argv_uses_explicit_synthetic_workdir(self):
+        command = ClaudeDriver().verify_argv()[0]
+        self.assertIn("mktemp -d", command)
+        self.assertIn("cd ", command)
+
+
+class TestClaudeClassifyVerification(unittest.TestCase):
+    """O teste verbatim do brief: rede ruim nunca vira logout. As sete
+    formas do brief (autenticado, nao-autenticado, malformado, timeout,
+    erro de fornecedor, rede inalcancavel) vivem aqui; "binario ausente" e
+    orquestracao de `verify_client` (OSError do subprocess), nao algo que
+    `classify_verification` decida — coberto em
+    tests/unit/test_auth_verify.py::TestVerifyClientInfrastructureGates."""
+
+    def test_bad_network_never_becomes_unauthenticated(self):
+        result = ClaudeDriver().classify_verification(
+            _completed(1, "connection timed out"), network_state=False)
+        self.assertEqual(result.state, "unreachable")
+        self.assertNotEqual(result.remediation, "login")
+
+    def test_rate_limit_is_provider_error_not_unauthenticated(self):
+        rate_limited = ClaudeDriver().classify_verification(
+            _completed(1, "HTTP 429"), network_state=True)
+        self.assertEqual(rate_limited.state, "provider_error")
+
+    def test_rate_limit_never_recommends_removing_the_credential(self):
+        result = ClaudeDriver().classify_verification(
+            _completed(1, "HTTP 429"), network_state=True)
+        self.assertNotEqual(result.state, "unauthenticated")
+        self.assertNotIn("login", result.remediation.lower())
+
+    def test_service_outage_is_provider_error_not_unauthenticated(self):
+        result = ClaudeDriver().classify_verification(
+            _completed(1, "503 Service Unavailable"), network_state=True)
+        self.assertEqual(result.state, "provider_error")
+        self.assertNotIn("login", result.remediation.lower())
+
+    def test_timeout_text_is_unreachable_even_when_network_ok_was_true(self):
+        """O texto capturado da CHAMADA (nao a pre-checagem) tambem pode
+        denunciar timeout -- e tem de cair na mesma categoria nao acusatoria."""
+        result = ClaudeDriver().classify_verification(
+            _completed(124, "operation timed out"), network_state=True)
+        self.assertEqual(result.state, "unreachable")
+        self.assertNotEqual(result.state, "unauthenticated")
+
+    def test_gnu_timeout_returncode_alone_is_never_unauthenticated(self):
+        """Codigo 124 (o `timeout` do coreutils matou o processo) sem texto
+        algum: nao ha evidencia de credencial invalida em lugar nenhum."""
+        result = ClaudeDriver().classify_verification(
+            _completed(124, ""), network_state=True)
+        self.assertEqual(result.state, "unreachable")
+        self.assertNotEqual(result.state, "unauthenticated")
+
+    def test_bare_403_is_never_unauthenticated(self):
+        """403 puro tambem e a assinatura de uma negativa de ACL do proxy.
+        So a evidencia PROPRIA do fornecedor pode virar `unauthenticated`."""
+        result = ClaudeDriver().classify_verification(
+            _completed(1, "HTTP/1.1 403 Forbidden"), network_state=True)
+        self.assertNotEqual(result.state, "unauthenticated")
+        self.assertNotIn("login", result.remediation.lower())
+
+    def test_bare_401_is_never_unauthenticated(self):
+        result = ClaudeDriver().classify_verification(
+            _completed(1, "401 Unauthorized"), network_state=True)
+        self.assertNotEqual(result.state, "unauthenticated")
+        self.assertNotIn("login", result.remediation.lower())
+
+    def test_provider_own_evidence_of_invalid_credential_is_unauthenticated(self):
+        result = ClaudeDriver().classify_verification(
+            _completed(1, "authentication_error: invalid x-api-key"),
+            network_state=True)
+        self.assertEqual(result.state, "unauthenticated")
+        self.assertEqual(result.remediation, "asb-agent login")
+
+    def test_success_is_returncode_zero_with_no_error_markers(self):
+        result = ClaudeDriver().classify_verification(
+            _completed(0, "ASB_AUTH_VERIFY_OK"), network_state=True)
+        self.assertEqual(result.state, "authenticated")
+        self.assertEqual(result.remediation, "")
+
+    def test_the_word_timeout_alone_does_not_false_positive_on_success(self):
+        """Mesmo espirito do R4 (docs/domains/sandbox/known-regressions.md),
+        mas em texto: 'timeout' sozinho aparece em nomes de flag e linhas de
+        configuracao benignas. So 'timed out' (a frase) e evidencia real de
+        falha de rede."""
+        result = ClaudeDriver().classify_verification(
+            _completed(0, "print-timeout: 5m0s"), network_state=True)
+        self.assertEqual(result.state, "unknown")
+        self.assertNotEqual(result.state, "provider_error")
+        self.assertNotEqual(result.state, "unreachable")
+
+    def test_429_substring_in_a_port_number_does_not_false_positive(self):
+        result = ClaudeDriver().classify_verification(
+            _completed(0, "listening on port 14290, connected"),
+            network_state=True)
+        self.assertEqual(result.state, "unknown")
+        self.assertNotEqual(result.state, "provider_error")
+
+    def test_503_substring_in_a_byte_count_does_not_false_positive(self):
+        result = ClaudeDriver().classify_verification(
+            _completed(0, "processed 5003 bytes successfully"),
+            network_state=True)
+        self.assertEqual(result.state, "unknown")
+        self.assertNotEqual(result.state, "provider_error")
+
+    def test_delimited_429_still_matches_as_rate_limit(self):
+        for text in ("HTTP 429", "429 Too Many Requests", "status=429,"):
+            with self.subTest(text=text):
+                result = ClaudeDriver().classify_verification(
+                    _completed(1, text), network_state=True)
+                self.assertEqual(result.state, "provider_error")
+
+    def test_delimited_503_still_matches_as_service_error(self):
+        for text in ("HTTP/1.1 503 Service Unavailable", "(503)"):
+            with self.subTest(text=text):
+                result = ClaudeDriver().classify_verification(
+                    _completed(1, text), network_state=True)
+                self.assertEqual(result.state, "provider_error")
+
+    def test_unrecognized_nonzero_output_is_unknown_not_unauthenticated(self):
+        result = ClaudeDriver().classify_verification(
+            _completed(1, "algo inesperado"), network_state=True)
+        self.assertEqual(result.state, "unknown")
+        self.assertNotEqual(result.state, "unauthenticated")
+
+    def test_evidence_never_carries_the_raw_output(self):
+        """A evidencia e sempre texto enlatado (categoria), nunca o `output`
+        interpolado -- e ali que um token ou codigo OAuth apareceria."""
+        secret = "sk-ant-oat01-SEGREDO-DE-VERDADE"
+        for output, network_state in (
+            ("connection timed out", False),
+            ("HTTP 429 " + secret, True),
+            ("Not logged in " + secret, True),
+        ):
+            with self.subTest(output=output):
+                result = ClaudeDriver().classify_verification(
+                    _completed(1, output), network_state=network_state)
+                self.assertNotIn(secret, result.evidence)
+
+    def test_exit_zero_with_the_wrong_response_is_not_authenticated(self):
+        """Evidencia de sucesso exige resposta no formato solicitado, nao um
+        grep de 'ok'. Um exit 0 com resposta errada e um erro de FORMATO,
+        registrado separado de erro de credencial."""
+        result = ClaudeDriver().classify_verification(
+            _completed(0, "claro! aqui esta: ok"), network_state=True)
+        self.assertNotEqual(result.state, "authenticated")
+        self.assertNotEqual(result.state, "unauthenticated")
+
+    def test_whitespace_is_normalized_before_comparison(self):
+        result = ClaudeDriver().classify_verification(
+            _completed(0, "  ASB_AUTH_VERIFY_OK  \n"), network_state=True)
+        self.assertEqual(result.state, "authenticated")
+
+    def test_a_help_string_never_counts_as_success_evidence(self):
+        result = ClaudeDriver().classify_verification(
+            _completed(0, "Usage: claude [options] [command] [prompt]"),
+            network_state=True)
+        self.assertNotEqual(result.state, "authenticated")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -176,11 +176,13 @@ def prepare_workspace_harness(ws: str):
 
 
 class TestLoginCommandTable(unittest.TestCase):
-    """O contrato exato dos comandos de login, verbatim do brief da A3."""
+    """O contrato exato dos comandos de login, verbatim do brief da A3.
+
+    "claude" migrou para `ClaudeDriver.login_argv()` (Tarefa 2); ver
+    tests/unit/test_agent_drivers.py::TestClaudeLoginArgv. `login_command()`
+    so resolve fornecedores AINDA nao migrados."""
 
     def test_login_command_per_provider(self):
-        self.assertEqual(auth.login_command("claude"),
-                         ("claude", "auth", "login"))
         self.assertEqual(auth.login_command("codex"),
                          ("codex", "login", "--device-auth"))
         self.assertEqual(auth.login_command("agy"), ("agy",))
@@ -194,22 +196,18 @@ class TestLoginCommandTable(unittest.TestCase):
     def test_no_login_command_is_the_dead_slash_login(self):
         """`claude /login` sai com 0 SEM logar (A1): um falso verde que manda
         o operador embora achando que a credencial foi gravada."""
-        for provider in ("claude", "codex", "agy"):
+        for provider in ("codex", "agy"):
             with self.subTest(provider=provider):
                 self.assertNotIn("/login", auth.login_command(provider))
 
-    def test_claude_login_never_selects_api_billing(self):
-        """`--console` seleciona faturamento por API em vez da assinatura."""
-        self.assertNotIn("--console", auth.login_command("claude"))
-
     def test_no_login_command_is_a_version_query(self):
         """`--version` responde 0 com o agente deslogado."""
-        for provider in ("claude", "codex", "agy"):
+        for provider in ("codex", "agy"):
             with self.subTest(provider=provider):
                 self.assertNotIn("--version", auth.login_command(provider))
 
-    def test_there_is_one_command_for_each_installed_provider(self):
-        self.assertEqual(set(auth.LOGIN_COMMANDS), {"claude", "codex", "agy"})
+    def test_there_is_one_command_for_each_not_yet_migrated_provider(self):
+        self.assertEqual(set(auth.LOGIN_COMMANDS), {"codex", "agy"})
 
 
 class TestLoginSelection(unittest.TestCase):

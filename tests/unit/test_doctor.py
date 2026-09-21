@@ -202,6 +202,71 @@ class TestDoctor(unittest.TestCase):
             output,
         )
 
+    @mock.patch("asb.doctor.Path.home")
+    @mock.patch("asb.diagnostics.checks.podman.running", return_value=False)
+    @mock.patch("asb.diagnostics.checks.podman.exists", return_value=True)
+    @mock.patch("asb.diagnostics.checks.shutil.which", return_value="/usr/bin/mock")
+    def test_doctor_reports_a_tool_drift_as_an_informative_check_result(
+        self, mock_which, mock_exists, mock_running, mock_home
+    ):
+        """`doctor.py`'s laco de defasagem (Passo 13 de `diagnose()`) monta
+        `CheckResult(name=f"drift_{tool}", ...)` a partir de
+        `checks.check_tool_drift(...)` — construcao NOVA desta Tarefa, nao
+        uma relocacao, e sem cobertura ate este teste: um erro de digitacao
+        no f-string quebraria o casamento de `_DRIFT_PREFIX` em
+        `aggregate_exit_code`/`text_exit_code` e deixaria uma drift check
+        (sempre informativa) fora do lugar esperado, sem nada para pegar."""
+        mock_home.return_value = self.fake_home
+
+        def fake_podman_out(*args, **kwargs):
+            joined = " ".join(str(a) for a in args)
+            if "asb.rtk.version" in joined:
+                return "0.46.0"
+            if "asb.graphify.version" in joined:
+                return "0.9.51"
+            return "podman version 5.0.0"
+
+        def fake_subrun(argv, **kwargs):
+            if isinstance(argv, (list, tuple)) and "systemctl" in argv:
+                return mock.Mock(stdout="inactive\n", returncode=0)
+            if isinstance(argv, (list, tuple)) and argv[:1] == ["rtk"]:
+                # Unica versao com um token que comeca por digito: so `rtk`
+                # aciona a defasagem (`graphify` fica None, ver
+                # `_host_version`, e `check_tool_drift` nao adiciona nada).
+                return mock.Mock(stdout="rtk 0.48.1\n", returncode=0)
+            return mock.Mock(stdout="ok\n", returncode=0)
+
+        with mock.patch("asb.diagnostics.checks.podman.out", side_effect=fake_podman_out), \
+             mock.patch("asb.diagnostics.checks.subprocess.run", side_effect=fake_subrun), \
+             mock.patch("asb.doctor.check_keyring_service",
+                        return_value=(True, "Secret Service (asb-keyring)", "")), \
+             mock.patch("asb.diagnostics.checks.third_party_netns_producers", return_value=[]):
+            report = doc_mod.diagnose(self.fake_root)
+            out = io.StringIO()
+            with mock.patch("sys.stdout", out):
+                doc_mod.doctor(self.fake_root, as_json=False)
+            text = out.getvalue()
+
+        names = [c["name"] for c in report["infrastructure"]["checks"]]
+        self.assertIn("drift_rtk", names)
+        self.assertNotIn("drift_graphify", names)
+
+        drift = next(c for c in report["infrastructure"]["checks"] if c["name"] == "drift_rtk")
+        self.assertTrue(drift["healthy"])  # sempre True: informativo, nunca reprova
+        self.assertIn("0.46.0", drift["label"])
+        self.assertIn("0.48.1", drift["label"])
+        self.assertEqual(drift["remediation"], "asb-agent build")
+
+        # Informativo: mesmo com uma defasagem real, nunca contamina o
+        # agregado de saude (nem em JSON nem em texto).
+        self.assertTrue(report["healthy"])
+
+        # Aparece no texto exatamente onde o renderizador o trata como
+        # qualquer outro check "ok" (o `healthy` sempre True hardcoded
+        # suprime a remediacao no texto, tal como antes desta Tarefa).
+        self.assertIn("  ok   rtk 0.46.0 na imagem, 0.48.1 no host", text)
+        self.assertNotIn("asb-agent build", text)
+
     @mock.patch("asb.diagnostics.checks.check_workspace_egress", return_value=(True, "ws-running: rodando (egresso ok)", ""))
     @mock.patch("asb.doctor.Path.home")
     @mock.patch("asb.diagnostics.checks.podman.running")

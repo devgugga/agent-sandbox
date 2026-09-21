@@ -256,54 +256,69 @@ class TestNoDuplicateProbing(unittest.TestCase):
         (bin_dir / "asb-agent").symlink_to(cli_bin)
 
     def test_each_probe_runs_once_per_doctor_call(self):
-        counts = {"which": 0, "podman_out": 0, "podman_exists": 0, "subprocess_run": 0,
-                  "is_socket": 0, "keyring": 0}
+        """Roda nos DOIS modos: o probe duplicado que esta Tarefa removeu
+        (`docker_broker.is_socket()`) vivia so no laco de impressao em
+        texto — um teste que so chama `as_json=True` nunca o teria pego (o
+        JSON antigo ja sondava uma unica vez). Ver achado da revisao."""
+        for as_json in (False, True):
+            with self.subTest(as_json=as_json):
+                counts = {"which": 0, "podman_out": 0, "podman_exists": 0,
+                          "subprocess_run": 0, "is_socket": 0, "keyring": 0}
 
-        def fake_which(cmd):
-            counts["which"] += 1
-            return "/usr/bin/mock"
+                def fake_which(cmd):
+                    counts["which"] += 1
+                    return "/usr/bin/mock"
 
-        def fake_podman_out(*args, **kwargs):
-            counts["podman_out"] += 1
-            return "podman version 5.0.0"
+                def fake_podman_out(*args, **kwargs):
+                    counts["podman_out"] += 1
+                    return "podman version 5.0.0"
 
-        def fake_podman_exists(kind, name):
-            counts["podman_exists"] += 1
-            return True
+                def fake_podman_exists(kind, name):
+                    counts["podman_exists"] += 1
+                    return True
 
-        def fake_subrun(*args, **kwargs):
-            counts["subprocess_run"] += 1
-            return mock.Mock(stdout="inactive\n", returncode=0)
+                def fake_subrun(*args, **kwargs):
+                    counts["subprocess_run"] += 1
+                    return mock.Mock(stdout="inactive\n", returncode=0)
 
-        def fake_is_socket(self):
-            counts["is_socket"] += 1
-            return False
+                def fake_is_socket(self):
+                    counts["is_socket"] += 1
+                    return False
 
-        def fake_keyring():
-            counts["keyring"] += 1
-            return True, "Secret Service (asb-keyring)", ""
+                def fake_keyring():
+                    counts["keyring"] += 1
+                    return True, "Secret Service (asb-keyring)", ""
 
-        with mock.patch("asb.diagnostics.checks.Path.home", return_value=self.fake_home), \
-             mock.patch("asb.diagnostics.checks.shutil.which", side_effect=fake_which), \
-             mock.patch("asb.diagnostics.checks.podman.out", side_effect=fake_podman_out), \
-             mock.patch("asb.diagnostics.checks.podman.exists", side_effect=fake_podman_exists), \
-             mock.patch("asb.diagnostics.checks.subprocess.run", side_effect=fake_subrun), \
-             mock.patch("pathlib.Path.is_socket", fake_is_socket), \
-             mock.patch("asb.doctor.check_keyring_service", side_effect=fake_keyring), \
-             mock.patch("asb.diagnostics.checks.third_party_netns_producers", return_value=[]):
-            out = io.StringIO()
-            with mock.patch("sys.stdout", out):
-                doc_mod.doctor(self.fake_root, as_json=True)
+                with mock.patch("asb.diagnostics.checks.Path.home", return_value=self.fake_home), \
+                     mock.patch("asb.diagnostics.checks.shutil.which", side_effect=fake_which), \
+                     mock.patch("asb.diagnostics.checks.podman.out", side_effect=fake_podman_out), \
+                     mock.patch("asb.diagnostics.checks.podman.exists", side_effect=fake_podman_exists), \
+                     mock.patch("asb.diagnostics.checks.subprocess.run", side_effect=fake_subrun), \
+                     mock.patch("pathlib.Path.is_socket", fake_is_socket), \
+                     mock.patch("asb.doctor.check_keyring_service", side_effect=fake_keyring), \
+                     mock.patch("asb.diagnostics.checks.third_party_netns_producers", return_value=[]):
+                    out = io.StringIO()
+                    with mock.patch("sys.stdout", out):
+                        doc_mod.doctor(self.fake_root, as_json=as_json)
 
-        # `podman.exists` roda uma vez por checagem que a usa (image,
-        # credentials_volume, toolcache_volume) — 3 vezes, nao mais.
-        self.assertEqual(counts["podman_exists"], 3)
-        # O socket do broker Docker: uma unica sonda (nao mais a segunda
-        # sondagem redundante que o texto antigo fazia).
-        self.assertEqual(counts["is_socket"], 1)
-        self.assertEqual(counts["keyring"], 1)
-        # `shutil.which`: podman, git, rtk, graphify = 4.
-        self.assertEqual(counts["which"], 4)
+                # `podman.exists` roda uma vez por checagem que a usa (image,
+                # credentials_volume, toolcache_volume) — 3 vezes, nao mais.
+                self.assertEqual(counts["podman_exists"], 3)
+                # O socket do broker Docker: uma unica sonda em QUALQUER modo
+                # (nao mais a segunda sondagem redundante que o texto antigo
+                # fazia so no laco de impressao).
+                self.assertEqual(counts["is_socket"], 1)
+                self.assertEqual(counts["keyring"], 1)
+                # `shutil.which`: podman, git, rtk, graphify = 4.
+                self.assertEqual(counts["which"], 4)
+                # `podman.out`: "--version" (check_podman_version) + uma
+                # inspecao de label por ferramenta de CONTEXT_TOOLS (rtk,
+                # graphify) via _image_version = 1 + 2 = 3.
+                self.assertEqual(counts["podman_out"], 3)
+                # `subprocess.run`: a espera de rede (check_network_gate) +
+                # uma sonda "--version" por ferramenta de CONTEXT_TOOLS via
+                # _host_version = 1 + 2 = 3.
+                self.assertEqual(counts["subprocess_run"], 3)
 
 
 if __name__ == "__main__":

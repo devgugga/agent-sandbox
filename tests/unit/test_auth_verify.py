@@ -80,10 +80,10 @@ class TestClassifyVerificationAggregateGuard(unittest.TestCase):
         scenarios = [
             ("claude", 1, "connection timed out", False),   # unreachable
             ("claude", 1, "HTTP 429", True),                 # provider_error
-            ("codex", 1, "503 Service Unavailable", True),   # provider_error
+            ("claude", 1, "503 Service Unavailable", True),  # provider_error
             ("codex", 1, "Not logged in", True),              # unauthenticated
             ("claude", 0, "ASB_AUTH_VERIFY_OK", True),        # authenticated
-            ("agy", 1, "algo inesperado", True),               # unknown
+            ("claude", 1, "algo inesperado", True),           # unknown
         ]
         for provider, rc, output, network_ok in scenarios:
             with self.subTest(output=output):

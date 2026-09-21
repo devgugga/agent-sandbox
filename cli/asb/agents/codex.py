@@ -150,7 +150,7 @@ class CodexDriver(AgentDriver):
         checked_at = _now_iso()
         returncode = completed.returncode
         stdout = completed.stdout
-        stderr = completed.stderr
+        stderr = getattr(completed, "stderr", "") or ""
         combined = f"{stdout or ''}\n{stderr or ''}".lower()
 
         if "not logged in" in combined:

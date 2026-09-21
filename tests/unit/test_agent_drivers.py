@@ -1065,7 +1065,7 @@ class TestClaudeVerifyArgv(unittest.TestCase):
         self.assertIn("/dev/null", command)
         self.assertIn("timeout", command)
 
-    def test_verify_argv_uses_the_dead_slash_login(self):
+    def test_verify_argv_is_not_the_dead_slash_login(self):
         self.assertNotIn("/login", ClaudeDriver().verify_argv()[0])
 
     def test_verify_argv_is_not_a_version_query(self):
@@ -1527,6 +1527,19 @@ class TestAntigravityClassifyVerification(unittest.TestCase):
     limite de taxa e erro de servico sao pipeline COMPARTILHADO (base.py);
     a evidencia propria e o formato de sucesso (LISTA de modelos, nao uma
     frase fixa) sao dados/override deste driver."""
+
+    def test_rate_limit_never_recommends_removing_the_credential(self):
+        result = AntigravityDriver().classify_verification(
+            _completed(1, "HTTP 429"), network_state=True)
+        self.assertEqual(result.state, "provider_error")
+        self.assertNotEqual(result.state, "unauthenticated")
+        self.assertNotIn("login", result.remediation.lower())
+
+    def test_service_outage_is_provider_error_not_unauthenticated(self):
+        result = AntigravityDriver().classify_verification(
+            _completed(1, "503 Service Unavailable"), network_state=True)
+        self.assertEqual(result.state, "provider_error")
+        self.assertNotIn("login", result.remediation.lower())
 
     def test_timeout_text_is_unreachable_even_when_network_ok_was_true(self):
         result = AntigravityDriver().classify_verification(

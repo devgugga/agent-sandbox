@@ -8,27 +8,34 @@ pergunta. Rede e infraestrutura ja tem seus proprios sensores dedicados
 
 Tres metades com fronteira explicita:
 
-* DIAGNOSTICO (`check_status`, `status`, os `parse_*`): nunca inicia login,
-  nunca faz logout, nunca envia prompt. Apenas LE o estado corrente do
-  fornecedor, como uid 1000, com o ambiente do workspace e timeout limitado
-  (10s) — o mesmo perfil das demais sondas.
-* LOGIN (`login`, `login_command`, `operator_lock`, `verify_fresh_client`,
-  Tarefa A3): unico caminho que muta estado, sempre sob pedido explicito do
-  operador, sempre com TTY, sempre com lock por fornecedor.
-* VERIFICACAO (`verify`, `verify_client`, `classify_verification`, Tarefa
-  A4): nunca muta estado, mas faz UMA chamada real ao fornecedor por
-  execucao — sem retry — dentro do container do WORKSPACE ja em execucao
-  (o mesmo caminho de proxy/allowlist do agente real), para provar que o
-  servidor aceitou a credencial, e nao apenas que o cliente local acha que
-  esta logado. E o unico caminho capaz de tirar `agy` (sem comando de
-  status local, A1) do estado `unknown`/`pending`.
+* DIAGNOSTICO (`check_status`, `status`): nunca inicia login, nunca faz
+  logout, nunca envia prompt. Apenas LE o estado corrente do fornecedor,
+  como uid 1000, com o ambiente do workspace e timeout limitado (10s) — o
+  mesmo perfil das demais sondas.
+* LOGIN (`login`, `operator_lock`, `verify_fresh_client`, Tarefa A3): unico
+  caminho que muta estado, sempre sob pedido explicito do operador, sempre
+  com TTY, sempre com lock por fornecedor.
+* VERIFICACAO (`verify`, `verify_client`, Tarefa A4): nunca muta estado,
+  mas faz UMA chamada real ao fornecedor por execucao — sem retry — dentro
+  do container do WORKSPACE ja em execucao (o mesmo caminho de
+  proxy/allowlist do agente real), para provar que o servidor aceitou a
+  credencial, e nao apenas que o cliente local acha que esta logado. E o
+  unico caminho capaz de tirar `agy` (sem comando de status local, A1) do
+  estado `unknown`/`pending`.
+
+As REGRAS especificas de cada fornecedor (comando de status, comando de
+login, comando de verificacao, marcadores de evidencia) moraram aqui ate a
+Tarefa 2 da decomposicao; agora vivem nos drivers de
+`cli/asb/agents/{claude,codex,antigravity}.py` (`DRIVERS`/`driver_for`
+abaixo). Este modulo so ORQUESTRA: locking, ciclo de vida do cliente
+efemero, codigo de saida agregado e renderizacao sanitizada.
 
 Nenhuma das tres metades interpola saida capturada do fornecedor em
 evidencia ou remediacao: e ali que tokens e codigos OAuth apareceriam. A
 evidencia e sempre texto enlatado somado a um codigo de retorno; a
-classificacao de VERIFICACAO usa uma ALLOWLIST de marcadores conhecidos e
-seguros (ex.: "429", "not logged in"), nunca uma regex que promete varrer
-segredo arbitrario da saida.
+classificacao de VERIFICACAO (`AgentDriver.classify_verification`) usa uma
+ALLOWLIST de marcadores conhecidos e seguros (ex.: "429", "not logged in"),
+nunca uma regex que promete varrer segredo arbitrario da saida.
 
 Um retorno "authenticated" do DIAGNOSTICO prova que o comando de status do
 fornecedor respondeu como autenticado agora; nao e prova de que uma chamada
@@ -40,7 +47,6 @@ import fcntl
 import getpass
 import json
 import os
-import re
 import secrets
 import subprocess
 import sys
@@ -50,31 +56,37 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import keyring, lifecycle, podman, readiness
+from .agents.antigravity import AntigravityDriver
 from .agents.base import AgentDriver, AuthResult, _VERIFY_PROVIDER_TIMEOUT
 from .agents.claude import ClaudeDriver
 from .agents.codex import CodexDriver
 
-# Fornecedores ja migrados para seu driver (Tarefa 2): `check_status`,
-# `_run_interactive_login` e `verify_client` despacham para o driver quando
-# o fornecedor esta aqui, e caem no codigo legado (tabelas acima, funcoes
-# `parse_*`/`_verify_command`/`classify_verification`) quando nao esta.
-# `agy` entra aqui quando sua propria migracao chegar.
-_MIGRATED_DRIVERS: dict[str, AgentDriver] = {
+# Os tres drivers, por nome de fornecedor. `check_status`,
+# `_run_interactive_login` e `verify_client` despacham para
+# `driver_for(provider)` em vez de carregar as regras de cada fornecedor
+# aqui — essas regras (comando de status, de login, de verificacao,
+# marcadores de evidencia) moraram em `auth.py` ate a Tarefa 2 da
+# decomposicao; agora vivem nos drivers.
+DRIVERS: dict[str, AgentDriver] = {
     "claude": ClaudeDriver(),
     "codex": CodexDriver(),
+    "agy": AntigravityDriver(),
 }
 
-# `AuthResult` e `AgentDriver.classify_verification` moraram aqui ate a
-# Tarefa 2 da decomposicao de `auth.py`; agora vivem em
-# `cli/asb/agents/base.py` (compartilhados pelos tres drivers) e sao
-# reexportados por `auth.py` porque este modulo continua sendo a fronteira
-# publica de autenticacao (`tests/unit/test_auth_verify.py` e
+
+def driver_for(provider: str) -> AgentDriver:
+    try:
+        return DRIVERS[provider]
+    except KeyError as error:
+        raise ValueError(f"provedor invalido: {provider!r} "
+                         "(use 'claude', 'codex' ou 'agy')") from error
+
+
+# `AuthResult` morou aqui ate a Tarefa 2 da decomposicao de `auth.py`;
+# agora vive em `cli/asb/agents/base.py` (compartilhado pelos tres
+# drivers) e e reexportado por `auth.py` porque este modulo continua sendo
+# a fronteira publica de autenticacao (`tests/unit/test_auth_verify.py` e
 # `tests/unit/test_login_flow.py` importam `AuthResult` daqui).
-#
-# STATUS_COMMANDS (um comando de LEITURA de status por fornecedor) foi
-# removido: claude e codex ja migraram para `<Driver>.status_command`
-# (Tarefa 2), e agy nunca teve entrada aqui — `check_status` o trata a
-# parte (ver o curto-circuito logo abaixo).
 
 # Fronteira publica de `status()`: aceita "all" alem dos tres fornecedores.
 _INDIVIDUAL_PROVIDERS = frozenset({"claude", "codex", "agy"})
@@ -115,22 +127,14 @@ def check_status(provider: str, container: str) -> AuthResult:
         )
 
     checked_at = _now_iso()
+    driver = driver_for(provider)
 
-    if provider == "agy":
-        # A1 (empirico): agy nao expoe comando de status local, e
+    if driver.status_command is None:
+        # A1 (empirico, agy): nenhum comando de status local comprovado, e
         # `agy -p ping` bloqueia ate 60s aguardando entrada quando deslogado.
         # Sem comando comprovado, respondemos unknown SEM tocar podman —
         # jamais arriscar o bloqueio de 60s numa checagem de diagnostico.
-        return AuthResult(
-            provider="agy",
-            state="unknown",
-            checked_at=checked_at,
-            evidence=(
-                "agy nao possui comando de status local comprovado; "
-                "'agy -p ping' bloqueia ate 60s aguardando entrada quando deslogado"
-            ),
-            remediation="asb-agent auth verify --workspace <id> --agent agy",
-        )
+        return replace(driver.parse_auth_status(None), checked_at=checked_at)
 
     try:
         container_running = podman.running(
@@ -163,9 +167,6 @@ def check_status(provider: str, container: str) -> AuthResult:
             remediation=f"asb-agent resume --workspace {ws_hint}",
         )
 
-    # So claude/codex chegam aqui: agy ja retornou acima. Cada um dos dois
-    # ja migrou para seu driver (Tarefa 2).
-    driver = _MIGRATED_DRIVERS[provider]
     command = driver.status_command
     try:
         result = podman.run(
@@ -268,24 +269,13 @@ def status(ws: str, provider: str, *, json_output: bool) -> int:
 # ---------------------------------------------------------------------------
 # LOGIN (Tarefa A3) — a unica metade deste modulo que muta estado.
 # ---------------------------------------------------------------------------
-
-# Comandos de LOGIN, um por fornecedor, verbatim do brief da A3.
 #
-# `claude auth login`: `claude /login` responde "isn't available in this
-# environment" e sai com codigo 0 SEM logar (A1, Claude Code 2.1.263). Um
-# codigo 0 de CLI de fornecedor nunca e prova de que a acao aconteceu — e por
-# isso que todo login aqui termina em `verify_fresh_client`.
-# `codex login --device-auth`: device-auth de proposito. O OAuth padrao abre
-# um servidor de callback numa porta do container que o navegador do host nao
-# alcanca, e trava.
-# `agy`: o binario nu abre a TUI, que autentica no primeiro uso. Nao ha
-# subcomando `login`; `agy login` falha com "unexpected argument".
-#
-# Cada fornecedor migrado para seu driver (Tarefa 2) sai desta tabela: seu
-# comando passa a viver em `<Driver>.login_argv()`.
-LOGIN_COMMANDS: dict[str, tuple[str, ...]] = {
-    "agy": ("agy",),
-}
+# Os comandos de LOGIN em si (`claude auth login`, `codex login
+# --device-auth`, `agy`) moraram aqui ate a Tarefa 2 da decomposicao; agora
+# vivem em `<Driver>.login_argv()`. `claude /login` responde "isn't
+# available in this environment" e sai com codigo 0 SEM logar (A1, Claude
+# Code 2.1.263) — por isso todo login aqui termina em
+# `verify_fresh_client`, nunca confiando no codigo de saida do fornecedor.
 
 _LOGIN_ORDER = ("claude", "codex", "agy")
 
@@ -301,22 +291,6 @@ class LoginBusy(Exception):
             f"ja existe uma sessao de login de {provider} em andamento; "
             f"conclua ou cancele a outra antes de repetir")
         self.provider = provider
-
-
-def login_command(provider: str) -> tuple[str, ...]:
-    """Comando interativo de login de UM fornecedor AINDA nao migrado para
-    seu driver (Tarefa 2). 'all' e rejeitado: quem resolve o conjunto e
-    `login()`, uma chamada por fornecedor.
-
-    `_run_interactive_login` chama `<Driver>.login_argv()` diretamente para
-    os fornecedores ja migrados, entao esta funcao nunca e chamada para
-    eles."""
-    try:
-        return LOGIN_COMMANDS[provider]
-    except KeyError:
-        raise ValueError(
-            f"provedor invalido para login: {provider!r} "
-            "(use 'claude', 'codex' ou 'agy')") from None
 
 
 def _lock_path(provider: str) -> Path:
@@ -437,8 +411,7 @@ def _run_interactive_login(provider: str) -> None:
     """
     name = _client_name("login", provider)
     home = str(Path(os.path.expanduser("~")))
-    driver = _MIGRATED_DRIVERS.get(provider)
-    argv = driver.login_argv() if driver is not None else login_command(provider)
+    argv = driver_for(provider).login_argv()
     try:
         podman.run(*_client_run_args(name))
         # `bash -lc` nao e decoracao: sem shell de login o agy nao esta no
@@ -576,277 +549,15 @@ def login(root: Path, provider: str = "all") -> int:
 # e `unreachable`, nunca `unauthenticated`: rede ruim jamais vira "logout"
 # (motivo do primeiro teste desta tarefa).
 
-# Resposta esperada do prompt sintetico. `_VERIFY_PROMPT` em si so e usado
-# por drivers ja migrados (Tarefa 2: `ClaudeDriver`/`CodexDriver`
-# `.verify_argv()`) e pela checagem de sucesso compartilhada em
-# `AgentDriver._verify_success` (base.py); `agy` NAO usa prompt algum (ver
-# `_verify_command`): `agy -p` bloqueia ate 60s aguardando input quando
-# deslogado (A1), e o subcomando `agy models` prova a mesma coisa sem esse
-# risco.
-_VERIFY_EXPECTED_RESPONSE = "ASB_AUTH_VERIFY_OK"
-
-# `_VERIFY_PROVIDER_TIMEOUT` (o orcamento de tempo da PROPRIA chamada, do
-# lado de DENTRO do container) importado de agents/base.py: mesmo valor
-# usado pelos drivers ja migrados, aqui so para a evidencia de timeout do
-# lado do host (`_VERIFY_EXEC_HOST_TIMEOUT` abaixo) e para o `agy` de
-# `_verify_command`, ainda nao migrado.
+# `_verify_command`, `classify_verification` e os marcadores/regexes de
+# classificacao (rede, limite de taxa, erro de servico, evidencia propria,
+# formato de sucesso do agy) moraram aqui ate a Tarefa 2 da decomposicao;
+# agora vivem em `AgentDriver.classify_verification` (base.py, pipeline
+# compartilhado) e em `<Driver>.verify_argv()`/`auth_evidence_markers`
+# (um por fornecedor). `_VERIFY_EXEC_HOST_TIMEOUT` abaixo e o unico
+# orcamento de tempo que continua aqui: e do lado do HOST, orquestracao,
+# nao regra de fornecedor.
 _VERIFY_EXEC_HOST_TIMEOUT = 70  # segundos, do lado do host
-
-
-def _verify_command(provider: str) -> str:
-    """Script remoto de UMA chamada real, executado via SSH no workspace.
-
-    O script cria e remove um diretorio sintetico explicito em `/tmp`, muda
-    para ele antes de chamar o wrapper configurado e fecha stdin. Assim uma
-    futura mudanca de WORKDIR na imagem nao consegue mover a verificacao para
-    dentro do projeto montado ou para perto de secrets do workspace.
-
-    Cada flag usada aqui foi confirmada na versao fixada, offline, sem
-    tocar rede (`agy --help`): `agy models`. Nenhuma e uma flag imaginada.
-
-    So resolve fornecedores AINDA nao migrados para seu driver (Tarefa 2):
-    `claude` e `codex` ja sairam daqui, para `ClaudeDriver.verify_argv()` e
-    `CodexDriver.verify_argv()`.
-    """
-    setup = (
-        "WORKDIR=$(mktemp -d /tmp/asb-auth-verify.XXXXXX) || exit 70; "
-        "trap 'rm -rf \"$WORKDIR\"' EXIT HUP INT TERM; "
-        "cd \"$WORKDIR\" || exit 70; "
-    )
-    if provider == "agy":
-        # Sem prompt e sem `-p`/`--print`: `agy models` e um subcomando REAL
-        # (nao uma flag inventada) que nao envia mensagem alguma ao modelo.
-        # `--print-timeout` existe na versao fixada mas sua aplicabilidade a
-        # `models` (em vez de `-p`) nao foi confirmada sem uma chamada real
-        # — o orcamento de tempo usa APENAS o `timeout` externo do bash.
-        return (f"{setup}timeout {_VERIFY_PROVIDER_TIMEOUT} "
-                "asb-agy models < /dev/null")
-    raise ValueError(
-        f"provedor invalido para verificacao real: {provider!r} "
-        "(use 'agy'; 'claude' e 'codex' ja migraram para seus drivers)")
-
-
-# Marcadores de rede: aparecem na saida real de qualquer CLI de fornecedor
-# quando a chamada nao alcanca a rede (timeout, DNS, conexao recusada).
-# Nunca uma prova de conta: a REDE falhou, nao a credencial.
-#
-# "timeout" sozinho fica DE FORA de proposito: e um substring que tambem
-# aparece em nomes de flag e linhas de configuracao benignas (ex.:
-# "print-timeout: 5m0s" numa saida de sucesso do agy). "timed out" (duas
-# palavras) e o fragmento que realmente aparece em mensagens de falha real
-# de rede, e nao casa esses falsos positivos — mesmo espirito do R4 do
-# catalogo de regressoes (docs/domains/sandbox/known-regressions.md),
-# ainda que aqui o problema seja um substring de TEXTO, nao de codigo
-# numerico.
-_NETWORK_MARKERS: tuple[str, ...] = (
-    "timed out", "connection refused", "connection reset",
-    "network is unreachable", "temporary failure in name resolution",
-    "could not resolve host", "name or service not known", "econnrefused",
-    "etimedout", "enetunreach",
-)
-
-# Limite de taxa: o fornecedor RESPONDEU, mas recusou a chamada por volume.
-# Nunca apaga credencial, nunca vira `unauthenticated`. O codigo numerico fica
-# SEPARADO dos marcadores de texto: casar "429" como substring tambem casaria
-# uma porta ou contagem de bytes (docs/domains/sandbox/known-regressions.md
-# R4 — "403" em output tambem casou a porta 40300). `_contains_code` exige
-# delimitador dos dois lados.
-_RATE_LIMIT_CODES: tuple[str, ...] = ("429",)
-_RATE_LIMIT_TEXT_MARKERS: tuple[str, ...] = ("rate limit", "too many requests")
-
-# Indisponibilidade do lado do fornecedor (5xx). Mesma regra: nunca vira
-# credencial invalida, e o mesmo cuidado de delimitacao do codigo numerico.
-_SERVICE_ERROR_CODES: tuple[str, ...] = ("500", "502", "503")
-_SERVICE_ERROR_TEXT_MARKERS: tuple[str, ...] = (
-    "bad gateway", "service unavailable", "internal server error", "overloaded",
-)
-
-
-def _contains_code(text: str, codes: tuple[str, ...]) -> bool:
-    """Casa um CODIGO NUMERICO delimitado (nao digito antes nem depois).
-
-    R4 do catalogo de regressoes: `"403" in output` tambem casa a porta
-    40300 ou uma contagem de bytes qualquer que contenha o mesmo digitos em
-    sequencia. `(?<!\\d)CODE(?!\\d)` exige que a ocorrencia nao seja parte de
-    um numero maior — o mesmo espirito do "match delimited" que o catalogo
-    recomenda.
-    """
-    return any(re.search(rf"(?<!\d){code}(?!\d)", text) for code in codes)
-
-# Evidencia PROPRIA de cada fornecedor de que a credencial e invalida. Um
-# 401/403 puro NAO entra aqui de proposito: ele tambem e a assinatura de uma
-# negativa de ACL do proxy, e o brief exige a evidencia do FORNECEDOR — nunca
-# o codigo de um intermediario. Cada fornecedor migrado para seu driver
-# (Tarefa 2) sai desta tabela: seus marcadores passam a viver em
-# `<Driver>.auth_evidence_markers`.
-_AUTH_EVIDENCE_MARKERS: dict[str, tuple[str, ...]] = {
-    "agy": ("authentication required", "authentication failed"),
-}
-
-# Evidencia offline disponivel para `agy models`: o piloto A1 registrou uma
-# lista positiva de 16 linhas com nomes de modelos; o binario fixado 1.1.27
-# contem familias Gemini/Claude/GPT/Flash/Sonnet/Opus. A saida bruta nao foi
-# preservada, portanto nao inventamos colunas ou headers. Este guarda falha
-# fechado: cada linha precisa ter a forma conservadora de um IDENTIFICADOR
-# (um token com separador), conter uma familia conhecida e ao menos um
-# componente numerico de versao/modelo.
-# Prosa que apenas menciona modelos vira `unknown`, assim como qualquer formato
-# futuro diferente — falso negativo seguro em vez de falso `authenticated`.
-_AGY_MODEL_FAMILY = re.compile(
-    r"(?<![a-z0-9])(?:gemini|claude|gpt|flash|sonnet|opus)(?![a-z0-9])",
-    re.IGNORECASE)
-_AGY_MODEL_IDENTIFIER = re.compile(
-    r"[a-z0-9]+(?:[._:/-][a-z0-9]+)+", re.IGNORECASE)
-# O sufixo de unidade e obrigatorio de tolerar: `gpt-oss-120b-medium` aparece
-# na saida real, e exigir digito sem letra depois reprovava uma linha de
-# modelo legitima. Continua exigindo DIGITO: nomes de erro tokenizados
-# (`gemini-unavailable`, `error:gemini`) seguem reprovados, que e a razao de
-# ser desta regra.
-_AGY_MODEL_NUMBER = re.compile(r"(?<![a-z0-9])\d+[a-z]*(?![a-z0-9])",
-                               re.IGNORECASE)
-
-
-def _agy_model_row(line: str) -> bool:
-    """A linha e uma LINHA DE MODELO da lista do agy?
-
-    O formato real (capturado no piloto T2, binario 1.1.27) e
-    `identificador<TAB>rotulo humano`. So a COLUNA DO IDENTIFICADOR decide:
-    o rotulo humano ("Gemini 3.8 Flash (High)") nunca pode sustentar familia
-    nem numero, senao qualquer prosa com nome de modelo viraria credencial
-    valida.
-    """
-    identifier = line.split("\t", 1)[0].strip()
-    return bool(
-        _AGY_MODEL_IDENTIFIER.fullmatch(identifier)
-        and _AGY_MODEL_FAMILY.search(identifier)
-        and _AGY_MODEL_NUMBER.search(identifier))
-
-
-def _agy_models_output_valid(output: str) -> bool:
-    """Continua falhando FECHADO; so reconhece o formato real.
-
-    A guarda anterior exigia que TODA linha fosse um identificador nu. A
-    saida real tem duas colunas separadas por TAB e e precedida da linha de
-    prosa `Fetching available models...`, entao `fullmatch` reprovava as 15
-    linhas e a classificacao SO podia devolver `unknown`, qualquer que fosse
-    o estado da credencial. A saida bruta de A1 nao foi preservada (ver o
-    comentario acima), e a guarda tinha sido escrita contra a lembranca dela.
-
-    `verify_client` monta `combined = f"{stdout}\\n{stderr}"`, entao a prosa
-    de stderr chega DEPOIS das linhas de modelo. Por `podman exec` ela aparece
-    antes. As duas ordens sao toleradas; o que nao e tolerado e prosa NO MEIO.
-
-    O que continua valendo, para nao fabricar um `authenticated` falso:
-    - pelo menos DUAS linhas de modelo;
-    - as linhas de modelo sao CONTIGUAS — prosa entre elas reprova a lista
-      inteira, que e o caso de um erro interrompendo a listagem;
-    - qualquer linha tolerada (antes ou depois do bloco) nunca pode citar uma
-      familia de modelo conhecida.
-    """
-    lines = [line.strip() for line in (output or "").splitlines()
-             if line.strip()]
-    indexes = [i for i, line in enumerate(lines) if _agy_model_row(line)]
-    if len(indexes) < 2:
-        return False
-    first, last = indexes[0], indexes[-1]
-    if indexes != list(range(first, last + 1)):
-        return False
-    return not any(_AGY_MODEL_FAMILY.search(line)
-                   for line in lines[:first] + lines[last + 1:])
-
-
-def classify_verification(provider: str, returncode: int, output: str,
-                          network_ok: bool) -> AuthResult:
-    """Classifica o RESULTADO de uma chamada real (ou a decisao de nao
-    faze-la). Pura: nenhum I/O, nenhum podman, nenhuma chamada.
-
-    Ordem das checagens, deliberada: rede primeiro (nunca vira logout),
-    depois categorias de resposta do fornecedor que TAMBEM nunca podem
-    apagar credencial (limite de taxa, erro de servico), so entao a
-    evidencia PROPRIA de credencial invalida — e so quando o fornecedor
-    fala, nunca a partir de um 401/403 generico que um proxy tambem emite.
-
-    A evidencia devolvida e sempre texto enlatado (categoria), nunca o
-    `output` bruto: e ali que apareceriam tokens e codigos OAuth.
-    """
-    checked_at = _now_iso()
-    text = (output or "").lower()
-
-    if not network_ok:
-        return AuthResult(
-            provider=provider, state="unreachable", checked_at=checked_at,
-            evidence="rede indisponivel antes da chamada; nenhuma chamada "
-                     "foi contada no orcamento",
-            remediation="asb-agent doctor")
-
-    if returncode == 124:
-        return AuthResult(
-            provider=provider, state="unreachable", checked_at=checked_at,
-            evidence="chamada ao fornecedor atingiu o limite interno de "
-                     "tempo (codigo 124); nunca interpretado como logout",
-            remediation="tente novamente mais tarde")
-
-    if any(marker in text for marker in _NETWORK_MARKERS):
-        return AuthResult(
-            provider=provider, state="unreachable", checked_at=checked_at,
-            evidence="chamada ao fornecedor falhou por rede (timeout ou "
-                     "conexao); nunca interpretado como logout",
-            remediation="asb-agent doctor")
-
-    if _contains_code(text, _RATE_LIMIT_CODES) or any(
-            marker in text for marker in _RATE_LIMIT_TEXT_MARKERS):
-        return AuthResult(
-            provider=provider, state="provider_error", checked_at=checked_at,
-            evidence="fornecedor respondeu limite de taxa (429); rate limit "
-                     "nunca apaga a credencial",
-            remediation="aguarde e tente novamente mais tarde; nao repita a "
-                       "chamada agora")
-
-    if _contains_code(text, _SERVICE_ERROR_CODES) or any(
-            marker in text for marker in _SERVICE_ERROR_TEXT_MARKERS):
-        return AuthResult(
-            provider=provider, state="provider_error", checked_at=checked_at,
-            evidence="fornecedor reportou erro de servico (5xx); "
-                     "indisponibilidade nunca apaga a credencial",
-            remediation="tente novamente mais tarde")
-
-    markers = _AUTH_EVIDENCE_MARKERS.get(provider, ())
-    if any(marker in text for marker in markers):
-        return AuthResult(
-            provider=provider, state="unauthenticated", checked_at=checked_at,
-            evidence=f"o proprio fornecedor {provider} reportou credencial "
-                     "invalida (nao um 401/403 generico de proxy)",
-            remediation="asb-agent login")
-
-    normalized = " ".join((output or "").split())
-    success_format = (
-        _agy_models_output_valid(output)
-        if provider == "agy"
-        else normalized == _VERIFY_EXPECTED_RESPONSE
-    )
-    if returncode == 0 and success_format:
-        return AuthResult(
-            provider=provider, state="authenticated", checked_at=checked_at,
-            evidence=("'agy models' retornou uma lista de nomes de modelos "
-                      "com codigo 0; prova acesso a lista, nao geracao"
-                      if provider == "agy" else
-                      "chamada real ao fornecedor respondeu no formato "
-                      "solicitado, com codigo 0"),
-            remediation="")
-
-    if returncode == 0:
-        return AuthResult(
-            provider=provider, state="unknown", checked_at=checked_at,
-            evidence="chamada real retornou codigo 0, mas a resposta nao "
-                     "bateu com o formato esperado (erro de formato, "
-                     "registrado separado de erro de credencial)",
-            remediation=f"asb-agent auth verify --agent {provider}")
-
-    return AuthResult(
-        provider=provider, state="unknown", checked_at=checked_at,
-        evidence=f"saida nao reconhecida da chamada real ao fornecedor "
-                 f"(codigo {returncode})",
-        remediation=f"asb-agent auth verify --agent {provider}")
 
 
 # Orcamento OBSERVAVEL: quantas chamadas REAIS cada fornecedor recebeu
@@ -916,15 +627,11 @@ def verify_client(provider: str, container: str, *,
     probe = readiness.probe_proxy(
         agent_container=container, proxy_container=proxy_container)
     network_ok = probe.state == "healthy"
-    driver = _MIGRATED_DRIVERS.get(provider)
+    driver = driver_for(provider)
     if not network_ok:
-        if driver is not None:
-            synthetic = subprocess.CompletedProcess((), 1, "", "")
-            return replace(
-                driver.classify_verification(synthetic, network_state=False),
-                checked_at=checked_at)
+        synthetic = subprocess.CompletedProcess((), 1, "", "")
         return replace(
-            classify_verification(provider, 1, "", network_ok=False),
+            driver.classify_verification(synthetic, network_state=False),
             checked_at=checked_at)
 
     try:
@@ -986,8 +693,7 @@ def verify_client(provider: str, container: str, *,
                      "fornecedor foi tentada",
             remediation="asb-agent doctor")
 
-    command_argv = driver.verify_argv() if driver is not None \
-        else (_verify_command(provider),)
+    command_argv = driver.verify_argv()
     _spend_call(provider)
     try:
         result = subprocess.run(
@@ -1019,17 +725,8 @@ def verify_client(provider: str, container: str, *,
                      "nunca interpretado como logout",
             remediation="asb-agent doctor")
 
-    if driver is not None:
-        return replace(
-            driver.classify_verification(result, network_state=True),
-            checked_at=checked_at)
-
-    stdout = result.stdout or ""
-    stderr = getattr(result, "stderr", "") or ""
-    combined = f"{stdout}\n{stderr}"
     return replace(
-        classify_verification(provider, result.returncode, combined,
-                              network_ok=True),
+        driver.classify_verification(result, network_state=True),
         checked_at=checked_at)
 
 

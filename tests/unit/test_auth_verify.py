@@ -60,67 +60,36 @@ def _gate_then(result):
     return [_ok(0), result]
 
 
-class TestClassifyVerification(unittest.TestCase):
-    """O teste verbatim do brief: rede ruim nunca vira logout.
+# TestClassifyVerification migrou por completo para
+# tests/unit/test_agent_drivers.py (TestClaudeClassifyVerification /
+# TestCodexClassifyVerification / TestAntigravityClassifyVerification)
+# junto com o proprio pipeline de classificacao, que saiu de `auth.py` para
+# `AgentDriver.classify_verification` (base.py, compartilhado pelos tres
+# drivers) na Tarefa 2. `classify_verification(provider, ...)` nao existe
+# mais como funcao de `auth.py`.
 
-    Os casos que usavam "claude" ou "codex" como fornecedor migraram para
-    tests/unit/test_agent_drivers.py (TestClaudeClassifyVerification /
-    TestCodexClassifyVerification) junto com o proprio pipeline de
-    classificacao, que saiu de `auth.py` para
-    `AgentDriver.classify_verification` (base.py, compartilhado pelos tres
-    drivers) na Tarefa 2. Os casos abaixo continuam usando "agy" porque
-    esse fornecedor ainda nao migrou."""
 
-    def test_timeout_text_is_unreachable_even_when_network_ok_was_true(self):
-        """O texto capturado da CHAMADA (nao a pre-checagem) tambem pode
-        denunciar timeout -- e tem de cair na mesma categoria nao acusatoria."""
-        result = auth.classify_verification(
-            "agy", 124, "operation timed out", network_ok=True)
-        self.assertEqual(result.state, "unreachable")
-        self.assertNotEqual(result.state, "unauthenticated")
-
-    def test_gnu_timeout_returncode_alone_is_never_unauthenticated(self):
-        """Codigo 124 (o `timeout` do coreutils matou o processo) sem texto
-        algum: nao ha evidencia de credencial invalida em lugar nenhum."""
-        result = auth.classify_verification("agy", 124, "", network_ok=True)
-        self.assertEqual(result.state, "unreachable")
-        self.assertNotEqual(result.state, "unauthenticated")
-
-    def test_provider_own_evidence_of_invalid_credential_is_unauthenticated(self):
-        # "claude" e "codex" migraram para test_agent_drivers.py
-        # (TestClaudeClassifyVerification / TestCodexClassifyVerification).
-        result = auth.classify_verification(
-            "agy", 1, "authentication required", network_ok=True)
-        self.assertEqual(result.state, "unauthenticated")
-        self.assertEqual(result.remediation, "asb-agent login")
-
-    def test_the_word_timeout_alone_does_not_false_positive_on_success(self):
-        """Mesmo espirito do R4 (docs/domains/sandbox/known-regressions.md),
-        mas em texto: 'timeout' sozinho aparece em nomes de flag e linhas de
-        configuracao benignas (ex.: uma saida de sucesso do agy que
-        mencione '--print-timeout'). Só 'timed out' (a frase) e evidencia
-        real de falha de rede."""
-        result = auth.classify_verification(
-            "agy", 0, "print-timeout: 5m0s", network_ok=True)
-        self.assertEqual(result.state, "unknown")
-        self.assertNotEqual(result.state, "provider_error")
-        self.assertNotEqual(result.state, "unreachable")
+class TestClassifyVerificationAggregateGuard(unittest.TestCase):
+    """Guarda cross-cutting (orquestracao): cada estado que QUALQUER driver
+    pode produzir tem de mapear para 0 (so authenticated), 1 ou 2 no
+    agregado de `auth.py`, nunca cair fora do conjunto que
+    `_aggregate_exit_code` conhece. Exercitado via `auth.DRIVERS`, nao via
+    uma funcao de classificacao propria de `auth.py` (que nao existe mais)."""
 
     def test_every_state_produced_fits_the_deny_by_default_aggregate(self):
-        """Guarda contra estado inventado: cada estado que classify_verification
-        pode produzir tem de mapear para 0 (so authenticated), 1 ou 2 no
-        agregado, nunca cair fora do conjunto que _aggregate_exit_code conhece."""
         scenarios = [
             ("claude", 1, "connection timed out", False),   # unreachable
             ("claude", 1, "HTTP 429", True),                 # provider_error
-            ("claude", 1, "503 Service Unavailable", True),  # provider_error
+            ("codex", 1, "503 Service Unavailable", True),   # provider_error
             ("codex", 1, "Not logged in", True),              # unauthenticated
             ("claude", 0, "ASB_AUTH_VERIFY_OK", True),        # authenticated
-            ("claude", 1, "algo inesperado", True),           # unknown
+            ("agy", 1, "algo inesperado", True),               # unknown
         ]
         for provider, rc, output, network_ok in scenarios:
             with self.subTest(output=output):
-                result = auth.classify_verification(provider, rc, output, network_ok)
+                completed = subprocess.CompletedProcess((), rc, output, "")
+                result = auth.DRIVERS[provider].classify_verification(
+                    completed, network_state=network_ok)
                 code = auth._aggregate_exit_code([result])
                 self.assertIn(code, (0, 1, 2))
                 if result.state == "authenticated":
@@ -321,180 +290,22 @@ class TestVerifyClientAgy(_SSHInfraCase):
 
             self.assertEqual(result.state, "unknown")
 
-    def test_classify_agy_exit_zero_requires_a_model_list(self):
-        result = auth.classify_verification(
-            "agy", 0, "command completed", network_ok=True)
-        self.assertEqual(result.state, "unknown")
-
-    def test_agy_auth_marker_outranks_exit_zero(self):
-        result = auth.classify_verification(
-            "agy", 0, "authentication required", network_ok=True)
-        self.assertEqual(result.state, "unauthenticated")
-
-    def test_agy_prose_with_model_families_is_not_a_model_list(self):
-        result = auth.classify_verification(
-            "agy", 0,
-            "Gemini is temporarily unavailable\n"
-            "Claude is temporarily unavailable",
-            network_ok=True)
-        self.assertEqual(result.state, "unknown")
-
-    def test_every_agy_list_line_must_be_a_model_identifier(self):
-        result = auth.classify_verification(
-            "agy", 0,
-            "gemini-2.5-pro\nClaude is temporarily unavailable",
-            network_ok=True)
-        self.assertEqual(result.state, "unknown")
-
-    def test_agy_tokenized_error_names_are_not_model_identifiers(self):
-        outputs = (
-            "gemini-unavailable\nclaude-unavailable",
-            "error:gemini\nerror:claude",
-        )
-        for output in outputs:
-            with self.subTest(output=output):
-                result = auth.classify_verification(
-                    "agy", 0, output, network_ok=True)
-                self.assertEqual(result.state, "unknown")
-
-    def test_versioned_identifiers_without_known_family_are_unknown(self):
-        result = auth.classify_verification(
-            "agy", 0,
-            "modelo-2.5-valido\noutro-modelo-1.0",
-            network_ok=True)
-        self.assertEqual(result.state, "unknown")
-
-    def test_versioned_known_model_identifiers_remain_authenticated(self):
-        result = auth.classify_verification(
-            "agy", 0,
-            "gemini-2.5-pro\nclaude-4-sonnet",
-            network_ok=True)
-        self.assertEqual(result.state, "authenticated")
+    # test_classify_agy_exit_zero_requires_a_model_list,
+    # test_agy_auth_marker_outranks_exit_zero,
+    # test_agy_prose_with_model_families_is_not_a_model_list,
+    # test_every_agy_list_line_must_be_a_model_identifier,
+    # test_agy_tokenized_error_names_are_not_model_identifiers,
+    # test_versioned_identifiers_without_known_family_are_unknown e
+    # test_versioned_known_model_identifiers_remain_authenticated migraram
+    # para tests/unit/test_agent_drivers.py
+    # (TestAntigravityClassifyVerification): chamavam
+    # `auth.classify_verification` diretamente, que nao existe mais.
 
 
-# Saida REAL de `asb-agy models` capturada no piloto T2 em 2026-09-16, com o
-# binario fixado 1.1.27, dentro do container do workspace. A1 nao preservou a
-# saida bruta e a guarda foi escrita contra uma lembranca dela; e por isso que
-# a classificacao so podia devolver `unknown`. O formato e
-# `identificador<TAB>rotulo humano`, precedido de uma linha de prosa.
-# Nomes de modelo nao sao credencial: preservados aqui de proposito, para que
-# ninguem precise gastar outra chamada real so para reaprender o formato.
-# `verify_client` monta `combined = f"{stdout}\n{stderr}"`, entao a prosa de
-# stderr chega DEPOIS das linhas de modelo, nao antes. Medido: stdout traz so
-# as linhas `identificador<TAB>rotulo`; stderr traz so
-# `Fetching available models...`.
-AGY_MODELS_REAL_STDOUT = (
-    "gemini-3.8-flash-high\tGemini 3.8 Flash (High)\n"
-    "gemini-3.8-flash-medium\tGemini 3.8 Flash (Medium)\n"
-    "gemini-3.8-flash-low\tGemini 3.8 Flash (Low)\n"
-    "gemini-3.1-pro-high\tGemini 3.1 Pro (High)\n"
-    "claude-sonnet-4-6\tClaude Sonnet 4.6 (Thinking)\n"
-    "claude-opus-4-6-thinking\tClaude Opus 4.6 (Thinking)\n"
-    "gpt-oss-120b-medium\tGPT-OSS 120B (Medium)\n"
-)
-AGY_MODELS_REAL_STDERR = "Fetching available models...\n"
-AGY_MODELS_REAL_OUTPUT = (
-    f"{AGY_MODELS_REAL_STDOUT}\n{AGY_MODELS_REAL_STDERR}")
-
-
-class TestAgyRealModelListFormat(unittest.TestCase):
-    """A saida real tem cabecalho de prosa e duas colunas separadas por TAB.
-
-    A guarda continua fechando: o que a torna valida e a COLUNA DO
-    IDENTIFICADOR, nunca o rotulo humano, e qualquer linha nao conforme
-    DEPOIS da primeira linha de modelo reprova a lista inteira.
-    """
-
-    def test_saida_real_do_agy_e_classificada_como_autenticada(self):
-        result = auth.classify_verification(
-            "agy", 0, AGY_MODELS_REAL_OUTPUT, network_ok=True)
-        self.assertEqual(result.state, "authenticated")
-
-    def test_cabecalho_de_prosa_sozinho_nao_autentica(self):
-        result = auth.classify_verification(
-            "agy", 0, "Fetching available models...", network_ok=True)
-        self.assertEqual(result.state, "unknown")
-
-    def test_linha_nao_conforme_depois_das_linhas_de_modelo_reprova(self):
-        result = auth.classify_verification(
-            "agy", 0,
-            "gemini-3.8-flash-high\tGemini 3.8 Flash (High)\n"
-            "claude-sonnet-4-6\tClaude Sonnet 4.6\n"
-            "Gemini is temporarily unavailable",
-            network_ok=True)
-        self.assertEqual(result.state, "unknown")
-
-    def test_rotulo_humano_nao_pode_sustentar_familia_nem_versao(self):
-        # O identificador nao tem familia conhecida nem numero; so o rotulo
-        # tem. Se a guarda olhasse a linha inteira, isto passaria.
-        result = auth.classify_verification(
-            "agy", 0,
-            "modelo-desconhecido\tGemini 3.8 Flash (High)\n"
-            "outro-desconhecido\tClaude Sonnet 4.6\n",
-            network_ok=True)
-        self.assertEqual(result.state, "unknown")
-
-    def test_uma_unica_linha_de_modelo_nao_e_lista(self):
-        result = auth.classify_verification(
-            "agy", 0,
-            "gemini-3.8-flash-high\tGemini 3.8 Flash (High)\n"
-            "Fetching available models...",
-            network_ok=True)
-        self.assertEqual(result.state, "unknown")
-
-    def test_prosa_neutra_de_stderr_depois_das_linhas_e_tolerada(self):
-        # Ordem REAL: stdout (linhas de modelo) e so entao stderr (prosa).
-        result = auth.classify_verification(
-            "agy", 0,
-            "gemini-3.8-flash-high\tGemini 3.8 Flash (High)\n"
-            "claude-sonnet-4-6\tClaude Sonnet 4.6\n"
-            "\nFetching available models...\n",
-            network_ok=True)
-        self.assertEqual(result.state, "authenticated")
-
-    def test_linha_nao_conforme_ENTRE_linhas_de_modelo_reprova(self):
-        # Prosa no MEIO da lista continua reprovando: e o caso de um erro
-        # interrompendo a listagem.
-        result = auth.classify_verification(
-            "agy", 0,
-            "gemini-3.8-flash-high\tGemini 3.8 Flash (High)\n"
-            "algo deu errado no meio\n"
-            "claude-sonnet-4-6\tClaude Sonnet 4.6\n",
-            network_ok=True)
-        self.assertEqual(result.state, "unknown")
-
-    def test_identificador_com_sufixo_de_unidade_conta_como_versao(self):
-        # `gpt-oss-120b-medium` existe na saida real. O numero vem colado a
-        # uma unidade ("120b"), e a guarda original exigia digito sem letra
-        # depois — reprovando uma linha de modelo legitima e, por tabela, a
-        # lista inteira.
-        self.assertTrue(auth._agy_model_row("gpt-oss-120b-medium"))
-
-    def test_identificador_sem_digito_algum_continua_reprovado(self):
-        # A razao de ser da regra de numero: nomes de erro tokenizados.
-        for line in ("gemini-unavailable", "claude-unavailable",
-                     "error:gemini"):
-            with self.subTest(line=line):
-                self.assertFalse(auth._agy_model_row(line))
-
-    def test_cabecalho_que_cita_familia_de_modelo_reprova_a_lista(self):
-        # Um cabecalho tolerado e prosa neutra ("Fetching available
-        # models..."). Prosa que cita familia conhecida antes das linhas de
-        # modelo e justamente o caso que poderia mascarar um erro.
-        result = auth.classify_verification(
-            "agy", 0,
-            "Gemini is temporarily unavailable\n"
-            "gemini-3.8-flash-high\tGemini 3.8 Flash (High)\n"
-            "claude-sonnet-4-6\tClaude Sonnet 4.6\n",
-            network_ok=True)
-        self.assertEqual(result.state, "unknown")
-
-    def test_marcador_de_credencial_ainda_domina_a_lista_valida(self):
-        result = auth.classify_verification(
-            "agy", 0,
-            AGY_MODELS_REAL_OUTPUT + "authentication required\n",
-            network_ok=True)
-        self.assertEqual(result.state, "unauthenticated")
+# TestAgyRealModelListFormat (e as constantes AGY_MODELS_REAL_*) migraram
+# para tests/unit/test_agent_drivers.py (TestAntigravityRealModelListFormat)
+# junto com `_agy_model_row`/`_agy_models_output_valid`, que saem de
+# `auth.py` para `cli/asb/agents/antigravity.py` na Tarefa 2.
 
 
 class TestVerifyClientFormatEvidence(_SSHInfraCase):
@@ -724,13 +535,11 @@ class TestVerifyClientCommands(_SSHInfraCase):
         self.assertIn("asb-codex exec", command)
         self.assertIn("/dev/null", command)
 
-    def test_no_verify_command_uses_the_dead_slash_login(self):
-        # "claude" e "codex" migraram para test_agent_drivers.py
-        # (TestClaudeVerifyArgv / TestCodexVerifyArgv).
-        self.assertNotIn("/login", auth._verify_command("agy"))
-
-    def test_no_verify_command_uses_a_version_query(self):
-        self.assertNotIn("--version", auth._verify_command("agy"))
+    # test_no_verify_command_uses_the_dead_slash_login /
+    # test_no_verify_command_uses_a_version_query migraram para
+    # tests/unit/test_agent_drivers.py (TestClaudeVerifyArgv /
+    # TestCodexVerifyArgv / TestAntigravityVerifyArgv):
+    # `auth._verify_command` nao existe mais.
 
     def test_ssh_targets_the_host_user(self):
         with mock.patch.object(auth.podman, "running", return_value=True), \
@@ -895,17 +704,13 @@ class TestVerifyCommand(unittest.TestCase):
         oauth_code = "oauth_code=4/0AeaYSHD-FIXTURE-NUNCA-REAL"
         fixture_secrets = f"{token} {bearer} {oauth_code}"
 
-        def leaking_call(provider, returncode, output, network_ok):
-            # Simula o que aconteceria SE classify_verification interpolasse
-            # a saida bruta capturada -- o proprio guarda deste teste.
-            return AuthResult(provider, "unknown", "t",
-                              f"saida nao reconhecida (codigo {returncode})", "")
-
         def fake_verify_client(provider, container, *, proxy_container=None):
-            # Chama a implementacao REAL de classify_verification para provar
-            # que ela, de fato, nunca ecoa o fixture na evidencia.
-            return auth.classify_verification(
-                provider, 1, fixture_secrets, network_ok=True)
+            # Chama a implementacao REAL de classify_verification (via o
+            # driver do fornecedor) para provar que ela, de fato, nunca
+            # ecoa o fixture na evidencia.
+            completed = subprocess.CompletedProcess((), 1, fixture_secrets, "")
+            return auth.DRIVERS[provider].classify_verification(
+                completed, network_state=True)
 
         out = io.StringIO()
         with mock.patch("asb.auth.verify_client", side_effect=fake_verify_client), \

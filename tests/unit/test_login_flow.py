@@ -175,34 +175,30 @@ def prepare_workspace_harness(ws: str):
         yield captured
 
 
-class TestLoginCommandTable(unittest.TestCase):
-    """O contrato exato dos comandos de login, verbatim do brief da A3.
+# TestLoginCommandTable migrou por completo para
+# tests/unit/test_agent_drivers.py (TestClaudeLoginArgv / TestCodexLoginArgv
+# / TestAntigravityLoginArgv) junto com os proprios comandos de login, que
+# saem de `auth.py` para `<Driver>.login_argv()` na Tarefa 2.
+# `login_command()`/`LOGIN_COMMANDS` nao existem mais.
 
-    "claude" e "codex" migraram para `<Driver>.login_argv()` (Tarefa 2); ver
-    tests/unit/test_agent_drivers.py::TestClaudeLoginArgv /
-    TestCodexLoginArgv. `login_command()` so resolve fornecedores AINDA nao
-    migrados — hoje, so `agy`."""
 
-    def test_login_command_per_provider(self):
-        self.assertEqual(auth.login_command("agy"), ("agy",))
+class TestDriverFor(unittest.TestCase):
+    """`driver_for` e o unico ponto de despacho publico de `auth.py` para
+    os tres drivers (Tarefa 2); `DRIVERS` cobre exatamente claude/codex/agy."""
 
-    def test_login_command_rejects_all_and_unknown(self):
+    def test_driver_for_resolves_each_provider(self):
+        self.assertEqual(auth.driver_for("claude").provider, "claude")
+        self.assertEqual(auth.driver_for("codex").provider, "codex")
+        self.assertEqual(auth.driver_for("agy").provider, "agy")
+
+    def test_driver_for_rejects_all_and_unknown(self):
         for bad in ("all", "gemini", ""):
             with self.subTest(provider=bad):
                 with self.assertRaises(ValueError):
-                    auth.login_command(bad)
+                    auth.driver_for(bad)
 
-    def test_no_login_command_is_the_dead_slash_login(self):
-        """`claude /login` sai com 0 SEM logar (A1): um falso verde que manda
-        o operador embora achando que a credencial foi gravada."""
-        self.assertNotIn("/login", auth.login_command("agy"))
-
-    def test_no_login_command_is_a_version_query(self):
-        """`--version` responde 0 com o agente deslogado."""
-        self.assertNotIn("--version", auth.login_command("agy"))
-
-    def test_there_is_one_command_for_each_not_yet_migrated_provider(self):
-        self.assertEqual(set(auth.LOGIN_COMMANDS), {"agy"})
+    def test_drivers_covers_exactly_the_three_providers(self):
+        self.assertEqual(set(auth.DRIVERS), {"claude", "codex", "agy"})
 
 
 class TestLoginSelection(unittest.TestCase):

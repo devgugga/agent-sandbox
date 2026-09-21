@@ -27,7 +27,7 @@ from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "cli"))
 
-from asb.agents.antigravity import AntigravityDriver  # noqa: E402
+from asb.agents.antigravity import AntigravityDriver, _agy_model_row  # noqa: E402
 from asb.agents.base import (  # noqa: E402
     AgentAvailability, AuthResult, LaunchCommand, Lifetime, ResumeUnsupported,
     SessionEvidence,
@@ -1442,6 +1442,297 @@ class TestCodexClassifyVerification(unittest.TestCase):
             _completed(1, "connection timed out"), network_state=False)
         self.assertEqual(result.state, "unreachable")
         self.assertNotEqual(result.remediation, "login")
+
+
+# ---------------------------------------------------------------------------
+# Autenticacao — Antigravity/agy (Tarefa 2, commit 3). Exemplos verbatim
+# herdados de tests/unit/test_auth_verify.py (TestClassifyVerification,
+# TestVerifyClientAgy, TestAgyRealModelListFormat) e
+# tests/unit/test_login_flow.py (TestLoginCommandTable).
+# ---------------------------------------------------------------------------
+
+
+class TestAntigravityParseAuthStatus(unittest.TestCase):
+    """Ao contrario de claude/codex, `agy` nao tem comando de status local
+    comprovado (A1: `agy -p ping` bloqueia ate 60s aguardando entrada
+    quando deslogado). `status_command` fica `None` e `parse_auth_status`
+    sempre devolve o mesmo resultado enlatado `unknown`, ignorando
+    `completed` -- nao ha saida de fornecedor alguma para interpretar."""
+
+    def test_status_command_is_none(self):
+        # Sinal para o chamador (`auth.check_status`) nunca tocar podman.
+        self.assertIsNone(AntigravityDriver.status_command)
+
+    def test_parse_auth_status_is_always_unknown(self):
+        result = AntigravityDriver().parse_auth_status()
+        self.assertEqual(result.state, "unknown")
+        self.assertEqual(result.provider, "agy")
+
+    def test_parse_auth_status_never_touches_podman(self):
+        # Documenta a garantia por construcao: nao ha parametro de podman
+        # nem de container -- o metodo nao tem como tocar podman.
+        result = AntigravityDriver().parse_auth_status(None)
+        self.assertIn("verify", result.remediation.lower())
+        self.assertEqual(result.remediation,
+                         "asb-agent auth verify --workspace <id> --agent agy")
+
+    def test_parse_auth_status_ignores_a_completed_argument(self):
+        # `completed` e aceito por simetria com claude/codex, mas ignorado:
+        # nao ha saida de fornecedor para interpretar.
+        real = AntigravityDriver().parse_auth_status(
+            _completed(0, '{"loggedIn": true}'))
+        self.assertEqual(real.state, "unknown")
+
+
+class TestAntigravityLoginArgv(unittest.TestCase):
+    def test_login_argv(self):
+        self.assertEqual(AntigravityDriver().login_argv(), ("agy",))
+
+    def test_login_argv_is_not_the_dead_slash_login(self):
+        """`agy` nao tem subcomando `login`; o binario nu abre a TUI, que
+        autentica no primeiro uso."""
+        self.assertNotIn("/login", AntigravityDriver().login_argv())
+
+    def test_login_argv_is_not_a_version_query(self):
+        self.assertNotIn("--version", AntigravityDriver().login_argv())
+
+
+class TestAntigravityVerifyArgv(unittest.TestCase):
+    def test_verify_argv_never_sends_a_prompt(self):
+        argv = AntigravityDriver().verify_argv()
+        self.assertEqual(len(argv), 1)
+        command = argv[0]
+        self.assertIn("asb-agy models", command)
+        self.assertNotIn(" -p ", f" {command} ")
+        self.assertNotIn("--print", command)
+
+    def test_verify_argv_closes_stdin(self):
+        self.assertIn("/dev/null", AntigravityDriver().verify_argv()[0])
+
+    def test_verify_argv_is_not_the_dead_slash_login(self):
+        self.assertNotIn("/login", AntigravityDriver().verify_argv()[0])
+
+    def test_verify_argv_is_not_a_version_query(self):
+        self.assertNotIn("--version", AntigravityDriver().verify_argv()[0])
+
+    def test_verify_argv_uses_explicit_synthetic_workdir(self):
+        command = AntigravityDriver().verify_argv()[0]
+        self.assertIn("mktemp -d", command)
+        self.assertIn("cd ", command)
+
+
+class TestAntigravityClassifyVerification(unittest.TestCase):
+    """Casos verbatim de tests/unit/test_auth_verify.py que usavam "agy"
+    como fornecedor (TestClassifyVerification, TestVerifyClientAgy): rede,
+    limite de taxa e erro de servico sao pipeline COMPARTILHADO (base.py);
+    a evidencia propria e o formato de sucesso (LISTA de modelos, nao uma
+    frase fixa) sao dados/override deste driver."""
+
+    def test_timeout_text_is_unreachable_even_when_network_ok_was_true(self):
+        result = AntigravityDriver().classify_verification(
+            _completed(124, "operation timed out"), network_state=True)
+        self.assertEqual(result.state, "unreachable")
+        self.assertNotEqual(result.state, "unauthenticated")
+
+    def test_gnu_timeout_returncode_alone_is_never_unauthenticated(self):
+        result = AntigravityDriver().classify_verification(
+            _completed(124, ""), network_state=True)
+        self.assertEqual(result.state, "unreachable")
+        self.assertNotEqual(result.state, "unauthenticated")
+
+    def test_provider_own_evidence_of_invalid_credential_is_unauthenticated(self):
+        result = AntigravityDriver().classify_verification(
+            _completed(1, "authentication required"), network_state=True)
+        self.assertEqual(result.state, "unauthenticated")
+        self.assertEqual(result.remediation, "asb-agent login")
+
+    def test_the_word_timeout_alone_does_not_false_positive_on_success(self):
+        """Mesmo espirito do R4 (docs/domains/sandbox/known-regressions.md):
+        'timeout' sozinho aparece em nomes de flag e linhas de configuracao
+        benignas (ex.: uma saida de sucesso do agy que mencione
+        '--print-timeout'). So 'timed out' (a frase) e evidencia real de
+        falha de rede."""
+        result = AntigravityDriver().classify_verification(
+            _completed(0, "print-timeout: 5m0s"), network_state=True)
+        self.assertEqual(result.state, "unknown")
+        self.assertNotEqual(result.state, "provider_error")
+        self.assertNotEqual(result.state, "unreachable")
+
+    def test_bad_network_never_becomes_unauthenticated(self):
+        result = AntigravityDriver().classify_verification(
+            _completed(1, "connection timed out"), network_state=False)
+        self.assertEqual(result.state, "unreachable")
+        self.assertNotEqual(result.remediation, "login")
+
+    def test_classify_agy_exit_zero_requires_a_model_list(self):
+        result = AntigravityDriver().classify_verification(
+            _completed(0, "command completed"), network_state=True)
+        self.assertEqual(result.state, "unknown")
+
+    def test_agy_auth_marker_outranks_exit_zero(self):
+        result = AntigravityDriver().classify_verification(
+            _completed(0, "authentication required"), network_state=True)
+        self.assertEqual(result.state, "unauthenticated")
+
+    def test_agy_prose_with_model_families_is_not_a_model_list(self):
+        result = AntigravityDriver().classify_verification(
+            _completed(0, "Gemini is temporarily unavailable\n"
+                          "Claude is temporarily unavailable"),
+            network_state=True)
+        self.assertEqual(result.state, "unknown")
+
+    def test_every_agy_list_line_must_be_a_model_identifier(self):
+        result = AntigravityDriver().classify_verification(
+            _completed(0, "gemini-2.5-pro\nClaude is temporarily unavailable"),
+            network_state=True)
+        self.assertEqual(result.state, "unknown")
+
+    def test_agy_tokenized_error_names_are_not_model_identifiers(self):
+        outputs = (
+            "gemini-unavailable\nclaude-unavailable",
+            "error:gemini\nerror:claude",
+        )
+        for output in outputs:
+            with self.subTest(output=output):
+                result = AntigravityDriver().classify_verification(
+                    _completed(0, output), network_state=True)
+                self.assertEqual(result.state, "unknown")
+
+    def test_versioned_identifiers_without_known_family_are_unknown(self):
+        result = AntigravityDriver().classify_verification(
+            _completed(0, "modelo-2.5-valido\noutro-modelo-1.0"),
+            network_state=True)
+        self.assertEqual(result.state, "unknown")
+
+    def test_versioned_known_model_identifiers_remain_authenticated(self):
+        result = AntigravityDriver().classify_verification(
+            _completed(0, "gemini-2.5-pro\nclaude-4-sonnet"),
+            network_state=True)
+        self.assertEqual(result.state, "authenticated")
+
+
+# Saida REAL de `asb-agy models` capturada no piloto T2 em 2026-09-16, com o
+# binario fixado 1.1.27, dentro do container do workspace. A1 nao preservou a
+# saida bruta e a guarda foi escrita contra uma lembranca dela; e por isso que
+# a classificacao so podia devolver `unknown`. O formato e
+# `identificador<TAB>rotulo humano`, precedido de uma linha de prosa.
+# Nomes de modelo nao sao credencial: preservados aqui de proposito, para que
+# ninguem precise gastar outra chamada real so para reaprender o formato.
+# `classify_verification` monta `combined = f"{stdout}\n{stderr}"`, entao a
+# prosa de stderr chega DEPOIS das linhas de modelo, nao antes. Medido:
+# stdout traz so as linhas `identificador<TAB>rotulo`; stderr traz so
+# `Fetching available models...`.
+AGY_MODELS_REAL_STDOUT = (
+    "gemini-3.8-flash-high\tGemini 3.8 Flash (High)\n"
+    "gemini-3.8-flash-medium\tGemini 3.8 Flash (Medium)\n"
+    "gemini-3.8-flash-low\tGemini 3.8 Flash (Low)\n"
+    "gemini-3.1-pro-high\tGemini 3.1 Pro (High)\n"
+    "claude-sonnet-4-6\tClaude Sonnet 4.6 (Thinking)\n"
+    "claude-opus-4-6-thinking\tClaude Opus 4.6 (Thinking)\n"
+    "gpt-oss-120b-medium\tGPT-OSS 120B (Medium)\n"
+)
+AGY_MODELS_REAL_STDERR = "Fetching available models...\n"
+AGY_MODELS_REAL_OUTPUT = (
+    f"{AGY_MODELS_REAL_STDOUT}\n{AGY_MODELS_REAL_STDERR}")
+
+
+class TestAntigravityRealModelListFormat(unittest.TestCase):
+    """A saida real tem cabecalho de prosa e duas colunas separadas por TAB.
+
+    A guarda continua fechando: o que a torna valida e a COLUNA DO
+    IDENTIFICADOR, nunca o rotulo humano, e qualquer linha nao conforme
+    DEPOIS da primeira linha de modelo reprova a lista inteira.
+    """
+
+    def test_saida_real_do_agy_e_classificada_como_autenticada(self):
+        result = AntigravityDriver().classify_verification(
+            _completed(0, AGY_MODELS_REAL_OUTPUT), network_state=True)
+        self.assertEqual(result.state, "authenticated")
+
+    def test_cabecalho_de_prosa_sozinho_nao_autentica(self):
+        result = AntigravityDriver().classify_verification(
+            _completed(0, "Fetching available models..."), network_state=True)
+        self.assertEqual(result.state, "unknown")
+
+    def test_linha_nao_conforme_depois_das_linhas_de_modelo_reprova(self):
+        result = AntigravityDriver().classify_verification(
+            _completed(0,
+                "gemini-3.8-flash-high\tGemini 3.8 Flash (High)\n"
+                "claude-sonnet-4-6\tClaude Sonnet 4.6\n"
+                "Gemini is temporarily unavailable"),
+            network_state=True)
+        self.assertEqual(result.state, "unknown")
+
+    def test_rotulo_humano_nao_pode_sustentar_familia_nem_versao(self):
+        # O identificador nao tem familia conhecida nem numero; so o rotulo
+        # tem. Se a guarda olhasse a linha inteira, isto passaria.
+        result = AntigravityDriver().classify_verification(
+            _completed(0,
+                "modelo-desconhecido\tGemini 3.8 Flash (High)\n"
+                "outro-desconhecido\tClaude Sonnet 4.6\n"),
+            network_state=True)
+        self.assertEqual(result.state, "unknown")
+
+    def test_uma_unica_linha_de_modelo_nao_e_lista(self):
+        result = AntigravityDriver().classify_verification(
+            _completed(0,
+                "gemini-3.8-flash-high\tGemini 3.8 Flash (High)\n"
+                "Fetching available models..."),
+            network_state=True)
+        self.assertEqual(result.state, "unknown")
+
+    def test_prosa_neutra_de_stderr_depois_das_linhas_e_tolerada(self):
+        # Ordem REAL: stdout (linhas de modelo) e so entao stderr (prosa).
+        result = AntigravityDriver().classify_verification(
+            _completed(0,
+                "gemini-3.8-flash-high\tGemini 3.8 Flash (High)\n"
+                "claude-sonnet-4-6\tClaude Sonnet 4.6\n"
+                "\nFetching available models...\n"),
+            network_state=True)
+        self.assertEqual(result.state, "authenticated")
+
+    def test_linha_nao_conforme_ENTRE_linhas_de_modelo_reprova(self):
+        # Prosa no MEIO da lista continua reprovando: e o caso de um erro
+        # interrompendo a listagem.
+        result = AntigravityDriver().classify_verification(
+            _completed(0,
+                "gemini-3.8-flash-high\tGemini 3.8 Flash (High)\n"
+                "algo deu errado no meio\n"
+                "claude-sonnet-4-6\tClaude Sonnet 4.6\n"),
+            network_state=True)
+        self.assertEqual(result.state, "unknown")
+
+    def test_identificador_com_sufixo_de_unidade_conta_como_versao(self):
+        # `gpt-oss-120b-medium` existe na saida real. O numero vem colado a
+        # uma unidade ("120b"), e a guarda original exigia digito sem letra
+        # depois — reprovando uma linha de modelo legitima e, por tabela, a
+        # lista inteira.
+        self.assertTrue(_agy_model_row("gpt-oss-120b-medium"))
+
+    def test_identificador_sem_digito_algum_continua_reprovado(self):
+        # A razao de ser da regra de numero: nomes de erro tokenizados.
+        for line in ("gemini-unavailable", "claude-unavailable",
+                     "error:gemini"):
+            with self.subTest(line=line):
+                self.assertFalse(_agy_model_row(line))
+
+    def test_cabecalho_que_cita_familia_de_modelo_reprova_a_lista(self):
+        # Um cabecalho tolerado e prosa neutra ("Fetching available
+        # models..."). Prosa que cita familia conhecida antes das linhas de
+        # modelo e justamente o caso que poderia mascarar um erro.
+        result = AntigravityDriver().classify_verification(
+            _completed(0,
+                "Gemini is temporarily unavailable\n"
+                "gemini-3.8-flash-high\tGemini 3.8 Flash (High)\n"
+                "claude-sonnet-4-6\tClaude Sonnet 4.6\n"),
+            network_state=True)
+        self.assertEqual(result.state, "unknown")
+
+    def test_marcador_de_credencial_ainda_domina_a_lista_valida(self):
+        result = AntigravityDriver().classify_verification(
+            _completed(0, AGY_MODELS_REAL_OUTPUT + "authentication required\n"),
+            network_state=True)
+        self.assertEqual(result.state, "unauthenticated")
 
 
 if __name__ == "__main__":

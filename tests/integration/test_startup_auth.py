@@ -24,6 +24,9 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "cli"))
 sys.path.insert(0, str(ROOT))
 from asb import auth, keyring, lifecycle, readiness  # noqa: E402
+from asb.agents.antigravity import AntigravityDriver  # noqa: E402
+from asb.agents.claude import ClaudeDriver  # noqa: E402
+from asb.agents.codex import CodexDriver  # noqa: E402
 from asb.workspace import layout_for  # noqa: E402
 from tests.integration.sandbox_fixture import IsolationError, SandboxFixture  # noqa: E402
 
@@ -232,16 +235,24 @@ def pilot_cli(state: Path, args: list[str]) -> int:
             # Real failure AFTER repair: readiness must detect the stopped service.
             run("podman", "stop", "-t", "1", cfg["env"]["ASB_KEYRING_CONTAINER"], check=True)
 
-    def synthetic_verify(provider):
-        if provider != "codex":
-            raise AssertionError("Only the synthetic Codex edge is allowed")
-        return "printf 'attempt\\n' >> /tmp/t1-verify-attempts; printf 'ASB_AUTH_VERIFY_OK\\n'"
+    def synthetic_verify(self):
+        return ("printf 'attempt\\n' >> /tmp/t1-verify-attempts; "
+                "printf 'ASB_AUTH_VERIFY_OK\\n'",)
+
+    def only_codex_edge_allowed(self):
+        raise AssertionError("Only the synthetic Codex edge is allowed")
 
     with contextlib.ExitStack() as stack:
         stack.enter_context(mock.patch.object(os.path, "expanduser", side_effect=lambda p: cfg["home"] if p == "~" else real_expanduser(p)))
         mock_host = stack.enter_context(mock.patch.object(readiness, "probe_host", side_effect=lambda **kw: real_host(cfg["host_target"], **kw)))
         stack.enter_context(mock.patch.object(lifecycle, "ensure_keyring_service", side_effect=ensure_then_fault))
-        stack.enter_context(mock.patch.object(auth, "_verify_command", side_effect=synthetic_verify))
+        # `auth._verify_command` mudou para `<Driver>.verify_argv()` na
+        # Tarefa 2 da decomposicao de auth.py: cada driver e patcheado
+        # individualmente, preservando a garantia de que so o edge
+        # sintetico do Codex e exercitado neste pilot.
+        stack.enter_context(mock.patch.object(CodexDriver, "verify_argv", synthetic_verify))
+        stack.enter_context(mock.patch.object(ClaudeDriver, "verify_argv", only_codex_edge_allowed))
+        stack.enter_context(mock.patch.object(AntigravityDriver, "verify_argv", only_codex_edge_allowed))
         stack.enter_context(mock.patch.object(subprocess, "run", side_effect=traced))
         if args == ["setup-keyring"]:
             lifecycle.ensure_keyring_service(lifecycle.ensure_runtime(ROOT))

@@ -9,11 +9,18 @@
 
 ## 1. Matriz de contratos
 
-| provider | version | launch | resume | session-id-source | decision |
+| provider | version (HOST, observado 2026-09-17) | launch | resume | session-id-source | decision |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **codex** | `codex-cli 0.154.0` (via `codex --version`) | `codex --help` lista `codex [OPTIONS] [PROMPT]`; nenhuma flag além do prompt posicional é necessária para lançar uma sessão interativa nova. | `codex --help` lista o subcomando `resume` ("Resume a previous interactive session"), aceitando um id de sessão como argumento posicional. Confirmado presente no `--help` do binário de HOST. | **Comprovado para instalação de HOST, apenas.** `$CODEX_HOME/sessions/<YYYY>/<MM>/<DD>/rollout-<timestamp>-<uuid>.jsonl` (raiz de estado: `$CODEX_HOME` se definido, senão `~/.codex`; ver §2.1). Exatamente um arquivo `.jsonl` novo cuja primeira linha é um registro JSON `{"type": "session_meta", "payload": {"id": "<uuid>", ...}}` — o `id` é o provider-session-id. Zero ou múltiplos arquivos novos ⇒ `None`. **Não comprovado para sandbox:** um agente em sandbox grava seu estado de sessão no volume por-workspace `asb-<ws>-session`, montado sobre `.codex/sessions` do container sob um nome de diretório diferente (`codex-sessions/`); a raiz de varredura padrão do driver, do lado do host, não enxerga sessões de sandbox. Isso fica gated no checkpoint humano, com um container disponível. | `resume_supported=True` quando a opção `resume` está presente no `--help` (comprovado neste host, instalação de HOST). |
 | **claude** | `2.1.275 (Claude Code)` (via `claude --version`) | `claude --help` lista `claude [options] [command] [prompt]`; nenhuma flag obrigatória para lançar uma sessão interativa nova. | `claude --help` lista `-r, --resume [value]` ("Resume a conversation by session ID, or open interactive picker"). Confirmado presente no `--help` do binário de HOST. | **Comprovado para instalação de HOST, apenas.** `~/.claude/projects/<slug(cwd)>/<uuid>.jsonl`, onde `slug(cwd)` substitui cada `/` e `.` do caminho absoluto do cwd por `-`. O UUID vem do **nome do arquivo** — nenhum conteúdo é lido. Exatamente um arquivo `.jsonl` novo no diretório do projeto ⇒ seu stem é o provider-session-id; zero ou múltiplos ⇒ `None`. (Verificação cruzada, não usada pelo driver: o próprio JSON de uma entrada nesse arquivo carrega um campo de metadado `sessionId` cujo valor é idêntico ao nome do arquivo — confirmado empiricamente neste host examinando apenas o nome de um campo, nunca seu conteúdo de conversa.) **Não comprovado para sandbox:** um agente em sandbox grava seu estado de sessão no volume por-workspace `asb-<ws>-session`, montado sobre `.claude/projects` do container sob um nome de diretório diferente (`claude-projects/`); a raiz de varredura padrão do driver, do lado do host, não enxerga sessões de sandbox. Isso fica gated no checkpoint humano, com um container disponível. | `resume_supported=True` quando a opção `--resume` está presente no `--help` (comprovado neste host, instalação de HOST). |
 | **agy** | `1.2.5` (via `agy --version`) | `agy --help` (`Usage of agy:`) não exige nenhuma flag para uma sessão interativa nova. | `agy --help` lista `--conversation` ("Resume a previous conversation by ID"). **Presente no binário de HOST**, mas isso não basta: ver decisão. | **Não comprovado neste host.** Nenhum diretório de estado local foi encontrado para `agy` nos locais convencionais verificados (equivalentes a `~/.agy`, `~/.config/agy`, `~/.local/share/agy` — todos ausentes neste host). Sem um diretório observável para monitorar antes/depois do lançamento, não há como isolar um candidato a provider-session-id sem iniciar uma sessão real (fora do escopo desta tarefa). `discover_session_id()` retorna sempre `None`. | `resume_supported=False` neste host, apesar de `--conversation` existir no `--help` do binário de HOST — **a fonte do session-id não está provada, e a especificação proíbe anunciar resumption não provada.** **O binário da IMAGEM do container é o gate autoritativo real** para esta opção (spec/brief); só pode ser confirmado após o checkpoint humano, com um container disponível. Este documento registra apenas a observação de HOST. |
+
+> As versões acima descrevem só o binário de HOST, na data indicada, e
+> podem mudar num host atualizado depois desta observação. A versão da
+> IMAGEM do container é outra coisa e não é fixada pelo build: cada build
+> reinstala `claude`, `codex` e `agy` via mise `latest` e grava o que
+> resolveu em `/opt/asb-mise/versions` (ver §4.4 para os valores desta
+> build).
 
 ---
 
@@ -72,8 +79,11 @@ session-id da matriz da §1.
   para o Claude; o driver não varre `claude-projects/`.
 - O driver só aceita um UUID canônico (minúsculas, com hífens), que também
   satisfaz `ProviderSessionId`.
-- Binário da IMAGEM (`localhost/agent-sandbox:latest`, `2.1.263 (Claude
-  Code)`), num container descartável, só `--help`: lista
+- Binário da IMAGEM (`localhost/agent-sandbox:latest`), num container
+  descartável, só `--help` — a versão observada nesta medição,
+  `2.1.263 (Claude Code)`, foi superada pela troca da imagem para mise
+  `latest` (§4.4); o valor de cada build fica registrado em
+  `/opt/asb-mise/versions` (`claude=2.1.276` nesta build): lista
   `--session-id <uuid>` ("must be a valid UUID"), `-r, --resume [value]` e
   `--dangerously-skip-permissions`. `claude … --help` sai 0 até com uma
   flag inexistente, então o `--help` NÃO prova que o argv completo é
@@ -86,10 +96,11 @@ Claude e Codex lançam e retomam sem prompts de permissão, como o Orca os
 lança: o sandbox é a fronteira de isolamento. Codex:
 `codex --dangerously-bypass-approvals-and-sandbox` e
 `codex resume --dangerously-bypass-approvals-and-sandbox <id>` (a forma
-`codex resume [OPTIONS] [SESSION_ID]` do `--help` do binário da imagem,
-`codex-cli 0.153.4`). Ali o `--help` discrimina: as duas formas saem 0 e
-`codex resume` com uma flag inexistente sai 2. Antigravity não recebe
-flag de bypass.
+`codex resume [OPTIONS] [SESSION_ID]` do `--help` do binário da imagem
+observado nesta medição, `codex-cli 0.153.4` — superado pela troca da
+imagem para mise `latest`, §4.4). Ali o `--help` discrimina: as duas
+formas saem 0 e `codex resume` com uma flag inexistente sai 2.
+Antigravity não recebe flag de bypass.
 
 ### 4.2.1 Trust do diretório (Codex)
 
@@ -111,8 +122,10 @@ codex resume --dangerously-bypass-approvals-and-sandbox <id> \
       -c projects."<cwd>".trust_level="trusted"
 ```
 
-Medido no binário da IMAGEM (`codex 0.155.0`, containers `--rm`
-descartáveis, nenhuma conversa iniciada):
+Medido no binário da IMAGEM (`codex 0.155.0` — o valor que o mise
+`latest` resolveu nesta build, registrado em `/opt/asb-mise/versions`,
+ver §4.4; não é uma versão fixada —, containers `--rm` descartáveis,
+nenhuma conversa iniciada):
 - `codex --help` e `codex resume --help` listam `-c, --config <key=value>`
   ("Use a dotted path (`foo.bar.baz`) to override nested values. The
   `value` portion is parsed as TOML").

@@ -68,6 +68,52 @@ class TestLaunchAndResumeArgv(unittest.TestCase):
             CodexDriver().resume(Path("/repo"), "abc").argv,
             ("codex", "resume", CODEX_BYPASS, "abc", "-c", CODEX_TRUST))
 
+    def test_claude_resume_argv(self):
+        # `--resume [value]` tem valor opcional: o id vem logo depois dele.
+        self.assertEqual(
+            ClaudeDriver().resume(Path("/repo"), CLAUDE_UUID).argv,
+            ("claude", "--resume", CLAUDE_UUID, CLAUDE_BYPASS))
+
+    def test_antigravity_resume_raises_when_session_id_unprovable(self):
+        # session_id_provable=False e um fato ESTATICO da instalacao
+        # neste host (nenhum diretorio de estado local encontrado para
+        # `agy`): resume() recusa mesmo sem nunca ter sido probado, para
+        # nao prometer uma resumption que ninguem provou. O binario da
+        # imagem do container e o gate autoritativo real (ver
+        # docs/validation/2026-09-17-agent-session-contracts.md).
+        with self.assertRaises(ResumeUnsupported):
+            AntigravityDriver().resume(Path("/repo"), "abc")
+
+    def test_claude_launch_argv_carries_the_assigned_session_id(self):
+        self.assertEqual(
+            ClaudeDriver().launch(Path("/repo"), CLAUDE_UUID).argv,
+            ("claude", "--session-id", CLAUDE_UUID, CLAUDE_BYPASS))
+
+    def test_claude_launch_requires_a_canonical_uuid(self):
+        for bad in (None, "", "abc", "-rf", CLAUDE_UUID.upper(),
+                    "{" + CLAUDE_UUID + "}", CLAUDE_UUID.replace("-", ""),
+                    CLAUDE_UUID + " ", "x" + CLAUDE_UUID[1:]):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                ClaudeDriver().launch(Path("/repo"), bad)
+
+    def test_only_claude_assigns_the_session_id_at_launch(self):
+        self.assertTrue(ClaudeDriver.assigns_session_id_at_launch)
+        self.assertFalse(CodexDriver.assigns_session_id_at_launch)
+        self.assertFalse(AntigravityDriver.assigns_session_id_at_launch)
+
+    def test_drivers_without_launch_ids_refuse_one(self):
+        # Um id passado a quem nao o usa seria descartado em silencio.
+        for driver in (CodexDriver(), AntigravityDriver()):
+            with self.subTest(driver=driver.kind), \
+                    self.assertRaises(ValueError):
+                driver.launch(Path("/repo"), CLAUDE_UUID)
+
+    def test_antigravity_launch_argv(self):
+        self.assertEqual(AntigravityDriver().launch(Path("/repo")).argv, ("agy",))
+
+    def test_launch_returns_launch_command_type(self):
+        self.assertIsInstance(CodexDriver().launch(Path("/repo")), LaunchCommand)
+
 
 class TestCodexTrustOverride(unittest.TestCase):
     """O Codex guarda o trust do diretorio em `~/.codex/config.toml`, que
@@ -131,52 +177,6 @@ class TestCodexTrustOverride(unittest.TestCase):
     def test_resume_still_validates_the_session_id(self):
         with self.assertRaises(ValueError):
             CodexDriver().resume(Path("/repo"), "-rm -rf")
-
-    def test_claude_resume_argv(self):
-        # `--resume [value]` tem valor opcional: o id vem logo depois dele.
-        self.assertEqual(
-            ClaudeDriver().resume(Path("/repo"), CLAUDE_UUID).argv,
-            ("claude", "--resume", CLAUDE_UUID, CLAUDE_BYPASS))
-
-    def test_antigravity_resume_raises_when_session_id_unprovable(self):
-        # session_id_provable=False e um fato ESTATICO da instalacao
-        # neste host (nenhum diretorio de estado local encontrado para
-        # `agy`): resume() recusa mesmo sem nunca ter sido probado, para
-        # nao prometer uma resumption que ninguem provou. O binario da
-        # imagem do container e o gate autoritativo real (ver
-        # docs/validation/2026-09-17-agent-session-contracts.md).
-        with self.assertRaises(ResumeUnsupported):
-            AntigravityDriver().resume(Path("/repo"), "abc")
-
-    def test_claude_launch_argv_carries_the_assigned_session_id(self):
-        self.assertEqual(
-            ClaudeDriver().launch(Path("/repo"), CLAUDE_UUID).argv,
-            ("claude", "--session-id", CLAUDE_UUID, CLAUDE_BYPASS))
-
-    def test_claude_launch_requires_a_canonical_uuid(self):
-        for bad in (None, "", "abc", "-rf", CLAUDE_UUID.upper(),
-                    "{" + CLAUDE_UUID + "}", CLAUDE_UUID.replace("-", ""),
-                    CLAUDE_UUID + " ", "x" + CLAUDE_UUID[1:]):
-            with self.subTest(bad=bad), self.assertRaises(ValueError):
-                ClaudeDriver().launch(Path("/repo"), bad)
-
-    def test_only_claude_assigns_the_session_id_at_launch(self):
-        self.assertTrue(ClaudeDriver.assigns_session_id_at_launch)
-        self.assertFalse(CodexDriver.assigns_session_id_at_launch)
-        self.assertFalse(AntigravityDriver.assigns_session_id_at_launch)
-
-    def test_drivers_without_launch_ids_refuse_one(self):
-        # Um id passado a quem nao o usa seria descartado em silencio.
-        for driver in (CodexDriver(), AntigravityDriver()):
-            with self.subTest(driver=driver.kind), \
-                    self.assertRaises(ValueError):
-                driver.launch(Path("/repo"), CLAUDE_UUID)
-
-    def test_antigravity_launch_argv(self):
-        self.assertEqual(AntigravityDriver().launch(Path("/repo")).argv, ("agy",))
-
-    def test_launch_returns_launch_command_type(self):
-        self.assertIsInstance(CodexDriver().launch(Path("/repo")), LaunchCommand)
 
 class TestAntigravityResumeArgvOnceProvable(unittest.TestCase):
     """A construcao do argv (`("agy", "--conversation", id)`) continua no

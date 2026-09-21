@@ -204,6 +204,35 @@ class WorkspaceRuntime:
                             cmd_action=cmd_action, cmd_flags=cmd_flags,
                             restart_policy=restart_policy)
 
+    def _create_proxy_container(
+        self,
+        n: dict[str, str],
+        ws: str,
+        conf: Path,
+        cmd_action: str,
+        cmd_flags: list[str],
+        restart_policy: str,
+        tx: WorkspaceTransaction | None,
+    ) -> str:
+        """§1 Proxy: cria o container do squid e devolve o id."""
+        from .. import lifecycle
+
+        proxy_args = [
+            cmd_action,
+            *cmd_flags,
+            "--name", n["proxy"],
+            "--label", f"asb.workspace={ws}",
+            "--restart", restart_policy,
+            "--network", f"{n['net']},{n['out']}", "--user", "900",
+            "-v", f"{conf}:/etc/squid/squid.conf:ro,Z",
+            lifecycle.PROXY_IMAGE, "squid", "-N", "-f", "/etc/squid/squid.conf",
+        ]
+        podman.run(*proxy_args)
+        proxy_cid = _get_container_id(n["proxy"])
+        if tx:
+            tx.record_container(proxy_cid)
+        return proxy_cid
+
     def prepare(
         self,
         root: Path,
@@ -224,20 +253,8 @@ class WorkspaceRuntime:
             setup.cmd_action, setup.cmd_flags, setup.restart_policy)
 
         # 1. Proxy
-        proxy_args = [
-            cmd_action,
-            *cmd_flags,
-            "--name", n["proxy"],
-            "--label", f"asb.workspace={ws}",
-            "--restart", restart_policy,
-            "--network", f"{n['net']},{n['out']}", "--user", "900",
-            "-v", f"{conf}:/etc/squid/squid.conf:ro,Z",
-            lifecycle.PROXY_IMAGE, "squid", "-N", "-f", "/etc/squid/squid.conf",
-        ]
-        podman.run(*proxy_args)
-        proxy_cid = _get_container_id(n["proxy"])
-        if tx:
-            tx.record_container(proxy_cid)
+        proxy_cid = self._create_proxy_container(
+            n, ws, conf, cmd_action, cmd_flags, restart_policy, tx)
 
         # 2. Servicos adicionais
         services_manifest = start_services(

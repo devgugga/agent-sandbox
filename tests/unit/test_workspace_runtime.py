@@ -332,6 +332,35 @@ class TestPrepareManifestAndAgentArgvMatchPreExtraction(unittest.TestCase):
     identicos ao que `lifecycle.prepare_workspace` produzia antes da
     extracao (mesmos testes de fundo que `test_lifecycle.py` ja cobria)."""
 
+    def test_proxy_argv(self):
+        """§1: cobertura direta do argv do container do proxy — nada mais
+        neste arquivo (nem em test_lifecycle.py) inspecionava esta linha,
+        e a fatia B a extraiu sem nenhum teste focado. Achado durante o
+        proprio red-proof da fatia B (ver relatorio da Tarefa 4)."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            h = _Harness(Path(tmp_dir))
+            with h.build():
+                h.runtime.prepare(h.root, h.ws, h.repo, tx=h.tx, storage=h.storage)
+
+            proxy_call = next(
+                c for c in h.podman_calls
+                if "--name" in c and c[c.index("--name") + 1] == "asb-demo-proxy")
+            self.assertEqual(proxy_call[0], "create")
+            self.assertIn("--restart", proxy_call)
+            self.assertEqual(proxy_call[proxy_call.index("--restart") + 1], "no")
+            self.assertIn("--user", proxy_call)
+            self.assertEqual(proxy_call[proxy_call.index("--user") + 1], "900")
+            self.assertIn("--network", proxy_call)
+            self.assertEqual(
+                proxy_call[proxy_call.index("--network") + 1],
+                "asb-demo,asb-demo-out")
+            self.assertIn(
+                f"{h.layout.state / 'squid.conf'}:/etc/squid/squid.conf:ro,Z",
+                proxy_call)
+            self.assertEqual(
+                list(proxy_call[proxy_call.index("agent-sandbox-proxy:latest"):]),
+                ["agent-sandbox-proxy:latest", "squid", "-N", "-f", "/etc/squid/squid.conf"])
+
     def test_agent_argv_and_manifest_content(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             h = _Harness(Path(tmp_dir), host_ports=[5432])

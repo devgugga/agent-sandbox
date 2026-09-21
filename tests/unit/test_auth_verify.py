@@ -63,23 +63,13 @@ def _gate_then(result):
 class TestClassifyVerification(unittest.TestCase):
     """O teste verbatim do brief: rede ruim nunca vira logout.
 
-    Os casos que usavam "claude" como fornecedor migraram para
-    tests/unit/test_agent_drivers.py::TestClaudeClassifyVerification junto
-    com o proprio pipeline de classificacao, que saiu de `auth.py` para
+    Os casos que usavam "claude" ou "codex" como fornecedor migraram para
+    tests/unit/test_agent_drivers.py (TestClaudeClassifyVerification /
+    TestCodexClassifyVerification) junto com o proprio pipeline de
+    classificacao, que saiu de `auth.py` para
     `AgentDriver.classify_verification` (base.py, compartilhado pelos tres
-    drivers) na Tarefa 2. Os casos abaixo continuam usando "codex"/"agy"
-    porque esses dois fornecedores ainda nao migraram."""
-
-    def test_rate_limit_never_recommends_removing_the_credential(self):
-        result = auth.classify_verification("codex", 1, "HTTP 429", network_ok=True)
-        self.assertNotEqual(result.state, "unauthenticated")
-        self.assertNotIn("login", result.remediation.lower())
-
-    def test_service_outage_is_provider_error_not_unauthenticated(self):
-        result = auth.classify_verification(
-            "codex", 1, "503 Service Unavailable", network_ok=True)
-        self.assertEqual(result.state, "provider_error")
-        self.assertNotIn("login", result.remediation.lower())
+    drivers) na Tarefa 2. Os casos abaixo continuam usando "agy" porque
+    esse fornecedor ainda nao migrou."""
 
     def test_timeout_text_is_unreachable_even_when_network_ok_was_true(self):
         """O texto capturado da CHAMADA (nao a pre-checagem) tambem pode
@@ -96,27 +86,13 @@ class TestClassifyVerification(unittest.TestCase):
         self.assertEqual(result.state, "unreachable")
         self.assertNotEqual(result.state, "unauthenticated")
 
-    def test_bare_401_is_never_unauthenticated(self):
-        """401/403 puro tambem e a assinatura de uma negativa de ACL do
-        proxy. So a evidencia PROPRIA do fornecedor pode virar
-        `unauthenticated`."""
-        result = auth.classify_verification(
-            "codex", 1, "401 Unauthorized", network_ok=True)
-        self.assertNotEqual(result.state, "unauthenticated")
-        self.assertNotIn("login", result.remediation.lower())
-
     def test_provider_own_evidence_of_invalid_credential_is_unauthenticated(self):
-        # "claude" migrou para
-        # test_agent_drivers.py::TestClaudeClassifyVerification.
-        cases = {
-            "codex": "Not logged in",
-            "agy": "authentication required",
-        }
-        for provider, text in cases.items():
-            with self.subTest(provider=provider):
-                result = auth.classify_verification(provider, 1, text, network_ok=True)
-                self.assertEqual(result.state, "unauthenticated")
-                self.assertEqual(result.remediation, "asb-agent login")
+        # "claude" e "codex" migraram para test_agent_drivers.py
+        # (TestClaudeClassifyVerification / TestCodexClassifyVerification).
+        result = auth.classify_verification(
+            "agy", 1, "authentication required", network_ok=True)
+        self.assertEqual(result.state, "unauthenticated")
+        self.assertEqual(result.remediation, "asb-agent login")
 
     def test_the_word_timeout_alone_does_not_false_positive_on_success(self):
         """Mesmo espirito do R4 (docs/domains/sandbox/known-regressions.md),
@@ -129,30 +105,6 @@ class TestClassifyVerification(unittest.TestCase):
         self.assertEqual(result.state, "unknown")
         self.assertNotEqual(result.state, "provider_error")
         self.assertNotEqual(result.state, "unreachable")
-
-    def test_503_substring_in_a_byte_count_does_not_false_positive(self):
-        """R4 do catalogo de regressoes (docs/domains/sandbox/known-
-        regressions.md): `"403" in output` tambem casava a porta 40300.
-        Aqui, uma contagem de bytes que contenha "503" como substring nao
-        pode virar `provider_error` por erro de servico."""
-        result = auth.classify_verification(
-            "codex", 0, "processed 5003 bytes successfully", network_ok=True)
-        self.assertEqual(result.state, "unknown")
-        self.assertNotEqual(result.state, "provider_error")
-
-    def test_delimited_503_still_matches_as_service_error(self):
-        for text in ("HTTP/1.1 503 Service Unavailable", "(503)"):
-            with self.subTest(text=text):
-                result = auth.classify_verification("codex", 1, text, network_ok=True)
-                self.assertEqual(result.state, "provider_error")
-
-    def test_evidence_never_carries_the_raw_output_codex(self):
-        """A evidencia e sempre texto enlatado (categoria), nunca o `output`
-        interpolado -- e ali que um token ou codigo OAuth apareceria."""
-        secret = "sk-ant-oat01-SEGREDO-DE-VERDADE"
-        result = auth.classify_verification(
-            "codex", 1, "Not logged in " + secret, network_ok=True)
-        self.assertNotIn(secret, result.evidence)
 
     def test_every_state_produced_fits_the_deny_by_default_aggregate(self):
         """Guarda contra estado inventado: cada estado que classify_verification
@@ -773,16 +725,12 @@ class TestVerifyClientCommands(_SSHInfraCase):
         self.assertIn("/dev/null", command)
 
     def test_no_verify_command_uses_the_dead_slash_login(self):
-        # "claude" migrou para
-        # test_agent_drivers.py::TestClaudeVerifyArgv (ClaudeDriver.verify_argv).
-        for provider in ("codex", "agy"):
-            with self.subTest(provider=provider):
-                self.assertNotIn("/login", auth._verify_command(provider))
+        # "claude" e "codex" migraram para test_agent_drivers.py
+        # (TestClaudeVerifyArgv / TestCodexVerifyArgv).
+        self.assertNotIn("/login", auth._verify_command("agy"))
 
     def test_no_verify_command_uses_a_version_query(self):
-        for provider in ("codex", "agy"):
-            with self.subTest(provider=provider):
-                self.assertNotIn("--version", auth._verify_command(provider))
+        self.assertNotIn("--version", auth._verify_command("agy"))
 
     def test_ssh_targets_the_host_user(self):
         with mock.patch.object(auth.podman, "running", return_value=True), \
@@ -828,54 +776,11 @@ class TestVerifyClientCommands(_SSHInfraCase):
         self.assertIs(ssh_run.call_args.kwargs["stdin"], subprocess.DEVNULL)
         self.assertEqual(ssh_run.call_args.kwargs["timeout"], 70)
 
-    def test_codex_discards_stream_output_and_reads_only_output_file(self):
-        command = auth._verify_command("codex")
-        self.assertIn('-o "$OUT"', command)
-        self.assertIn("> /dev/null", command)
-        self.assertIn('cat "$OUT"', command)
 
-
-class TestCodexRemoteScript(unittest.TestCase):
-    def _run_with_wrapper(self, wrapper_body: str):
-        with tempfile.TemporaryDirectory(
-                prefix="asb-test-auth-codex-wrapper-") as tmp_name:
-            wrapper = Path(tmp_name) / "asb-codex"
-            wrapper.write_text(
-                "#!/usr/bin/env bash\nset -eu\n" + wrapper_body,
-                encoding="utf-8")
-            wrapper.chmod(0o755)
-            env = os.environ.copy()
-            env["PATH"] = f"{tmp_name}:{env['PATH']}"
-            return subprocess.run(
-                ["bash", "-c", auth._verify_command("codex")],
-                capture_output=True, text=True, env=env, timeout=10)
-
-    def test_codex_script_success_emits_only_the_output_file(self):
-        result = self._run_with_wrapper(
-            """out=''
-while [ "$#" -gt 0 ]; do
-  if [ "$1" = "-o" ]; then out="$2"; shift 2; else shift; fi
-done
-printf '%s\\n' 'stream noise must be discarded'
-printf '%s\\n' 'benign stderr must be hidden on success' >&2
-printf '%s\\n' 'ASB_AUTH_VERIFY_OK' > "$out"
-""")
-
-        self.assertEqual(result.returncode, 0)
-        self.assertEqual(result.stdout.strip(), "ASB_AUTH_VERIFY_OK")
-        self.assertEqual(result.stderr, "")
-
-    def test_codex_script_failure_emits_stderr_and_preserves_exit_status(self):
-        result = self._run_with_wrapper(
-            """while [ "$#" -gt 0 ]; do shift; done
-printf '%s\\n' 'stream noise must be discarded'
-printf '%s\\n' 'authentication required' >&2
-exit 23
-""")
-
-        self.assertEqual(result.returncode, 23)
-        self.assertEqual(result.stdout, "")
-        self.assertEqual(result.stderr.strip(), "authentication required")
+# TestCodexRemoteScript migrou para tests/unit/test_agent_drivers.py
+# (TestCodexRemoteScriptBehavior) junto com o proprio script, que saiu de
+# `auth._verify_command("codex")` para `CodexDriver.verify_argv()` na
+# Tarefa 2.
 
 
 class TestVerifyCommand(unittest.TestCase):

@@ -178,13 +178,12 @@ def prepare_workspace_harness(ws: str):
 class TestLoginCommandTable(unittest.TestCase):
     """O contrato exato dos comandos de login, verbatim do brief da A3.
 
-    "claude" migrou para `ClaudeDriver.login_argv()` (Tarefa 2); ver
-    tests/unit/test_agent_drivers.py::TestClaudeLoginArgv. `login_command()`
-    so resolve fornecedores AINDA nao migrados."""
+    "claude" e "codex" migraram para `<Driver>.login_argv()` (Tarefa 2); ver
+    tests/unit/test_agent_drivers.py::TestClaudeLoginArgv /
+    TestCodexLoginArgv. `login_command()` so resolve fornecedores AINDA nao
+    migrados — hoje, so `agy`."""
 
     def test_login_command_per_provider(self):
-        self.assertEqual(auth.login_command("codex"),
-                         ("codex", "login", "--device-auth"))
         self.assertEqual(auth.login_command("agy"), ("agy",))
 
     def test_login_command_rejects_all_and_unknown(self):
@@ -196,18 +195,14 @@ class TestLoginCommandTable(unittest.TestCase):
     def test_no_login_command_is_the_dead_slash_login(self):
         """`claude /login` sai com 0 SEM logar (A1): um falso verde que manda
         o operador embora achando que a credencial foi gravada."""
-        for provider in ("codex", "agy"):
-            with self.subTest(provider=provider):
-                self.assertNotIn("/login", auth.login_command(provider))
+        self.assertNotIn("/login", auth.login_command("agy"))
 
     def test_no_login_command_is_a_version_query(self):
         """`--version` responde 0 com o agente deslogado."""
-        for provider in ("codex", "agy"):
-            with self.subTest(provider=provider):
-                self.assertNotIn("--version", auth.login_command(provider))
+        self.assertNotIn("--version", auth.login_command("agy"))
 
     def test_there_is_one_command_for_each_not_yet_migrated_provider(self):
-        self.assertEqual(set(auth.LOGIN_COMMANDS), {"codex", "agy"})
+        self.assertEqual(set(auth.LOGIN_COMMANDS), {"agy"})
 
 
 class TestLoginSelection(unittest.TestCase):
@@ -490,12 +485,12 @@ class TestLoginKeyringContract(unittest.TestCase):
         self.assertTrue(captured["removed"])
         self.assertNotIn(lifecycle.KEYRING_CONTAINER, captured["removed"])
 
-    def test_no_status_command_used_by_the_verification_is_a_version_query(self):
-        """Herdado de `TestVerificacaoDeLogin`: `--version` responde 0 com o
-        agente deslogado, e um falso verde e pior que nenhuma checagem."""
-        for provider, command in auth.STATUS_COMMANDS.items():
-            with self.subTest(provider=provider):
-                self.assertNotIn("--version", command)
+    # test_no_status_command_used_by_the_verification_is_a_version_query
+    # migrou para tests/unit/test_agent_drivers.py
+    # (TestClaudeParseAuthStatus / TestCodexParseAuthStatus,
+    # `test_no_status_command_is_a_version_query`): STATUS_COMMANDS nao
+    # existe mais em auth.py, claude e codex ja migraram para
+    # `<Driver>.status_command`.
 
 
 class TestOperatorLock(unittest.TestCase):

@@ -1231,5 +1231,218 @@ class TestClaudeClassifyVerification(unittest.TestCase):
         self.assertNotEqual(result.state, "authenticated")
 
 
+# ---------------------------------------------------------------------------
+# Autenticacao — Codex (Tarefa 2, commit 2). Exemplos verbatim herdados de
+# tests/unit/test_auth_status.py::TestParseCodexStatus e
+# tests/unit/test_auth_verify.py::TestClassifyVerification /
+# tests/unit/test_login_flow.py::TestLoginCommandTable.
+# ---------------------------------------------------------------------------
+
+
+class TestCodexParseAuthStatus(unittest.TestCase):
+    def test_authenticated(self):
+        result = CodexDriver().parse_auth_status(
+            _completed(0, "Logged in using ChatGPT\n", ""))
+        self.assertEqual(result.state, "authenticated")
+        self.assertEqual(result.provider, "codex")
+        self.assertEqual(result.remediation, "")
+
+    def test_unauthenticated(self):
+        result = CodexDriver().parse_auth_status(
+            _completed(1, "Not logged in\n", ""))
+        self.assertEqual(result.state, "unauthenticated")
+
+    def test_explicit_negative_prevails_over_positive_substring(self):
+        # "Not logged in" CONTEM a substring "logged in" -- a negativa
+        # explicita tem que vencer, nunca ser lida como positiva.
+        result = CodexDriver().parse_auth_status(
+            _completed(1, "Not logged in\n", ""))
+        self.assertEqual(result.state, "unauthenticated")
+
+    def test_explicit_negative_on_stderr_also_prevails(self):
+        result = CodexDriver().parse_auth_status(_completed(0, "", "Not logged in"))
+        self.assertEqual(result.state, "unauthenticated")
+
+    def test_unknown_format_does_not_become_authenticated(self):
+        result = CodexDriver().parse_auth_status(_completed(0, "algo inesperado\n", ""))
+        self.assertEqual(result.state, "unknown")
+
+    def test_comando_ausente(self):
+        result = CodexDriver().parse_auth_status(
+            _completed(127, "", "bash: line 1: codex: command not found"))
+        self.assertEqual(result.state, "unknown")
+
+    def test_timeout(self):
+        result = CodexDriver().parse_auth_status(_completed(124, "", ""))
+        self.assertEqual(result.state, "unknown")
+
+    def test_authenticated_requires_returncode_zero(self):
+        # Mensagem de sucesso mas codigo != 0 e contraditorio -> unknown.
+        result = CodexDriver().parse_auth_status(
+            _completed(1, "Logged in using ChatGPT\n", ""))
+        self.assertEqual(result.state, "unknown")
+
+    def test_status_command_never_carries_a_mutating_verb(self):
+        self.assertEqual(CodexDriver.status_command, "codex login status")
+        self.assertNotIn("logout", CodexDriver.status_command)
+        self.assertNotIn("/login", CodexDriver.status_command)
+
+    def test_no_status_command_is_a_version_query(self):
+        self.assertNotIn("--version", CodexDriver.status_command)
+
+
+class TestCodexLoginArgv(unittest.TestCase):
+    def test_login_argv(self):
+        self.assertEqual(CodexDriver().login_argv(),
+                         ("codex", "login", "--device-auth"))
+
+    def test_login_argv_is_not_the_dead_slash_login(self):
+        self.assertNotIn("/login", CodexDriver().login_argv())
+
+    def test_login_argv_is_not_a_version_query(self):
+        self.assertNotIn("--version", CodexDriver().login_argv())
+
+
+class TestCodexVerifyArgv(unittest.TestCase):
+    def test_verify_argv_uses_exec_subcommand_not_interactive_default(self):
+        argv = CodexDriver().verify_argv()
+        self.assertEqual(len(argv), 1)
+        command = argv[0]
+        self.assertIn("asb-codex exec", command)
+        self.assertIn("/dev/null", command)
+
+    def test_verify_argv_is_not_the_dead_slash_login(self):
+        self.assertNotIn("/login", CodexDriver().verify_argv()[0])
+
+    def test_verify_argv_is_not_a_version_query(self):
+        self.assertNotIn("--version", CodexDriver().verify_argv()[0])
+
+    def test_verify_argv_uses_explicit_synthetic_workdir(self):
+        command = CodexDriver().verify_argv()[0]
+        self.assertIn("mktemp -d", command)
+        self.assertIn("cd ", command)
+
+    def test_verify_argv_discards_stream_output_and_reads_only_output_file(self):
+        command = CodexDriver().verify_argv()[0]
+        self.assertIn('-o "$OUT"', command)
+        self.assertIn("> /dev/null", command)
+        self.assertIn('cat "$OUT"', command)
+
+
+class TestCodexRemoteScriptBehavior(unittest.TestCase):
+    """Executa o script remoto de verdade contra um wrapper falso `asb-codex`
+    -- prova o comportamento do script (o que ele imprime/retorna), nao so o
+    texto do comando."""
+
+    def _run_with_wrapper(self, wrapper_body: str):
+        import os
+        with tempfile.TemporaryDirectory(
+                prefix="asb-test-codex-driver-wrapper-") as tmp_name:
+            wrapper = Path(tmp_name) / "asb-codex"
+            wrapper.write_text(
+                "#!/usr/bin/env bash\nset -eu\n" + wrapper_body,
+                encoding="utf-8")
+            wrapper.chmod(0o755)
+            env = os.environ.copy()
+            env["PATH"] = f"{tmp_name}:{env['PATH']}"
+            return subprocess.run(
+                ["bash", "-c", CodexDriver().verify_argv()[0]],
+                capture_output=True, text=True, env=env, timeout=10)
+
+    def test_script_success_emits_only_the_output_file(self):
+        result = self._run_with_wrapper(
+            """out=''
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "-o" ]; then out="$2"; shift 2; else shift; fi
+done
+printf '%s\\n' 'stream noise must be discarded'
+printf '%s\\n' 'benign stderr must be hidden on success' >&2
+printf '%s\\n' 'ASB_AUTH_VERIFY_OK' > "$out"
+""")
+        self.assertEqual(result.returncode, 0)
+        self.assertEqual(result.stdout.strip(), "ASB_AUTH_VERIFY_OK")
+        self.assertEqual(result.stderr, "")
+
+    def test_script_failure_emits_stderr_and_preserves_exit_status(self):
+        result = self._run_with_wrapper(
+            """while [ "$#" -gt 0 ]; do shift; done
+printf '%s\\n' 'stream noise must be discarded'
+printf '%s\\n' 'authentication required' >&2
+exit 23
+""")
+        self.assertEqual(result.returncode, 23)
+        self.assertEqual(result.stdout, "")
+        self.assertEqual(result.stderr.strip(), "authentication required")
+
+
+class TestCodexClassifyVerification(unittest.TestCase):
+    """Casos verbatim de tests/unit/test_auth_verify.py que usavam "codex"
+    como fornecedor: rede, limite de taxa e erro de servico sao pipeline
+    COMPARTILHADO (base.py), exercitados aqui via CodexDriver; a evidencia
+    propria e o formato de sucesso sao dados do driver."""
+
+    def test_rate_limit_never_recommends_removing_the_credential(self):
+        result = CodexDriver().classify_verification(
+            _completed(1, "HTTP 429"), network_state=True)
+        self.assertNotEqual(result.state, "unauthenticated")
+        self.assertNotIn("login", result.remediation.lower())
+
+    def test_service_outage_is_provider_error_not_unauthenticated(self):
+        result = CodexDriver().classify_verification(
+            _completed(1, "503 Service Unavailable"), network_state=True)
+        self.assertEqual(result.state, "provider_error")
+        self.assertNotIn("login", result.remediation.lower())
+
+    def test_bare_401_is_never_unauthenticated(self):
+        result = CodexDriver().classify_verification(
+            _completed(1, "401 Unauthorized"), network_state=True)
+        self.assertNotEqual(result.state, "unauthenticated")
+        self.assertNotIn("login", result.remediation.lower())
+
+    def test_provider_own_evidence_of_invalid_credential_is_unauthenticated(self):
+        result = CodexDriver().classify_verification(
+            _completed(1, "Not logged in"), network_state=True)
+        self.assertEqual(result.state, "unauthenticated")
+        self.assertEqual(result.remediation, "asb-agent login")
+
+    def test_503_substring_in_a_byte_count_does_not_false_positive(self):
+        result = CodexDriver().classify_verification(
+            _completed(0, "processed 5003 bytes successfully"),
+            network_state=True)
+        self.assertEqual(result.state, "unknown")
+        self.assertNotEqual(result.state, "provider_error")
+
+    def test_delimited_503_still_matches_as_service_error(self):
+        for text in ("HTTP/1.1 503 Service Unavailable", "(503)"):
+            with self.subTest(text=text):
+                result = CodexDriver().classify_verification(
+                    _completed(1, text), network_state=True)
+                self.assertEqual(result.state, "provider_error")
+
+    def test_evidence_never_carries_the_raw_output(self):
+        secret = "sk-ant-oat01-SEGREDO-DE-VERDADE"
+        result = CodexDriver().classify_verification(
+            _completed(1, "Not logged in " + secret), network_state=True)
+        self.assertNotIn(secret, result.evidence)
+
+    def test_success_with_the_shared_prompt_response(self):
+        result = CodexDriver().classify_verification(
+            _completed(0, "ASB_AUTH_VERIFY_OK"), network_state=True)
+        self.assertEqual(result.state, "authenticated")
+        self.assertEqual(result.remediation, "")
+
+    def test_timeout_returncode_is_unreachable_not_unauthenticated(self):
+        result = CodexDriver().classify_verification(
+            _completed(124, "operation timed out"), network_state=True)
+        self.assertEqual(result.state, "unreachable")
+        self.assertNotEqual(result.state, "unauthenticated")
+
+    def test_bad_network_never_becomes_unauthenticated(self):
+        result = CodexDriver().classify_verification(
+            _completed(1, "connection timed out"), network_state=False)
+        self.assertEqual(result.state, "unreachable")
+        self.assertNotEqual(result.remediation, "login")
+
+
 if __name__ == "__main__":
     unittest.main()

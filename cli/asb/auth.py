@@ -42,7 +42,6 @@ import json
 import os
 import re
 import secrets
-import shlex
 import subprocess
 import sys
 from contextlib import contextmanager
@@ -51,8 +50,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import keyring, lifecycle, podman, readiness
-from .agents.base import AuthResult, _VERIFY_PROMPT, _VERIFY_PROVIDER_TIMEOUT
+from .agents.base import AgentDriver, AuthResult, _VERIFY_PROVIDER_TIMEOUT
 from .agents.claude import ClaudeDriver
+from .agents.codex import CodexDriver
+
+# Fornecedores ja migrados para seu driver (Tarefa 2): `check_status`,
+# `_run_interactive_login` e `verify_client` despacham para o driver quando
+# o fornecedor esta aqui, e caem no codigo legado (tabelas acima, funcoes
+# `parse_*`/`_verify_command`/`classify_verification`) quando nao esta.
+# `agy` entra aqui quando sua propria migracao chegar.
+_MIGRATED_DRIVERS: dict[str, AgentDriver] = {
+    "claude": ClaudeDriver(),
+    "codex": CodexDriver(),
+}
 
 # `AuthResult` e `AgentDriver.classify_verification` moraram aqui ate a
 # Tarefa 2 da decomposicao de `auth.py`; agora vivem em
@@ -60,14 +70,11 @@ from .agents.claude import ClaudeDriver
 # reexportados por `auth.py` porque este modulo continua sendo a fronteira
 # publica de autenticacao (`tests/unit/test_auth_verify.py` e
 # `tests/unit/test_login_flow.py` importam `AuthResult` daqui).
-
-# Comandos de LEITURA de status, um por fornecedor. Nenhum aqui muta estado:
-# nao ha `/login`, `login --device-auth` nem `logout` nesta tabela. Cada
-# fornecedor migrado para seu driver (Tarefa 2) sai desta tabela: seu
-# comando passa a viver em `<Driver>.status_command`.
-STATUS_COMMANDS: dict[str, str] = {
-    "codex": "codex login status",
-}
+#
+# STATUS_COMMANDS (um comando de LEITURA de status por fornecedor) foi
+# removido: claude e codex ja migraram para `<Driver>.status_command`
+# (Tarefa 2), e agy nunca teve entrada aqui — `check_status` o trata a
+# parte (ver o curto-circuito logo abaixo).
 
 # Fronteira publica de `status()`: aceita "all" alem dos tres fornecedores.
 _INDIVIDUAL_PROVIDERS = frozenset({"claude", "codex", "agy"})
@@ -86,46 +93,6 @@ _EXEC_HOST_TIMEOUT = 15
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-
-def parse_codex_status(returncode: int, stdout: str, stderr: str) -> AuthResult:
-    """Interpreta `codex login status` (A1: 'Not logged in' com codigo 1
-    quando deslogado; formato do texto de sucesso nao esta documentado com
-    a mesma certeza).
-
-    A negativa explicita ('not logged in') tem PRECEDENCIA sobre qualquer
-    substring positiva: 'Not logged in' contem 'logged in', e grepar
-    'logged in' sem checar a negativa primeiro casaria os dois estados (o
-    mesmo erro historico da tabela LOGIN_CHECKS, removida na A3). Sem essa
-    negativa, `authenticated` exige codigo 0 E a substring positiva; formato
-    desconhecido vira `unknown`, nunca `authenticated` por otimismo.
-    """
-    checked_at = _now_iso()
-    combined = f"{stdout or ''}\n{stderr or ''}".lower()
-
-    if "not logged in" in combined:
-        return AuthResult(
-            provider="codex",
-            state="unauthenticated",
-            checked_at=checked_at,
-            evidence="codex login status reportou 'Not logged in'",
-            remediation="asb-agent login",
-        )
-    if returncode == 0 and "logged in" in combined:
-        return AuthResult(
-            provider="codex",
-            state="authenticated",
-            checked_at=checked_at,
-            evidence="codex login status reportou sessao ativa (codigo 0)",
-            remediation="",
-        )
-    return AuthResult(
-        provider="codex",
-        state="unknown",
-        checked_at=checked_at,
-        evidence=f"saida nao reconhecida de 'codex login status' (codigo {returncode})",
-        remediation="asb-agent auth status --workspace <id> --agent codex --json",
-    )
 
 
 def check_status(provider: str, container: str) -> AuthResult:
@@ -196,8 +163,10 @@ def check_status(provider: str, container: str) -> AuthResult:
             remediation=f"asb-agent resume --workspace {ws_hint}",
         )
 
-    command = ClaudeDriver().status_command if provider == "claude" \
-        else STATUS_COMMANDS[provider]
+    # So claude/codex chegam aqui: agy ja retornou acima. Cada um dos dois
+    # ja migrou para seu driver (Tarefa 2).
+    driver = _MIGRATED_DRIVERS[provider]
+    command = driver.status_command
     try:
         result = podman.run(
             "exec", "-u", "1000", container,
@@ -216,12 +185,7 @@ def check_status(provider: str, container: str) -> AuthResult:
             remediation="asb-agent doctor",
         )
 
-    if provider == "claude":
-        parsed = ClaudeDriver().parse_auth_status(result)
-    else:
-        stdout = result.stdout or ""
-        stderr = getattr(result, "stderr", "") or ""
-        parsed = parse_codex_status(result.returncode, stdout, stderr)
+    parsed = driver.parse_auth_status(result)
     return replace(parsed, checked_at=checked_at)
 
 
@@ -320,7 +284,6 @@ def status(ws: str, provider: str, *, json_output: bool) -> int:
 # Cada fornecedor migrado para seu driver (Tarefa 2) sai desta tabela: seu
 # comando passa a viver em `<Driver>.login_argv()`.
 LOGIN_COMMANDS: dict[str, tuple[str, ...]] = {
-    "codex": ("codex", "login", "--device-auth"),
     "agy": ("agy",),
 }
 
@@ -474,8 +437,8 @@ def _run_interactive_login(provider: str) -> None:
     """
     name = _client_name("login", provider)
     home = str(Path(os.path.expanduser("~")))
-    argv = ClaudeDriver().login_argv() if provider == "claude" \
-        else login_command(provider)
+    driver = _MIGRATED_DRIVERS.get(provider)
+    argv = driver.login_argv() if driver is not None else login_command(provider)
     try:
         podman.run(*_client_run_args(name))
         # `bash -lc` nao e decoracao: sem shell de login o agy nao esta no
@@ -613,25 +576,20 @@ def login(root: Path, provider: str = "all") -> int:
 # e `unreachable`, nunca `unauthenticated`: rede ruim jamais vira "logout"
 # (motivo do primeiro teste desta tarefa).
 
-# Prompt sintetico e resposta esperada, compartilhados entre claude e codex.
-# `agy` NAO usa prompt algum (ver `_verify_command`): o brief proibe
-# explicitamente usar prompt como teste local do agy — `agy -p` bloqueia ate
-# 60s aguardando input quando deslogado (A1) — e o subcomando `agy models`
-# (real e documentado em `agy --help` na versao fixada 1.1.27; confirmado no
-# piloto, docs/validation/2026-09-07-auth-pilot-live.md: falha RAPIDO sem
-# credencial) prova a mesma coisa sem esse risco.
-_VERIFY_PROMPT = ("Responda apenas, sem nenhum texto adicional antes ou "
-                  "depois, com a frase exata: ASB_AUTH_VERIFY_OK")
+# Resposta esperada do prompt sintetico. `_VERIFY_PROMPT` em si so e usado
+# por drivers ja migrados (Tarefa 2: `ClaudeDriver`/`CodexDriver`
+# `.verify_argv()`) e pela checagem de sucesso compartilhada em
+# `AgentDriver._verify_success` (base.py); `agy` NAO usa prompt algum (ver
+# `_verify_command`): `agy -p` bloqueia ate 60s aguardando input quando
+# deslogado (A1), e o subcomando `agy models` prova a mesma coisa sem esse
+# risco.
 _VERIFY_EXPECTED_RESPONSE = "ASB_AUTH_VERIFY_OK"
 
-# Orcamento de tempo da PROPRIA chamada, do lado de DENTRO do container: o
-# `timeout` do coreutils mata o comando do fornecedor mesmo que ele fique
-# esperando entrada (o cenario mais parecido com o bloqueio de 60s do agy
-# deslogado). O timeout do lado do HOST (_VERIFY_EXEC_HOST_TIMEOUT) tem
-# folga para o interno matar primeiro — mesmo padrao de _EXEC_HOST_TIMEOUT
-# acima. Nenhum dos dois pode estourar sem que o resultado vire
-# `unreachable`: nunca `unauthenticated` por ausencia de resposta.
-_VERIFY_PROVIDER_TIMEOUT = 60   # segundos, `timeout N` dentro do container
+# `_VERIFY_PROVIDER_TIMEOUT` (o orcamento de tempo da PROPRIA chamada, do
+# lado de DENTRO do container) importado de agents/base.py: mesmo valor
+# usado pelos drivers ja migrados, aqui so para a evidencia de timeout do
+# lado do host (`_VERIFY_EXEC_HOST_TIMEOUT` abaixo) e para o `agy` de
+# `_verify_command`, ainda nao migrado.
 _VERIFY_EXEC_HOST_TIMEOUT = 70  # segundos, do lado do host
 
 
@@ -644,32 +602,17 @@ def _verify_command(provider: str) -> str:
     dentro do projeto montado ou para perto de secrets do workspace.
 
     Cada flag usada aqui foi confirmada na versao fixada, offline, sem
-    tocar rede (`agy --help`, `codex exec --help`): `agy models`,
-    `codex exec --skip-git-repo-check --sandbox read-only -o <file>`.
-    Nenhuma e uma flag imaginada.
+    tocar rede (`agy --help`): `agy models`. Nenhuma e uma flag imaginada.
 
     So resolve fornecedores AINDA nao migrados para seu driver (Tarefa 2):
-    `claude` ja saiu daqui, para `ClaudeDriver.verify_argv()`.
+    `claude` e `codex` ja sairam daqui, para `ClaudeDriver.verify_argv()` e
+    `CodexDriver.verify_argv()`.
     """
-    prompt = shlex.quote(_VERIFY_PROMPT)
     setup = (
         "WORKDIR=$(mktemp -d /tmp/asb-auth-verify.XXXXXX) || exit 70; "
         "trap 'rm -rf \"$WORKDIR\"' EXIT HUP INT TERM; "
         "cd \"$WORKDIR\" || exit 70; "
     )
-    if provider == "codex":
-        # O stdout do `codex exec` nao participa da prova: algumas versoes
-        # tambem transmitem eventos/resposta ali. Somente o arquivo de `-o`
-        # e lido; stderr e revelado apenas na falha para classificacao.
-        return (
-            f'{setup}OUT="$WORKDIR/codex-output"; '
-            f'ERR="$WORKDIR/codex-error"; '
-            f'timeout {_VERIFY_PROVIDER_TIMEOUT} asb-codex exec '
-            f'--skip-git-repo-check --sandbox read-only -o "$OUT" {prompt} '
-            f'< /dev/null > /dev/null 2>"$ERR"; RC=$?; '
-            f'if [ "$RC" -eq 0 ]; then cat "$OUT" 2>/dev/null; '
-            f'else cat "$ERR" >&2; fi; exit "$RC"'
-        )
     if provider == "agy":
         # Sem prompt e sem `-p`/`--print`: `agy models` e um subcomando REAL
         # (nao uma flag inventada) que nao envia mensagem alguma ao modelo.
@@ -680,7 +623,7 @@ def _verify_command(provider: str) -> str:
                 "asb-agy models < /dev/null")
     raise ValueError(
         f"provedor invalido para verificacao real: {provider!r} "
-        "(use 'codex' ou 'agy'; 'claude' ja migrou para ClaudeDriver)")
+        "(use 'agy'; 'claude' e 'codex' ja migraram para seus drivers)")
 
 
 # Marcadores de rede: aparecem na saida real de qualquer CLI de fornecedor
@@ -737,10 +680,6 @@ def _contains_code(text: str, codes: tuple[str, ...]) -> bool:
 # (Tarefa 2) sai desta tabela: seus marcadores passam a viver em
 # `<Driver>.auth_evidence_markers`.
 _AUTH_EVIDENCE_MARKERS: dict[str, tuple[str, ...]] = {
-    "codex": (
-        "not logged in", "invalid_api_key", "incorrect api key provided",
-        "no codex credentials were found",
-    ),
     "agy": ("authentication required", "authentication failed"),
 }
 
@@ -977,12 +916,12 @@ def verify_client(provider: str, container: str, *,
     probe = readiness.probe_proxy(
         agent_container=container, proxy_container=proxy_container)
     network_ok = probe.state == "healthy"
+    driver = _MIGRATED_DRIVERS.get(provider)
     if not network_ok:
-        if provider == "claude":
+        if driver is not None:
             synthetic = subprocess.CompletedProcess((), 1, "", "")
             return replace(
-                ClaudeDriver().classify_verification(
-                    synthetic, network_state=False),
+                driver.classify_verification(synthetic, network_state=False),
                 checked_at=checked_at)
         return replace(
             classify_verification(provider, 1, "", network_ok=False),
@@ -1047,7 +986,7 @@ def verify_client(provider: str, container: str, *,
                      "fornecedor foi tentada",
             remediation="asb-agent doctor")
 
-    command_argv = ClaudeDriver().verify_argv() if provider == "claude" \
+    command_argv = driver.verify_argv() if driver is not None \
         else (_verify_command(provider),)
     _spend_call(provider)
     try:
@@ -1080,9 +1019,9 @@ def verify_client(provider: str, container: str, *,
                      "nunca interpretado como logout",
             remediation="asb-agent doctor")
 
-    if provider == "claude":
+    if driver is not None:
         return replace(
-            ClaudeDriver().classify_verification(result, network_state=True),
+            driver.classify_verification(result, network_state=True),
             checked_at=checked_at)
 
     stdout = result.stdout or ""

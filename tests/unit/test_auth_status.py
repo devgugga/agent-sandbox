@@ -41,44 +41,9 @@ class TestAuthResult(unittest.TestCase):
 # de auth.py para ClaudeDriver.parse_auth_status na Tarefa 2.
 
 
-class TestParseCodexStatus(unittest.TestCase):
-    def test_authenticated(self):
-        result = auth.parse_codex_status(0, "Logged in using ChatGPT\n", "")
-        self.assertEqual(result.state, "authenticated")
-        self.assertEqual(result.provider, "codex")
-        self.assertEqual(result.remediation, "")
-
-    def test_unauthenticated(self):
-        result = auth.parse_codex_status(1, "Not logged in\n", "")
-        self.assertEqual(result.state, "unauthenticated")
-
-    def test_explicit_negative_prevails_over_positive_substring(self):
-        # "Not logged in" CONTEM a substring "logged in" -- a negativa
-        # explicita tem que vencer, nunca ser lida como positiva.
-        result = auth.parse_codex_status(1, "Not logged in\n", "")
-        self.assertEqual(result.state, "unauthenticated")
-
-    def test_explicit_negative_on_stderr_also_prevails(self):
-        result = auth.parse_codex_status(0, "", "Not logged in")
-        self.assertEqual(result.state, "unauthenticated")
-
-    def test_unknown_format_does_not_become_authenticated(self):
-        result = auth.parse_codex_status(0, "algo inesperado\n", "")
-        self.assertEqual(result.state, "unknown")
-
-    def test_comando_ausente(self):
-        result = auth.parse_codex_status(
-            127, "", "bash: line 1: codex: command not found")
-        self.assertEqual(result.state, "unknown")
-
-    def test_timeout(self):
-        result = auth.parse_codex_status(124, "", "")
-        self.assertEqual(result.state, "unknown")
-
-    def test_authenticated_requires_returncode_zero(self):
-        # Mensagem de sucesso mas codigo != 0 e contraditorio -> unknown.
-        result = auth.parse_codex_status(1, "Logged in using ChatGPT\n", "")
-        self.assertEqual(result.state, "unknown")
+# TestParseCodexStatus migrou para tests/unit/test_agent_drivers.py
+# (classe TestCodexParseAuthStatus) junto com o proprio parser, que saiu
+# de auth.py para CodexDriver.parse_auth_status na Tarefa 2.
 
 
 class TestCheckStatus(unittest.TestCase):
@@ -153,13 +118,11 @@ class TestCheckStatus(unittest.TestCase):
         )
         self.assertEqual(result.state, "authenticated")
 
-    def test_status_commands_never_carry_a_mutating_verb(self):
-        # "claude" migrou para ClaudeDriver.status_command (Tarefa 2); ver
-        # tests/unit/test_agent_drivers.py::TestClaudeParseAuthStatus.
-        self.assertEqual(auth.STATUS_COMMANDS["codex"], "codex login status")
-        for command in auth.STATUS_COMMANDS.values():
-            self.assertNotIn("logout", command)
-            self.assertNotIn("/login", command)
+    # test_status_commands_never_carry_a_mutating_verb migrou para
+    # tests/unit/test_agent_drivers.py (TestClaudeParseAuthStatus e
+    # TestCodexParseAuthStatus, `test_status_command_never_carries_a_mutating_verb`):
+    # STATUS_COMMANDS nao existe mais em auth.py, claude e codex ja migraram
+    # para `<Driver>.status_command`.
 
     def test_podman_exec_failure_becomes_provider_error_not_unauthenticated(self):
         # PodmanError levantado pelo `podman exec` (o proprio comando do

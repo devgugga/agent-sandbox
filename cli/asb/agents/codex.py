@@ -46,19 +46,30 @@ Dentro do sandbox, `$HOME/.codex/sessions` e o subpath `codex-sessions` do
 volume de sessao do workspace; o driver o le PELO HOST, pelo mountpoint do
 volume, via `sessions_root`. Sem `sessions_root` nao ha varredura: o
 `~/.codex` do operador nunca e lido.
+
+Regras de autenticacao (Tarefa 2 da decomposicao de `auth.py`): `codex
+login status` reporta 'Not logged in' com codigo 1 quando deslogado; a
+negativa explicita tem PRECEDENCIA sobre qualquer substring positiva
+('Not logged in' contem 'logged in'). O login real e `codex login
+--device-auth` — o OAuth padrao abre um servidor de callback numa porta
+do container que o navegador do host nao alcanca, e trava. A verificacao
+real usa `codex exec --skip-git-repo-check --sandbox read-only -o <file>`,
+nunca o subcomando interativo padrao.
 """
 from __future__ import annotations
 
 import json
 import os
 import re
+import shlex
 import stat
 from datetime import datetime
 from pathlib import Path, PurePosixPath
 from typing import Iterable
 
-from asb.agents.base import (AgentDriver, LaunchCommand, Lifetime,
-                             SessionEvidence)
+from asb.agents.base import (AgentDriver, AuthResult, LaunchCommand, Lifetime,
+                             SessionEvidence, _now_iso, _verify_setup_script,
+                             _VERIFY_PROMPT, _VERIFY_PROVIDER_TIMEOUT)
 from asb.sessions.model import AgentKind
 
 # Teto da leitura da primeira linha (o `session_meta` medido tem ~1 KiB).
@@ -82,6 +93,15 @@ class CodexDriver(AgentDriver):
     version_pattern = re.compile(r"^codex-cli\s+(\S+)$")
     resume_option_pattern = re.compile(r"(?m)^\s*resume\b")
     session_id_provable = True
+
+    # -- autenticacao (Tarefa 2) -------------------------------------------
+
+    provider = "codex"
+    status_command = "codex login status"
+    auth_evidence_markers = (
+        "not logged in", "invalid_api_key", "incorrect api key provided",
+        "no codex credentials were found",
+    )
 
     def launch(self, cwd: Path,
                session_id: str | None = None) -> LaunchCommand:
@@ -114,6 +134,72 @@ class CodexDriver(AgentDriver):
                    evidence.contended))
                and session_id not in evidence.claimed_ids]
         return ids[0] if len(ids) == 1 else None
+
+    def parse_auth_status(self, completed) -> AuthResult:
+        """Interpreta `codex login status` (A1: 'Not logged in' com codigo 1
+        quando deslogado; formato do texto de sucesso nao esta documentado
+        com a mesma certeza).
+
+        A negativa explicita ('not logged in') tem PRECEDENCIA sobre
+        qualquer substring positiva: 'Not logged in' contem 'logged in', e
+        grepar 'logged in' sem checar a negativa primeiro casaria os dois
+        estados. Sem essa negativa, `authenticated` exige codigo 0 E a
+        substring positiva; formato desconhecido vira `unknown`, nunca
+        `authenticated` por otimismo.
+        """
+        checked_at = _now_iso()
+        returncode = completed.returncode
+        stdout = completed.stdout
+        stderr = completed.stderr
+        combined = f"{stdout or ''}\n{stderr or ''}".lower()
+
+        if "not logged in" in combined:
+            return AuthResult(
+                provider="codex",
+                state="unauthenticated",
+                checked_at=checked_at,
+                evidence="codex login status reportou 'Not logged in'",
+                remediation="asb-agent login",
+            )
+        if returncode == 0 and "logged in" in combined:
+            return AuthResult(
+                provider="codex",
+                state="authenticated",
+                checked_at=checked_at,
+                evidence="codex login status reportou sessao ativa (codigo 0)",
+                remediation="",
+            )
+        return AuthResult(
+            provider="codex",
+            state="unknown",
+            checked_at=checked_at,
+            evidence=f"saida nao reconhecida de 'codex login status' (codigo {returncode})",
+            remediation="asb-agent auth status --workspace <id> --agent codex --json",
+        )
+
+    def login_argv(self) -> tuple[str, ...]:
+        return ("codex", "login", "--device-auth")
+
+    def verify_argv(self) -> tuple[str, ...]:
+        """Script remoto de UMA chamada real: `codex exec
+        --skip-git-repo-check --sandbox read-only -o <file>`, flags
+        confirmadas offline na versao fixada (`codex exec --help`).
+
+        O stdout do `codex exec` nao participa da prova: algumas versoes
+        tambem transmitem eventos/resposta ali. Somente o arquivo de `-o` e
+        lido; stderr e revelado apenas na falha para classificacao.
+        """
+        prompt = shlex.quote(_VERIFY_PROMPT)
+        setup = _verify_setup_script()
+        return (
+            f'{setup}OUT="$WORKDIR/codex-output"; '
+            f'ERR="$WORKDIR/codex-error"; '
+            f'timeout {_VERIFY_PROVIDER_TIMEOUT} asb-codex exec '
+            f'--skip-git-repo-check --sandbox read-only -o "$OUT" {prompt} '
+            f'< /dev/null > /dev/null 2>"$ERR"; RC=$?; '
+            f'if [ "$RC" -eq 0 ]; then cat "$OUT" 2>/dev/null; '
+            f'else cat "$ERR" >&2; fi; exit "$RC"',
+        )
 
 
 def _with_trust(command: LaunchCommand, cwd: Path) -> LaunchCommand:

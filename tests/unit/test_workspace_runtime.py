@@ -58,7 +58,7 @@ class _Harness:
     falhas antes de `run()`."""
 
     def __init__(self, tmp: Path, *, host_ports=(), container_mode="standard",
-                events: list[str] | None = None):
+                host_api="none", events: list[str] | None = None):
         self.tmp = tmp
         self.events = events if events is not None else []
         self.ws = "demo"
@@ -77,7 +77,7 @@ class _Harness:
                              project_root=tmp / "mount" / "proj",
                              state=tmp / "state")
         self.profile = Profile(services=[], host_ports=list(host_ports),
-                               publish_ports=[], host_api="none",
+                               publish_ports=[], host_api=host_api,
                                container_mode=container_mode, allow=[])
         self.storage = _fake_storage()
         self.tx = WorkspaceTransaction(self.ws, is_existing=False)
@@ -156,6 +156,18 @@ class _Harness:
         stack.enter_context(mock.patch(
             "cli.asb.runtime.workspace.supervisor.install_workspace",
             side_effect=lambda *a, **k: self.events.append("install-units") or []))
+        if self.profile.host_api == "read":
+            # §4 (broker Docker) checa a existencia REAL de
+            # /run/asb-docker/docker.sock antes de criar o container;
+            # so este caminho especifico e forjado, o resto de `Path.exists`
+            # segue real.
+            orig_exists = Path.exists
+
+            def fake_path_exists(p):
+                if str(p) == "/run/asb-docker/docker.sock":
+                    return True
+                return orig_exists(p)
+            stack.enter_context(mock.patch.object(Path, "exists", fake_path_exists))
         return stack
 
 
@@ -360,6 +372,32 @@ class TestPrepareManifestAndAgentArgvMatchPreExtraction(unittest.TestCase):
             self.assertEqual(
                 list(proxy_call[proxy_call.index("agent-sandbox-proxy:latest"):]),
                 ["agent-sandbox-proxy:latest", "squid", "-N", "-f", "/etc/squid/squid.conf"])
+
+    def test_docker_broker_argv_when_host_api_is_read(self):
+        """§4: cobertura direta do argv do broker Docker — achado durante o
+        red-proof da fatia C (services/forwarder/broker), o mesmo padrao do
+        `test_proxy_argv` na fatia B: nada neste arquivo nem em
+        `test_broker.py` checava `--user` do broker."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            h = _Harness(Path(tmp_dir), host_api="read")
+            with h.build():
+                h.runtime.prepare(h.root, h.ws, h.repo, tx=h.tx, storage=h.storage)
+
+            broker_call = next(
+                c for c in h.podman_calls
+                if "--name" in c and c[c.index("--name") + 1] == "asb-demo-docker")
+            self.assertEqual(broker_call[0], "create")
+            self.assertIn("--restart", broker_call)
+            self.assertEqual(broker_call[broker_call.index("--restart") + 1], "no")
+            self.assertIn("--user", broker_call)
+            self.assertEqual(broker_call[broker_call.index("--user") + 1], "900")
+            self.assertIn("--network", broker_call)
+            self.assertEqual(broker_call[broker_call.index("--network") + 1], "asb-demo")
+            self.assertIn("/run/asb-docker/docker.sock:/var/run/docker.sock:Z", broker_call)
+            self.assertEqual(
+                list(broker_call[broker_call.index("--entrypoint"):]),
+                ["--entrypoint", "sh", "agent-sandbox-proxy:latest", "-c",
+                 "socat TCP-LISTEN:2375,fork,reuseaddr UNIX-CONNECT:/var/run/docker.sock"])
 
     def test_agent_argv_and_manifest_content(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

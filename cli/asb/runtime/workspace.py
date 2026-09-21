@@ -142,6 +142,18 @@ class _SetupResult:
     restart_policy: str
 
 
+@dataclass
+class _OptionalContainersResult:
+    """Resultado de §2-4: servicos adicionais, forwarder e broker Docker —
+    so estrutura de passagem de valor, nenhuma logica nova."""
+
+    services_manifest: dict[str, dict[str, str]]
+    fwd_name: str
+    fwd_cid: str
+    docker_cid: str
+    docker_name: str
+
+
 class WorkspaceRuntime:
     """Orquestra o preparo de recursos de um workspace: containers, redes,
     volumes, manifesto e unidades systemd. Extraido de `lifecycle.py`
@@ -233,28 +245,20 @@ class WorkspaceRuntime:
             tx.record_container(proxy_cid)
         return proxy_cid
 
-    def prepare(
+    def _create_optional_containers(
         self,
-        root: Path,
         ws: str,
-        repo: Path,
-        tx: WorkspaceTransaction | None = None,
-        storage: RuntimeStorage | None = None,
-    ) -> None:
-        """Prepara clone, redes, containers e manifesto sem restauracao
-        global. Movido verbatim de `lifecycle.prepare_workspace`."""
+        n: dict[str, str],
+        profile: Profile,
+        cmd_action: str,
+        cmd_flags: list[str],
+        restart_policy: str,
+        tx: WorkspaceTransaction | None,
+    ) -> "_OptionalContainersResult":
+        """§2-4: servicos adicionais, forwarder e broker Docker — os tres
+        containers OPCIONAIS que `prepare()` cria entre o proxy e o
+        agente."""
         from .. import lifecycle
-
-        setup = self._prepare_setup_and_network(root, ws, repo, tx, storage)
-        home, storage, profile, layout, conf, n = (
-            setup.home, setup.storage, setup.profile, setup.layout,
-            setup.conf, setup.n)
-        cmd_action, cmd_flags, restart_policy = (
-            setup.cmd_action, setup.cmd_flags, setup.restart_policy)
-
-        # 1. Proxy
-        proxy_cid = self._create_proxy_container(
-            n, ws, conf, cmd_action, cmd_flags, restart_policy, tx)
 
         # 2. Servicos adicionais
         services_manifest = start_services(
@@ -291,6 +295,40 @@ class WorkspaceRuntime:
             docker_cid = _get_container_id(docker_name)
             if tx:
                 tx.record_container(docker_cid)
+
+        return _OptionalContainersResult(
+            services_manifest=services_manifest, fwd_name=fwd_name,
+            fwd_cid=fwd_cid, docker_cid=docker_cid, docker_name=docker_name)
+
+    def prepare(
+        self,
+        root: Path,
+        ws: str,
+        repo: Path,
+        tx: WorkspaceTransaction | None = None,
+        storage: RuntimeStorage | None = None,
+    ) -> None:
+        """Prepara clone, redes, containers e manifesto sem restauracao
+        global. Movido verbatim de `lifecycle.prepare_workspace`."""
+        from .. import lifecycle
+
+        setup = self._prepare_setup_and_network(root, ws, repo, tx, storage)
+        home, storage, profile, layout, conf, n = (
+            setup.home, setup.storage, setup.profile, setup.layout,
+            setup.conf, setup.n)
+        cmd_action, cmd_flags, restart_policy = (
+            setup.cmd_action, setup.cmd_flags, setup.restart_policy)
+
+        # 1. Proxy
+        proxy_cid = self._create_proxy_container(
+            n, ws, conf, cmd_action, cmd_flags, restart_policy, tx)
+
+        # 2-4. Servicos adicionais, forwarder e broker Docker
+        optional = self._create_optional_containers(
+            ws, n, profile, cmd_action, cmd_flags, restart_policy, tx)
+        services_manifest, fwd_name, fwd_cid, docker_cid, docker_name = (
+            optional.services_manifest, optional.fwd_name, optional.fwd_cid,
+            optional.docker_cid, optional.docker_name)
 
         # 5. Staging, SSH, Keyring
         stage = layout.state / "staging"

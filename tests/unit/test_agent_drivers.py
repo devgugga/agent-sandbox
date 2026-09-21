@@ -1464,7 +1464,7 @@ class TestAntigravityParseAuthStatus(unittest.TestCase):
         self.assertIsNone(AntigravityDriver.status_command)
 
     def test_parse_auth_status_is_always_unknown(self):
-        result = AntigravityDriver().parse_auth_status()
+        result = AntigravityDriver().parse_auth_status(None)
         self.assertEqual(result.state, "unknown")
         self.assertEqual(result.provider, "agy")
 

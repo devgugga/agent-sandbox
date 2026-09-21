@@ -135,7 +135,7 @@ class AntigravityDriver(AgentDriver):
     def discover_session_id(self, evidence: SessionEvidence) -> str | None:
         return None
 
-    def parse_auth_status(self, completed=None) -> AuthResult:
+    def parse_auth_status(self, completed) -> AuthResult:
         """Sempre `unknown`, SEM tocar podman: `agy` nao possui comando de
         status local comprovado, e `agy -p ping` bloqueia ate 60s aguardando
         entrada quando deslogado (A1). `completed` e ignorado de proposito —

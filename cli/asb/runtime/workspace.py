@@ -166,6 +166,35 @@ class _AgentResult:
     agent_cid: str
 
 
+@dataclass
+class SuspendOutcome:
+    """Resultado de `WorkspaceRuntime.suspend()`. A impressao e a decisao
+    de codigo de saida sao do chamador (`lifecycle.suspend()`) — a
+    Interfaces do brief atribui "a impressao e a politica de codigo de
+    saida existentes" as funcoes publicas de `lifecycle.py`, nao ao
+    runtime (achado da revisao da Tarefa 4, ronda 1). `warnings` preserva
+    a ORDEM em que os avisos de `systemctl` teriam sido impressos —
+    `lifecycle.suspend()` os imprime nessa mesma ordem, antes do erro
+    terminal (se houver), reproduzindo byte a byte o texto e a sequencia
+    que o metodo produzia quando ele mesmo imprimia."""
+
+    warnings: list[str]
+    error: str | None
+    ok: bool
+
+
+@dataclass
+class ResumeOutcome:
+    """Resultado de `WorkspaceRuntime.resume()`. Mesma divisao de
+    responsabilidade que `SuspendOutcome`: `error` e `ok` sao para o
+    chamador decidir o que imprimir (em stderr) e qual codigo devolver;
+    em sucesso, `lifecycle.resume()` e quem chama `emit()` — o runtime
+    nunca imprime a conexao."""
+
+    error: str | None
+    ok: bool
+
+
 class WorkspaceRuntime:
     """Orquestra o preparo de recursos de um workspace: containers, redes,
     volumes, manifesto e unidades systemd. Extraido de `lifecycle.py`
@@ -547,13 +576,17 @@ class WorkspaceRuntime:
         else:
             supervisor.start_workspace(ws)
 
-    def suspend(self, ws: str, n: dict[str, str]) -> int:
+    def suspend(self, ws: str, n: dict[str, str]) -> SuspendOutcome:
         """Para o workspace: desabilita e para o target systemd e verifica
-        que todos os containers pararam. Movido verbatim de
-        `lifecycle.suspend()`, a partir da resolucao de `n` — que fica com
-        o chamador via `_require_workspace` (validacao de fachada, nao
-        orquestracao de recursos)."""
+        que todos os containers pararam. Movido de `lifecycle.suspend()`,
+        a partir da resolucao de `n` — que fica com o chamador via
+        `_require_workspace` (validacao de fachada, nao orquestracao de
+        recursos). NUNCA imprime nem decide codigo de saida: devolve um
+        `SuspendOutcome` para `lifecycle.suspend()` fazer as duas coisas,
+        com o MESMO texto e a MESMA ordem que este metodo produzia quando
+        ele mesmo imprimia (achado da revisao da Tarefa 4, ronda 1)."""
         target = f"asb-{ws}.target"
+        warnings: list[str] = []
 
         def _systemctl(*args: str):
             return subprocess.run(["systemctl", "--user", *args],
@@ -567,18 +600,17 @@ class WorkspaceRuntime:
         for verb in ("disable", "stop"):
             res = _systemctl(verb, target)
             if res.returncode != 0 and (res.stderr or "").strip():
-                print(f"aviso: systemctl --user {verb} {target} falhou: "
-                      f"{res.stderr.strip()}", file=sys.stderr)
+                warnings.append(f"aviso: systemctl --user {verb} {target} falhou: "
+                                f"{res.stderr.strip()}")
 
         state = (_systemctl("is-active", target).stdout or "").strip()
         if state in ("active", "activating", "reloading"):
-            print(
+            error = (
                 f"erro: falha ao suspender workspace {ws}: a unidade {target} "
                 f"continua {state}, e o systemd devolve os containers em segundos. "
-                f"Veja 'systemctl --user status {target}'.",
-                file=sys.stderr,
+                f"Veja 'systemctl --user status {target}'."
             )
-            return 1
+            return SuspendOutcome(warnings=warnings, error=error, ok=False)
 
         containers = podman.out(
             "ps", "--filter", f"label=asb.workspace={ws}",
@@ -596,23 +628,26 @@ class WorkspaceRuntime:
             if podman.exists("container", c) and podman.running(c)
         )
         if still_running:
-            print(
+            error = (
                 f"erro: falha ao suspender workspace {ws}: containers ainda em "
-                f"execucao: {', '.join(still_running)}",
-                file=sys.stderr,
+                f"execucao: {', '.join(still_running)}"
             )
-            return 1
+            return SuspendOutcome(warnings=warnings, error=error, ok=False)
 
-        return 0
+        return SuspendOutcome(warnings=warnings, error=None, ok=True)
 
-    def resume(self, root: Path, ws: str, layout: Layout) -> int:
-        """Religa o workspace pelo systemd. Movido verbatim de
-        `lifecycle.resume()`, a partir da resolucao de `layout` — que fica
-        com o chamador via `_require_workspace`/`layout_for` (validacao de
-        fachada). Verifica a conectividade do host, garante o keyring,
-        habilita o target, executa reset-failed nas unidades do workspace e
-        inicia o target. O JSON de conexao so e emitido depois que
-        `readiness.probe_workspace` reporta tudo saudavel."""
+    def resume(self, root: Path, ws: str, layout: Layout) -> ResumeOutcome:
+        """Religa o workspace pelo systemd. Movido de `lifecycle.resume()`,
+        a partir da resolucao de `layout` — que fica com o chamador via
+        `_require_workspace`/`layout_for` (validacao de fachada). Verifica
+        a conectividade do host, garante o keyring, habilita o target,
+        executa reset-failed nas unidades do workspace e inicia o target.
+        NUNCA imprime, decide codigo de saida nem chama `emit()`: devolve
+        um `ResumeOutcome` para `lifecycle.resume()` fazer as tres coisas
+        (achado da revisao da Tarefa 4, ronda 1) — o JSON de conexao so e
+        emitido pela fachada depois que este metodo reporta `ok=True`, o
+        que so acontece depois que `readiness.probe_workspace` reporta
+        tudo saudavel."""
         from .. import lifecycle
 
         # Emenda A §4: mesmo motivo do `up`. Sem rede, `systemctl start`
@@ -621,9 +656,9 @@ class WorkspaceRuntime:
         host_res = readiness.wait_until(
             lambda to: readiness.probe_host(timeout=to), timeout=30.0)
         if host_res.state != "healthy":
-            print(f"erro: sem conectividade real ({host_res.code}); conecte a rede "
-                  "e rode 'asb-agent resume' de novo", file=sys.stderr)
-            return 1
+            error = (f"erro: sem conectividade real ({host_res.code}); conecte a rede "
+                     "e rode 'asb-agent resume' de novo")
+            return ResumeOutcome(error=error, ok=False)
 
         lifecycle.ensure_keyring_service(lifecycle.ensure_runtime(root))
 
@@ -665,10 +700,11 @@ class WorkspaceRuntime:
 
         probe_res = readiness.wait_until(check_ws, timeout=30.0)
         if probe_res.state != "healthy":
-            print(f"erro: falha na prontidao do workspace ({probe_res.component}: {probe_res.code}): {probe_res.remediation}", file=sys.stderr)
-            return 1
+            error = (f"erro: falha na prontidao do workspace "
+                     f"({probe_res.component}: {probe_res.code}): {probe_res.remediation}")
+            return ResumeOutcome(error=error, ok=False)
 
-        return lifecycle.emit(ws, layout)
+        return ResumeOutcome(error=None, ok=True)
 
     def remove_resources(self, ws: str, home: Path) -> None:
         """Remove unidades systemd (best-effort), containers (por LABEL) e

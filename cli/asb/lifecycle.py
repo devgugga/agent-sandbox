@@ -413,12 +413,21 @@ def _require_workspace(ws: str) -> tuple[dict[str, str], Path, Path]:
 def suspend(ws: str) -> int:
     """Para o workspace: desabilita e para o target systemd e verifica que todos os containers pararam.
 
-    Delega a `WorkspaceRuntime.suspend()` (Tarefa 4 da decomposicao de
-    modulos) a partir da resolucao de `n`, que fica aqui — e validacao de
-    fachada (`_require_workspace`), nao orquestracao de recursos.
+    Delega a orquestracao a `WorkspaceRuntime.suspend()` (Tarefa 4 da
+    decomposicao de modulos) a partir da resolucao de `n`, que fica aqui —
+    e validacao de fachada (`_require_workspace`), nao orquestracao de
+    recursos. A impressao e a politica de codigo de saida continuam aqui
+    tambem (Interfaces do brief): o metodo do runtime so devolve um
+    resultado, nunca imprime.
     """
     n, _, _ = _require_workspace(ws)
-    return WorkspaceRuntime().suspend(ws, n)
+    result = WorkspaceRuntime().suspend(ws, n)
+    for warning in result.warnings:
+        print(warning, file=sys.stderr)
+    if not result.ok:
+        print(result.error, file=sys.stderr)
+        return 1
+    return 0
 
 
 def resume(root: Path, ws: str) -> int:
@@ -429,14 +438,20 @@ def resume(root: Path, ws: str) -> int:
     de conexao so e emitido depois que readiness.probe_workspace reporta tudo
     saudavel.
 
-    Delega a `WorkspaceRuntime.resume()` (Tarefa 4 da decomposicao de
-    modulos) a partir da resolucao de `layout`, que fica aqui — e validacao
-    de fachada (`_require_workspace`/`layout_for`), nao orquestracao de
-    recursos.
+    Delega a orquestracao a `WorkspaceRuntime.resume()` (Tarefa 4 da
+    decomposicao de modulos) a partir da resolucao de `layout`, que fica
+    aqui — e validacao de fachada (`_require_workspace`/`layout_for`), nao
+    orquestracao de recursos. A impressao, a politica de codigo de saida e
+    a chamada a `emit()` continuam aqui tambem (Interfaces do brief): o
+    metodo do runtime so devolve um resultado, nunca imprime nem emite.
     """
     _, home, origin = _require_workspace(ws)
     layout = layout_for(origin, ws, home)
-    return WorkspaceRuntime().resume(root, ws, layout)
+    result = WorkspaceRuntime().resume(root, ws, layout)
+    if not result.ok:
+        print(result.error, file=sys.stderr)
+        return 1
+    return emit(ws, layout)
 
 
 def reload_allowlist(root: Path, ws: str) -> int:

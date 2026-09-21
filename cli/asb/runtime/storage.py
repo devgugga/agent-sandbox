@@ -22,8 +22,10 @@ from .. import podman
 if TYPE_CHECKING:
     # Import so de tipo: evita o ciclo runtime que a R4 do controlador
     # proibe (`runtime/` nunca importa `lifecycle` em tempo de execucao).
-    # `WorkspaceTransaction` ainda mora em lifecycle.py ate a Tarefa 4.
-    from ..lifecycle import WorkspaceTransaction
+    # `WorkspaceTransaction` mora em runtime/transaction.py desde a Tarefa 4;
+    # dentro de `runtime/` isto nao e ciclo (so entre `runtime/` e
+    # `lifecycle.py`), entao o import de tipo pode ser direto, sem tardio.
+    from .transaction import WorkspaceTransaction
 
 CREDENTIALS_VOLUME = os.environ.get("ASB_CREDENTIALS_VOLUME", "asb-credentials")
 TOOLCACHE_VOLUME = "asb-toolcache"

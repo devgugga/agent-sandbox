@@ -34,7 +34,7 @@ from cli.asb.runtime.storage import (
 
 
 class _FakeTransaction:
-    """Duplo minimo de `lifecycle.WorkspaceTransaction`: so o que
+    """Duplo minimo de `runtime.transaction.WorkspaceTransaction`: so o que
     `ensure_session_volume` chama."""
 
     def __init__(self):

@@ -513,6 +513,18 @@ class WorkspaceRuntime:
             docker_name, docker_cid, services_manifest, key, runtime_dir)
 
         # 7. Instalar unidades systemd (runtime unico)
+        self._install_units(ws, layout, tx)
+
+    def _install_units(
+        self,
+        ws: str,
+        layout: Layout,
+        tx: WorkspaceTransaction | None,
+    ) -> None:
+        """§7: instala as unidades systemd do workspace, e registra o
+        conteudo ANTERIOR do gate de rede compartilhado para restauracao no
+        rollback (a espera de rede e compartilhada por todos os
+        workspaces)."""
         gate_unit = supervisor.unit_dir() / supervisor.network_unit_name()
         if tx is not None and gate_unit.is_file():
             tx.record_restore(gate_unit, gate_unit.read_text(encoding="utf-8"))

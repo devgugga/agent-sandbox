@@ -235,6 +235,36 @@ class TestPrepareEventOrder(unittest.TestCase):
 
         self.assertLess(events.index("ensure-keyring"), events.index("create-agent"))
 
+    def test_gate_unit_content_is_recorded_before_install_workspace_overwrites_it(self):
+        """§7: `supervisor.install_workspace` REESCREVE o gate de rede
+        compartilhado (`_atomic_write_text` incondicional, visto em
+        cli/asb/supervisor.py::install_workspace) — `tx.record_restore` tem
+        de capturar o conteudo ANTERIOR antes dessa escrita, nunca depois.
+        O harness padrao mocka `install_workspace` por inteiro (nao toca o
+        arquivo), entao este teste simula a escrita real para expor a
+        ordem."""
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            h = _Harness(Path(tmp_dir))
+            units_dir = h.tmp / "units"
+            units_dir.mkdir(parents=True, exist_ok=True)
+            gate_unit = units_dir / "asb-network.service"
+            gate_unit.write_text("ORIGINAL\n")
+
+            def fake_install_workspace(*a, **k):
+                gate_unit.write_text("SOBRESCRITO-POR-INSTALL\n")
+                return []
+
+            with h.build():
+                with mock.patch(
+                        "cli.asb.runtime.workspace.supervisor.install_workspace",
+                        side_effect=fake_install_workspace):
+                    h.runtime.prepare(h.root, h.ws, h.repo, tx=h.tx, storage=h.storage)
+
+            self.assertEqual(len(h.tx.overwritten), 1)
+            recorded_path, recorded_content = h.tx.overwritten[0]
+            self.assertEqual(recorded_path, gate_unit)
+            self.assertEqual(recorded_content, "ORIGINAL\n")
+
 
 class TestPrepareFailureInjectionRollsBackOnlyEarlierResources(unittest.TestCase):
     """Brief Passo 2: uma falha em CADA evento com efeito colateral deixa a

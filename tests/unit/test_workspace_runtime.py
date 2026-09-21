@@ -26,17 +26,22 @@ from contextlib import ExitStack
 from pathlib import Path
 from unittest import mock
 
-from cli.asb.profile import Profile
+from cli.asb.profile import Profile, Service
 from cli.asb.runtime.storage import RuntimeStorage
 from cli.asb.runtime.transaction import WorkspaceTransaction
 from cli.asb.runtime.workspace import WorkspaceRuntime
 from cli.asb.workspace import Layout
 
 
-def _fake_storage(**overrides):
+def _fake_storage(*, real_sessions=False, **overrides):
     """`RuntimeStorage` REAL com os quatro pontos que tocariam disco ou
     Podman trocados por valores fixos — mesmo padrao de
-    `test_lifecycle.py::_fake_storage`."""
+    `test_lifecycle.py::_fake_storage`.
+
+    `real_sessions=True` deixa `ensure_sessions` REAL (chama
+    `ensure_session_volume` de verdade, contra o `podman` falso do
+    harness): so assim o caminho `record_volume` do volume de sessao roda
+    em algum teste (achado da revisao da Tarefa 4, ronda 1)."""
     import os
 
     storage = RuntimeStorage(Path(os.path.expanduser("~")))
@@ -44,8 +49,9 @@ def _fake_storage(**overrides):
         return_value=overrides.get("credentials", "asb-credentials"))
     storage.credential_mounts = mock.Mock(
         return_value=list(overrides.get("credential_mounts", ())))
-    storage.ensure_sessions = mock.Mock(
-        return_value=overrides.get("session", "asb-test-ws-session"))
+    if not real_sessions:
+        storage.ensure_sessions = mock.Mock(
+            return_value=overrides.get("session", "asb-test-ws-session"))
     storage.ensure_toolcache = mock.Mock(
         return_value=overrides.get("toolcache", "t-vol"))
     return storage
@@ -58,7 +64,8 @@ class _Harness:
     falhas antes de `run()`."""
 
     def __init__(self, tmp: Path, *, host_ports=(), container_mode="standard",
-                host_api="none", events: list[str] | None = None):
+                host_api="none", services=(), real_sessions=False,
+                events: list[str] | None = None):
         self.tmp = tmp
         self.events = events if events is not None else []
         self.ws = "demo"
@@ -76,14 +83,15 @@ class _Harness:
         self.layout = Layout(ws=self.ws, project="proj", mount=tmp / "mount",
                              project_root=tmp / "mount" / "proj",
                              state=tmp / "state")
-        self.profile = Profile(services=[], host_ports=list(host_ports),
+        self.profile = Profile(services=list(services), host_ports=list(host_ports),
                                publish_ports=[], host_api=host_api,
                                container_mode=container_mode, allow=[])
-        self.storage = _fake_storage()
+        self.storage = _fake_storage(real_sessions=real_sessions)
         self.tx = WorkspaceTransaction(self.ws, is_existing=False)
         self.runtime = WorkspaceRuntime()
 
         self._network_exists = {"asb-demo": False, "asb-demo-out": False}
+        self._volume_exists: dict[str, bool] = {}
         self.podman_calls: list[tuple] = []
 
     def _fake_exists(self, kind, name):
@@ -92,7 +100,7 @@ class _Harness:
         if kind == "network":
             return self._network_exists.get(name, False)
         if kind == "volume":
-            return False
+            return self._volume_exists.get(name, False)
         return False
 
     def _fake_run(self, *args, **kwargs):
@@ -101,6 +109,10 @@ class _Harness:
             name = args[-1]
             self._network_exists[name] = True
             self.events.append("create-network")
+        elif args[:1] == ("volume",) and args[1:2] == ("create",):
+            name = args[-1]
+            self._volume_exists[name] = True
+            self.events.append("create-volume")
         elif "--name" in args:
             idx = args.index("--name") + 1
             target = args[idx]
@@ -116,6 +128,19 @@ class _Harness:
                 self.events.append("create-service")
         return mock.MagicMock(returncode=0, stdout="cid")
 
+    def _fake_out(self, *args, **kwargs):
+        # `_volume_mountpoint` (runtime/storage.py) le o mountpoint de um
+        # volume real via `podman volume inspect ... --format
+        # {{.Mountpoint}}`; so importa quando `real_sessions=True` deixa
+        # `ensure_sessions` real. Devolve um diretorio de verdade, dentro
+        # do tempdir do teste, para `_mkdir_private` poder criar subpaths.
+        if args[:2] == ("volume", "inspect"):
+            vol = args[2]
+            mountpoint = self.tmp / "volumes" / vol
+            mountpoint.mkdir(parents=True, exist_ok=True)
+            return str(mountpoint)
+        return f"cid-{args[1]}" if len(args) > 1 else "cid"
+
     def build(self):
         stack = ExitStack()
         stack.enter_context(mock.patch(
@@ -125,7 +150,7 @@ class _Harness:
             "cli.asb.runtime.workspace.podman.run", side_effect=self._fake_run))
         stack.enter_context(mock.patch(
             "cli.asb.runtime.workspace.podman.out",
-            side_effect=lambda *a, **k: f"cid-{a[1]}" if len(a) > 1 else "cid"))
+            side_effect=self._fake_out))
         stack.enter_context(mock.patch(
             "cli.asb.runtime.workspace.prepare_clone",
             side_effect=lambda *a, **k: self.events.append("prepare-clone")))
@@ -269,27 +294,79 @@ class TestPrepareEventOrder(unittest.TestCase):
 class TestPrepareFailureInjectionRollsBackOnlyEarlierResources(unittest.TestCase):
     """Brief Passo 2: uma falha em CADA evento com efeito colateral deixa a
     transacao com SOMENTE os recursos criados ANTES daquele ponto — nunca o
-    que a secao que falhou (ou uma posterior) teria criado."""
+    que a secao que falhou (ou uma posterior) teria criado.
 
-    def _prepare_with_failure(self, *, fail_at: str):
+    Cobre TODO ponto que chama `tx.record_*`, nao so os cinco originais:
+    as duas redes (separadamente — a primeira sempre sucedia antes por
+    construcao do teste anterior, entao "net-out falha" nunca rodava),
+    servico adicional, forwarder, broker Docker, volume de containers
+    aninhados e volume de sessao (achados da revisao da Tarefa 4, ronda 1)."""
+
+    # Um servico, uma porta de host e host_api="read" simultaneamente
+    # exercitam servico + forwarder + broker Docker no MESMO `prepare()`,
+    # entao um unico harness serve todo o conjunto de fail_at abaixo.
+    _SERVICES = [Service(name="redis", image="redis:7", env={})]
+
+    def _prepare_with_failure(self, *, fail_at: str, real_sessions=False):
         events: list[str] = []
         with tempfile.TemporaryDirectory() as tmp_dir:
-            h = _Harness(Path(tmp_dir), events=events)
+            h = _Harness(Path(tmp_dir), events=events,
+                        host_ports=[8080], host_api="read",
+                        services=self._SERVICES, real_sessions=real_sessions)
             with h.build():
-                if fail_at == "create-network":
-                    boom_run = h._fake_run
-
+                if fail_at == "create-network-net":
                     def failing_run(*args, **kwargs):
-                        if args[:2] == ("network", "create") or (
-                                args[:1] == ("network",) and "create" in args):
-                            raise RuntimeError("boom-network")
-                        return boom_run(*args, **kwargs)
+                        if args[:2] == ("network", "create") and args[-1] == "asb-demo":
+                            raise RuntimeError("boom-network-net")
+                        return h._fake_run(*args, **kwargs)
+                    patcher = mock.patch(
+                        "cli.asb.runtime.workspace.podman.run", side_effect=failing_run)
+                elif fail_at == "create-network-out":
+                    def failing_run(*args, **kwargs):
+                        if args[:2] == ("network", "create") and args[-1] == "asb-demo-out":
+                            raise RuntimeError("boom-network-out")
+                        return h._fake_run(*args, **kwargs)
                     patcher = mock.patch(
                         "cli.asb.runtime.workspace.podman.run", side_effect=failing_run)
                 elif fail_at == "create-proxy":
                     def failing_run(*args, **kwargs):
                         if "--name" in args and args[args.index("--name") + 1] == "asb-demo-proxy":
                             raise RuntimeError("boom-proxy")
+                        return h._fake_run(*args, **kwargs)
+                    patcher = mock.patch(
+                        "cli.asb.runtime.workspace.podman.run", side_effect=failing_run)
+                elif fail_at == "create-service":
+                    def failing_run(*args, **kwargs):
+                        if "--name" in args and "-svc-" in args[args.index("--name") + 1]:
+                            raise RuntimeError("boom-service")
+                        return h._fake_run(*args, **kwargs)
+                    patcher = mock.patch(
+                        "cli.asb.runtime.workspace.podman.run", side_effect=failing_run)
+                elif fail_at == "create-forwarder":
+                    def failing_run(*args, **kwargs):
+                        if "--name" in args and args[args.index("--name") + 1].endswith("-fwd"):
+                            raise RuntimeError("boom-forwarder")
+                        return h._fake_run(*args, **kwargs)
+                    patcher = mock.patch(
+                        "cli.asb.runtime.workspace.podman.run", side_effect=failing_run)
+                elif fail_at == "create-docker-broker":
+                    def failing_run(*args, **kwargs):
+                        if "--name" in args and args[args.index("--name") + 1].endswith("-docker"):
+                            raise RuntimeError("boom-docker-broker")
+                        return h._fake_run(*args, **kwargs)
+                    patcher = mock.patch(
+                        "cli.asb.runtime.workspace.podman.run", side_effect=failing_run)
+                elif fail_at == "create-session-volume":
+                    def failing_run(*args, **kwargs):
+                        if args[:2] == ("volume", "create") and args[-1] == "asb-demo-session":
+                            raise RuntimeError("boom-session-volume")
+                        return h._fake_run(*args, **kwargs)
+                    patcher = mock.patch(
+                        "cli.asb.runtime.workspace.podman.run", side_effect=failing_run)
+                elif fail_at == "create-nested-volume":
+                    def failing_run(*args, **kwargs):
+                        if args[:2] == ("volume", "create") and args[-1] == "asb-demo-containers":
+                            raise RuntimeError("boom-nested-volume")
                         return h._fake_run(*args, **kwargs)
                     patcher = mock.patch(
                         "cli.asb.runtime.workspace.podman.run", side_effect=failing_run)
@@ -321,9 +398,19 @@ class TestPrepareFailureInjectionRollsBackOnlyEarlierResources(unittest.TestCase
                         h.runtime.prepare(h.root, h.ws, h.repo, tx=h.tx, storage=h.storage)
             return h.tx
 
-    def test_failure_creating_network_records_nothing(self):
-        tx = self._prepare_with_failure(fail_at="create-network")
+    def test_failure_creating_first_network_records_nothing(self):
+        tx = self._prepare_with_failure(fail_at="create-network-net")
         self.assertEqual(tx.created_networks, [])
+        self.assertEqual(tx.created_containers, [])
+
+    def test_failure_creating_second_network_keeps_only_the_first(self):
+        """A rede interna (`net`) e criada ANTES da externa (`out`): uma
+        falha na segunda tem de deixar a primeira registrada, nunca as
+        duas nem nenhuma. O teste anterior (falha na primeira) nunca
+        exercitava este caminho: qualquer falha em "network create"
+        disparava sempre na PRIMEIRA chamada."""
+        tx = self._prepare_with_failure(fail_at="create-network-out")
+        self.assertEqual(tx.created_networks, ["asb-demo"])
         self.assertEqual(tx.created_containers, [])
 
     def test_failure_creating_proxy_keeps_only_the_two_networks(self):
@@ -331,42 +418,131 @@ class TestPrepareFailureInjectionRollsBackOnlyEarlierResources(unittest.TestCase
         self.assertEqual(len(tx.created_networks), 2)
         self.assertEqual(tx.created_containers, [])
 
-    def test_failure_creating_agent_keeps_networks_and_proxy_but_not_agent(self):
-        tx = self._prepare_with_failure(fail_at="create-agent")
+    def test_failure_creating_service_keeps_networks_and_proxy_but_not_the_service(self):
+        tx = self._prepare_with_failure(fail_at="create-service")
         self.assertEqual(len(tx.created_networks), 2)
         self.assertEqual(len(tx.created_containers), 1)  # so o proxy
 
-    def test_failure_writing_manifest_keeps_networks_and_both_containers(self):
-        tx = self._prepare_with_failure(fail_at="write-manifest")
+    def test_failure_creating_forwarder_keeps_networks_proxy_and_service(self):
+        tx = self._prepare_with_failure(fail_at="create-forwarder")
         self.assertEqual(len(tx.created_networks), 2)
-        self.assertEqual(len(tx.created_containers), 2)  # proxy + agent
+        self.assertEqual(len(tx.created_containers), 2)  # proxy + servico
+
+    def test_failure_creating_docker_broker_keeps_networks_proxy_service_and_forwarder(self):
+        tx = self._prepare_with_failure(fail_at="create-docker-broker")
+        self.assertEqual(len(tx.created_networks), 2)
+        self.assertEqual(len(tx.created_containers), 3)  # proxy + servico + forwarder
+
+    def test_failure_creating_session_volume_keeps_networks_proxy_and_the_three_optional_containers(self):
+        """Unico teste desta classe com `ensure_sessions` REAL: os outros
+        mockam `RuntimeStorage.ensure_sessions` inteiro, entao
+        `tx.record_volume` do volume de sessao nunca rodava em nenhum
+        teste (achado da revisao, ronda 1)."""
+        tx = self._prepare_with_failure(
+            fail_at="create-session-volume", real_sessions=True)
+        self.assertEqual(len(tx.created_networks), 2)
+        self.assertEqual(len(tx.created_containers), 4)  # proxy+servico+forwarder+broker
+        self.assertEqual(tx.created_volumes, [])
+
+    def test_failure_creating_agent_keeps_networks_and_all_optional_containers(self):
+        tx = self._prepare_with_failure(fail_at="create-agent", real_sessions=True)
+        self.assertEqual(len(tx.created_networks), 2)
+        self.assertEqual(len(tx.created_containers), 4)  # proxy+servico+forwarder+broker
+        # O volume de sessao E criado com sucesso antes do agente (real):
+        self.assertEqual(tx.created_volumes, ["asb-demo-session"])
+
+    def test_failure_creating_nested_volume_keeps_everything_up_to_it(self):
+        """§5, modo nested: o volume de containers aninhados e criado
+        DEPOIS do volume de sessao mas ANTES do container do agente."""
+        events: list[str] = []
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            h = _Harness(Path(tmp_dir), events=events, container_mode="nested")
+
+            def failing_run(*args, **kwargs):
+                if args[:2] == ("volume", "create") and args[-1] == "asb-demo-containers":
+                    raise RuntimeError("boom-nested-volume")
+                return h._fake_run(*args, **kwargs)
+
+            with h.build():
+                with mock.patch("cli.asb.runtime.workspace.podman.run",
+                                side_effect=failing_run):
+                    with self.assertRaises(RuntimeError):
+                        h.runtime.prepare(h.root, h.ws, h.repo, tx=h.tx, storage=h.storage)
+
+        self.assertEqual(len(h.tx.created_networks), 2)
+        self.assertEqual(len(h.tx.created_containers), 1)  # so o proxy
+        self.assertEqual(h.tx.created_volumes, [])
+
+    def test_failure_writing_manifest_keeps_networks_and_all_containers(self):
+        tx = self._prepare_with_failure(fail_at="write-manifest", real_sessions=True)
+        self.assertEqual(len(tx.created_networks), 2)
+        self.assertEqual(len(tx.created_containers), 5)  # proxy+servico+forwarder+broker+agente
         self.assertEqual(tx.created_units, [])
 
     def test_failure_installing_units_keeps_everything_created_so_far(self):
-        tx = self._prepare_with_failure(fail_at="install-units")
+        tx = self._prepare_with_failure(fail_at="install-units", real_sessions=True)
         self.assertEqual(len(tx.created_networks), 2)
-        self.assertEqual(len(tx.created_containers), 2)
+        self.assertEqual(len(tx.created_containers), 5)
         # `install_workspace` falhou ANTES de devolver a lista de unidades:
         # nenhuma unidade foi registrada (o loop de `tx.record_unit` nunca
         # roda porque a excecao interrompe antes dele).
         self.assertEqual(tx.created_units, [])
 
+    _ALL_FAIL_AT = (
+        "create-network-net", "create-network-out", "create-proxy",
+        "create-service", "create-forwarder", "create-docker-broker",
+        "create-session-volume", "create-agent", "write-manifest",
+        "install-units",
+    )
+
     def test_a_failure_never_lets_rollback_touch_a_resource_it_did_not_create(self):
-        """Reforca a garantia de posse (ja coberta em profundidade por
-        test_runtime_transaction.py): rodar o rollback real depois de cada
-        falha injetada acima nunca nomeia um recurso fora do que a propria
-        transacao registrou."""
-        for fail_at in ("create-network", "create-proxy", "create-agent",
-                        "write-manifest", "install-units"):
+        """Reforca a garantia de posse com asercoes REAIS (nao um
+        `issubset` que um conjunto vazio sempre satisfaz — achado da
+        revisao, ronda 1): o rollback real, depois de CADA falha injetada
+        acima, remove EXATAMENTE os recursos que a transacao registrou —
+        nem a mais, nem a menos — em containers, redes, volumes e
+        unidades."""
+        for fail_at in self._ALL_FAIL_AT:
             with self.subTest(fail_at=fail_at):
-                tx = self._prepare_with_failure(fail_at=fail_at)
+                tx = self._prepare_with_failure(fail_at=fail_at, real_sessions=True)
                 with mock.patch("cli.asb.runtime.transaction.podman.run") as run, \
                      mock.patch("cli.asb.runtime.transaction.podman.exists", return_value=True), \
-                     mock.patch("cli.asb.runtime.transaction.supervisor.remove_workspace_units"):
+                     mock.patch("cli.asb.runtime.transaction.supervisor.remove_workspace_units") as remove_units:
                     tx.rollback()
-                removed_ids = {c.args[2] for c in run.call_args_list
-                               if c.args[:2] == ("rm", "-f")}
-                self.assertTrue(removed_ids.issubset(set(tx.created_containers)))
+
+                removed_container_ids = [
+                    c.args[2] for c in run.call_args_list if c.args[:2] == ("rm", "-f")]
+                removed_networks = [
+                    c.args[3] for c in run.call_args_list if c.args[:2] == ("network", "rm")]
+                removed_volumes = [
+                    c.args[3] for c in run.call_args_list if c.args[:2] == ("volume", "rm")]
+
+                self.assertEqual(removed_container_ids, tx.created_containers)
+                self.assertEqual(removed_networks, tx.created_networks)
+                self.assertEqual(removed_volumes, tx.created_volumes)
+                # Toda falha, EXCETO a primeira rede (que e o primeiro
+                # evento com efeito colateral de todos, e portanto o unico
+                # cenario legitimamente vazio — ja coberto por
+                # test_failure_creating_first_network_records_nothing), tem
+                # de ter registrado pelo menos um recurso: uma asercao so de
+                # igualdade entre dois conjuntos VAZIOS passaria mesmo com o
+                # loop de remocao inteiro apagado do `rollback()`.
+                if fail_at != "create-network-net":
+                    self.assertGreater(
+                        len(tx.created_containers) + len(tx.created_networks)
+                        + len(tx.created_volumes), 0,
+                        f"fail_at={fail_at} nao registrou recurso algum; "
+                        "a asercao de igualdade acima nao prova nada aqui")
+
+                # `created_units` fica sempre vazio nestes cenarios (a
+                # unica secao que registra unidade, §7, ou nunca roda ou e
+                # o proprio ponto de falha antes de terminar o loop de
+                # `tx.record_unit`) — o teste dedicado de
+                # `remove_workspace_units` chamado/nao-chamado vive em
+                # test_runtime_transaction.py, que cobre os dois ramos com
+                # profundidade.
+                self.assertEqual(tx.created_units, [])
+                remove_units.assert_not_called()
 
 
 class TestPrepareManifestAndAgentArgvMatchPreExtraction(unittest.TestCase):
@@ -402,6 +578,34 @@ class TestPrepareManifestAndAgentArgvMatchPreExtraction(unittest.TestCase):
             self.assertEqual(
                 list(proxy_call[proxy_call.index("agent-sandbox-proxy:latest"):]),
                 ["agent-sandbox-proxy:latest", "squid", "-N", "-f", "/etc/squid/squid.conf"])
+
+    def test_additional_service_argv_and_tx_recording(self):
+        """§2: nenhum teste em toda a suite construia um `Profile` com
+        `services` nao vazio — o corpo do loop de `start_services`
+        (`podman create` do servico e `tx.record_container`) nunca rodava
+        nem no caminho feliz (achado da revisao da Tarefa 4, ronda 1)."""
+        service = Service(name="redis", image="redis:7",
+                          env={"REDIS_PASSWORD": "x"})
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            h = _Harness(Path(tmp_dir), services=[service])
+            with h.build():
+                h.runtime.prepare(h.root, h.ws, h.repo, tx=h.tx, storage=h.storage)
+
+            svc_call = next(
+                c for c in h.podman_calls
+                if "--name" in c and c[c.index("--name") + 1] == "asb-demo-svc-redis")
+            self.assertEqual(svc_call[0], "create")
+            self.assertIn("--restart", svc_call)
+            self.assertEqual(svc_call[svc_call.index("--restart") + 1], "no")
+            self.assertIn("--network", svc_call)
+            self.assertEqual(svc_call[svc_call.index("--network") + 1], "asb-demo")
+            self.assertIn("--user", svc_call)
+            self.assertEqual(svc_call[svc_call.index("--user") + 1], "0")
+            self.assertIn("-e", svc_call)
+            self.assertIn("REDIS_PASSWORD=x", svc_call)
+            self.assertEqual(svc_call[-1], "redis:7")
+
+            self.assertIn("cid-asb-demo-svc-redis", h.tx.created_containers)
 
     def test_docker_broker_argv_when_host_api_is_read(self):
         """§4: cobertura direta do argv do broker Docker — achado durante o

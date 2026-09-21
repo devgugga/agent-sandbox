@@ -20,11 +20,16 @@ from typing import TYPE_CHECKING
 from .. import podman
 
 if TYPE_CHECKING:
-    # Import so de tipo: evita o ciclo runtime que a R4 do controlador
-    # proibe (`runtime/` nunca importa `lifecycle` em tempo de execucao).
-    # `WorkspaceTransaction` mora em runtime/transaction.py desde a Tarefa 4;
-    # dentro de `runtime/` isto nao e ciclo (so entre `runtime/` e
-    # `lifecycle.py`), entao o import de tipo pode ser direto, sem tardio.
+    # Import so de tipo. A regra real do R4 (corrigida na revisao da
+    # Tarefa 4, ronda 1): nenhum modulo de `runtime/` importa `lifecycle`
+    # no NIVEL DE MODULO (isso fecharia um ciclo, ja que `lifecycle.py`
+    # importa varios nomes de `runtime/` no proprio nivel de modulo);
+    # import ADIADO (dentro de funcao/metodo, `from .. import lifecycle`)
+    # e o padrao estabelecido neste pacote — `runtime/sandbox.py` e
+    # `runtime/workspace.py` fazem o mesmo. `WorkspaceTransaction` mora em
+    # runtime/transaction.py desde a Tarefa 4; dentro de `runtime/` isto
+    # nao e ciclo (so entre `runtime/` e `lifecycle.py`), entao o import de
+    # tipo pode ser direto, sem tardio.
     from .transaction import WorkspaceTransaction
 
 CREDENTIALS_VOLUME = os.environ.get("ASB_CREDENTIALS_VOLUME", "asb-credentials")

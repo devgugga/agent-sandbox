@@ -1,20 +1,20 @@
-// web/tests/e2e.spec.ts — the one Playwright smoke e2e (spec §13.2, amendment
-// §E). Starts the real daemon (`asb-server serve --fixture <path>`) serving
+// web/tests/e2e.spec.ts — the one Playwright smoke e2e (spec §13.2).
+// Starts the real daemon (`asb-server serve --fixture <path>`) serving
 // the real `web/dist` build, opens it with the token URL fragment exactly as
 // `asb-agent ui` does, and checks the tree renders and refreshes. Uses both
 // fixtures in `server/fixtures/`: the healthy tree (all eight labels of spec
 // §9.2) and the registry-failure tree (the 503 banner path).
 //
-// Two hazards this file works around (amendment §D):
+// Two hazards this file works around:
 // - `--fixture` resolves its path against the daemon's CWD at launch, not
 //   the repo root, so `startDaemon` below always passes an absolute path.
 // - `read_at` is fixed under `--fixture` (it comes from the fixture file,
 //   not the clock), so the refresh assertion checks that a new `/api/tree`
 //   request goes out and succeeds, never that a displayed timestamp changed.
 //
-// `--fixture` does not disable authentication (amendment §D), so every test
-// here goes through the real token exchange: read the token the daemon
-// wrote to its (per-test, isolated) `ASB_CONFIG_ROOT`, then navigate to
+// `--fixture` does not disable authentication, so every test here goes
+// through the real token exchange: read the token the daemon wrote to
+// its (per-test, isolated) `ASB_CONFIG_ROOT`, then navigate to
 // `#token=<token>`, exactly the fragment `asb-agent ui` would open.
 import { test, expect, type Page } from "@playwright/test";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -134,7 +134,7 @@ test.describe("healthy tree fixture", () => {
     const tree = page.getByRole("tree", { name: "Projects" });
     await expect(tree).toBeVisible();
 
-    // Projects, checkouts and sessions match the fixture (amendment §E).
+    // Projects, checkouts and sessions match the fixture.
     await expect(tree.getByText("agent-sandbox", { exact: true })).toBeVisible();
     await expect(tree.getByText("flaky-project", { exact: true })).toBeVisible();
     await expect(tree.getByText("docs-site", { exact: true })).toBeVisible();
@@ -154,7 +154,7 @@ test.describe("healthy tree fixture", () => {
     await expect(tree.getByText("!! discover failed: workspace root not found")).toBeVisible();
 
     // Refresh: a real second read goes out and succeeds. `read_at` is
-    // fixed under `--fixture` (amendment §D), so this checks the request
+    // fixed under `--fixture`, so this checks the request
     // fires and the tree stays rendered, never a timestamp change.
     const refreshed = page.waitForResponse(
       (response) => response.url().endsWith("/api/tree") && response.request().method() === "GET",

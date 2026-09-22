@@ -10,14 +10,13 @@
   scenario below needs things an agent in this environment does not have:
   a real `systemd --user` session to install and re-login against, a real
   browser window, and eyes to compare the rendered tree against
-  `asb-agent tui` by inspection. See `.superpowers/sdd/2026-09-22-asb-web-foundation/task-11-amendments.md`
-  §A.1 for why this pilot cannot be performed by the implementing agent.
+  `asb-agent tui` by inspection.
 - **What is already covered elsewhere, and is not this document's job:**
   `uv run pytest tests/unit server/tests` (1601 passed), the web unit/
   component suite (70 passed), and the Playwright smoke e2e
-  (`web/tests/e2e.spec.ts`) are automated and their results belong in
-  `.superpowers/sdd/2026-09-22-asb-web-foundation/task-11-report.md`, not
-  here. This document exists only for spec §13.3's "not automated" step:
+  (`web/tests/e2e.spec.ts`) are automated; their results are captured in
+  each CI job's own log output (`.github/workflows/ci.yml`), not here.
+  This document exists only for spec §13.3's "not automated" step:
   `install-server` end to end on a real host.
 
 ## How to use this document
@@ -93,6 +92,12 @@ continuing down the list.
 | :-- | :-- | :-- | :-- | :-- |
 | 6.1 | On a host (or a shell with `PATH` scrubbed of `uv`/`node`/`pnpm`), run `asb-agent doctor` | Completes; the web-interface checks report a single informational "skipped, unit never installed" (or equivalent) line rather than erroring | PENDING | |
 | 6.2 | On the same host, exercise a guard or a recipe (`recipes/*.sh` lifecycle hook, or any `asb-agent up`/`resume`/`suspend`/`down`) | Behaves exactly as before this plan — no dependency on `asb_server`, `uv`, or Node surfaces | PENDING | |
+
+## 7. CI is green on the branch (spec §17.1)
+
+| # | Step | Expected | Result | Date / operator |
+| :-- | :-- | :-- | :-- | :-- |
+| 7.1 | Push this branch and open its check suite on GitHub's Checks UI (not a local pilot step — this is the one criterion only a real push and a real runner can confirm) | Both `.github/workflows/ci.yml` jobs (`python`, `web`) show green | PENDING | |
 
 ## Sign-off
 

@@ -1,21 +1,21 @@
 name: CI
 
-# Task 11 (spec §15, amendment §B): two jobs, run on push and pull request.
+# Task 11 (spec §15): two jobs, run on push and pull request.
 # `tests/integration` and `tests/test-*.sh` stay local (Podman rootless and
-# a systemd user session) and never enter either job (amendment §C).
+# a systemd user session) and never enter either job.
 on:
   push:
   pull_request:
 
 env:
-  # `.python-version` pins 3.14 (a hazard called out in amendment §D): a
-  # runner without that interpreter preinstalled would fail `uv sync
-  # --frozen` before anything else. Rather than pin the runner's Python via
-  # actions/setup-python (which may not carry 3.14), this lets `uv` fetch
-  # its own managed build of the pinned version — `uv`'s default behavior,
-  # made explicit here rather than left to chance. Consequence: `uv sync
-  # --frozen` depends on network access to download that interpreter; see
-  # the task report for what happens if that download ever fails.
+  # `.python-version` pins 3.14 — a runner without that interpreter
+  # preinstalled would fail `uv sync --frozen` before anything else.
+  # Rather than pin the runner's Python via actions/setup-python (which
+  # may not carry 3.14), this lets `uv` fetch its own managed build of
+  # the pinned version — `uv`'s default behavior, made explicit here
+  # rather than left to chance. Consequence: `uv sync --frozen` depends
+  # on network access to download that interpreter; see the task report
+  # for what happens if that download ever fails.
   UV_PYTHON_DOWNLOADS: automatic
 
 jobs:

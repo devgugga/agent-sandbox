@@ -42,11 +42,13 @@ def port_from_env(default: int = DEFAULT_PORT) -> int:
 
 @dataclass(frozen=True)
 class Settings:
-    """The daemon's resolved configuration. Task 4 reads `token_path` to
-    create and validate the token file; Task 3 only resolves the path."""
+    """The daemon's resolved configuration. Task 4 reads `token_path` and
+    `session_key_path` to create and validate the token file and the
+    session-signing key file; Task 3 only resolves the paths."""
 
     host: str = "127.0.0.1"
     port: int = DEFAULT_PORT
     token_path: Path = CONFIG_ROOT / "server-token"
+    session_key_path: Path = CONFIG_ROOT / "server-session-key"
     web_dist_path: Path = WEB_DIST_PATH
     dev_origins: tuple[str, ...] = ()

@@ -18,7 +18,7 @@ asb = { workspace = true }
 asb_server = { workspace = true }
 
 [dependency-groups]
-dev = ["pytest", "ruff"]
+dev = ["httpx", "pytest", "ruff"]
 
 [tool.pytest.ini_options]
 addopts = "--import-mode=importlib"

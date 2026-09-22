@@ -17,6 +17,7 @@ import uvicorn
 from asb.interfaces.snapshot import Snapshot
 
 from .app import create_app
+from .auth import AuthManager, InsecureModeError
 from .settings import DEV_ORIGIN, Settings, port_from_env
 
 
@@ -37,6 +38,13 @@ def _settings_for(args: argparse.Namespace) -> Settings:
 
 def _serve(args: argparse.Namespace) -> None:
     settings = _settings_for(args)
+    try:
+        AuthManager.load(settings)
+    except InsecureModeError as exc:
+        # Refuses to start before the port ever binds (spec Section 12);
+        # `create_app` itself never loads secrets (see auth.py).
+        print(str(exc), file=sys.stderr)
+        sys.exit(1)
     app = create_app(settings, snapshot_reader=_unwired_snapshot_reader)
     uvicorn.run(app, host=settings.host, port=settings.port)
 

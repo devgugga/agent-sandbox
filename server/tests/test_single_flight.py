@@ -37,12 +37,12 @@ DAEMON_ORIGIN = f"http://127.0.0.1:{DAEMON_PORT}"
 
 
 class TestDaemonNeverImportsCurses(unittest.TestCase):
-    """Amendment Section C / controller ruling R22: the daemon imports
-    `asb.interfaces.snapshot`, never `asb.interfaces.tui` (which does
-    `import curses` at module level). This is the direct, runtime version
-    of that claim: after importing every module Task 5 added or touched,
-    `curses` must never have entered `sys.modules` — a source-text grep
-    could miss a re-export or an indirect import; this cannot.
+    """The daemon imports `asb.interfaces.snapshot`, never
+    `asb.interfaces.tui` (which does `import curses` at module level).
+    This is the direct, runtime version of that claim: after importing
+    every module Task 5 added or touched, `curses` must never have
+    entered `sys.modules` — a source-text grep could miss a re-export or
+    an indirect import; this cannot.
 
     Runs in a SEPARATE subprocess rather than this test process:
     `tests/unit/test_tui_controller.py` and `tests/unit/test_snapshot.py`
@@ -73,8 +73,8 @@ def _empty_snapshot() -> Snapshot:
 
 
 class TestProductionReaderComposition(unittest.TestCase):
-    """Amendment Section C, the other half of `TestDaemonNeverImportsCurses`
-    above: not only must `curses` stay out of `sys.modules`, `production_reader`
+    """The other half of `TestDaemonNeverImportsCurses` above: not only
+    must `curses` stay out of `sys.modules`, `production_reader`
     must call `asb_server.snapshot`'s OWN `default_checkouts` (Task 2's, on
     `asb.interfaces.snapshot`) rather than building a `tui`-flavoured one by
     hand. Patches the three collaborators `production_reader` composes and

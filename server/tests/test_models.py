@@ -227,9 +227,8 @@ class TestSnapshotConversion(unittest.TestCase):
 
 
 class TestSanitization(unittest.TestCase):
-    """Amendment D: prove sanitize() runs on every operator-/Git-sourced
-    string with a genuinely hostile input, not by calling the converter on
-    clean data."""
+    """Proves sanitize() runs on every operator-/Git-sourced string with a
+    genuinely hostile input, not by calling the converter on clean data."""
 
     def test_branch_with_bidi_override_is_sanitized(self):
         # read_branch never sanitizes (cli/asb/interfaces/snapshot.py's

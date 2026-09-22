@@ -4,9 +4,10 @@ Deliberately named to collide with any `tests/unit/test_static.py`-shaped
 suite elsewhere: `--import-mode=importlib` (Task 1) is what lets same-named
 files coexist under one `pytest` invocation.
 
-Amendment Section B's whole point: `/api/*` NEVER falls back to
-`index.html`. `TestApiBoundary` proves that with the observable response
-(status AND content type/body — a 404 that happened to carry HTML would
+`/api/*` NEVER falls back to `index.html` — that is the whole point of
+the boundary between the two. `TestApiBoundary` proves that with the
+observable response (status AND content type/body — a 404 that happened
+to carry HTML would
 still fail the property even at the right status code), not by trusting
 that `static.router` is mounted after the `/api` routers.
 
@@ -105,8 +106,7 @@ class TestSpaFallback(StaticTestCase):
 
 
 class TestApiBoundary(StaticTestCase):
-    """Amendment Section B: `/api/*` never falls back to `index.html`,
-    status AND body."""
+    """`/api/*` never falls back to `index.html`, status AND body."""
 
     def setUp(self) -> None:
         super().setUp()

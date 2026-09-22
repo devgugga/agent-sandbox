@@ -27,7 +27,7 @@ export function AppShell() {
   const projects = useMemo(() => data?.projects ?? [], [data]);
   const rows = useMemo(() => buildRows(projects), [projects]);
   const selection = findRow(rows, selectedKey);
-  // Amendment §D: a 503 keeps the last tree, marked stale — never a
+  // A 503 keeps the last tree, marked stale — never a
   // spinner, an empty state, or a cleared tree. `data` and `error` are
   // independent here (`useTree` never intercepts errors), so both can be
   // true at once.

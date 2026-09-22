@@ -1,8 +1,7 @@
 """server/tests/test_openapi.py — Task 6: `asb-server openapi` byte-stability.
 
-Amendment Section E: this property has been maintained by hand and
-verified ad hoc since Task 3 (`main.py`'s `sort_keys=True`); this file
-makes it a test. Spec Section 5's `pnpm check:api` regenerates the schema
+This property has been maintained by hand and verified ad hoc since
+Task 3 (`main.py`'s `sort_keys=True`); this file makes it a test. Spec Section 5's `pnpm check:api` regenerates the schema
 into a temporary file and fails on any difference — a flaky schema here
 would make that check fail randomly and nobody would trust it.
 

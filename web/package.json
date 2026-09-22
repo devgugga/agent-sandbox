@@ -8,7 +8,9 @@
     "build": "tsc --noEmit && vite build",
     "lint": "eslint .",
     "test": "vitest run",
-    "test:e2e": "playwright test --pass-with-no-tests"
+    "test:e2e": "playwright test --pass-with-no-tests",
+    "gen:api": "uv run --project .. asb-server openapi | openapi-typescript -o src/api/schema.d.ts",
+    "check:api": "uv run --project .. asb-server openapi | openapi-typescript -o src/api/schema.d.ts --check"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.103.2",

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asb_test_isolation  # noqa: F401  (guarda de isolamento da suite: nenhum volume real)
 
+import os
 import subprocess
 import sys
 import tempfile
@@ -59,7 +60,20 @@ class FakeRun:
 class TestRenderServerUnit(unittest.TestCase):
     """Espec 8.1 + Emenda D: ExecStart, Restart, RestartSec, WantedBy —
     escapados por `supervisor.escape_systemd_arg`, nunca por uma segunda
-    rotina de escaping mais fraca."""
+    rotina de escaping mais fraca.
+
+    Revisao final (Importante 2): `ASB_SERVER_PORT`/`ASB_CONFIG_ROOT` mudam
+    o conteudo renderizado, entao `setUp` remove as duas do ambiente para
+    que os casos "nao definida" abaixo sejam deterministicos qualquer que
+    seja o shell que rode a suite; `mock.patch.dict` restaura o `os.environ`
+    original inteiro no `tearDown`, entao a remocao e segura."""
+
+    def setUp(self):
+        self.env_patch = mock.patch.dict("os.environ", {}, clear=False)
+        self.env_patch.start()
+        self.addCleanup(self.env_patch.stop)
+        os.environ.pop("ASB_SERVER_PORT", None)
+        os.environ.pop("ASB_CONFIG_ROOT", None)
 
     def test_fixed_fields(self):
         content = install.render_server_unit(Path("/opt/asb/.venv/bin/asb-server"))
@@ -85,6 +99,40 @@ class TestRenderServerUnit(unittest.TestCase):
         content = install.render_server_unit(venv_bin)
         self.assertIn('ExecStart="/tmp/weird\\"quote/.venv/bin/asb-server" serve\n',
                        content)
+
+    def test_no_environment_lines_when_unset(self):
+        content = install.render_server_unit(Path("/opt/asb/.venv/bin/asb-server"))
+        self.assertNotIn("Environment=", content)
+
+    def test_renders_environment_line_for_asb_server_port(self):
+        with mock.patch.dict("os.environ", {"ASB_SERVER_PORT": "8080"}):
+            content = install.render_server_unit(Path("/opt/asb/.venv/bin/asb-server"))
+        self.assertIn("Environment=ASB_SERVER_PORT=8080\n", content)
+        self.assertNotIn("ASB_CONFIG_ROOT", content)
+
+    def test_renders_environment_line_for_asb_config_root(self):
+        with mock.patch.dict("os.environ", {"ASB_CONFIG_ROOT": "/home/op/.config/asb"}):
+            content = install.render_server_unit(Path("/opt/asb/.venv/bin/asb-server"))
+        self.assertIn("Environment=ASB_CONFIG_ROOT=/home/op/.config/asb\n", content)
+
+    def test_renders_both_environment_lines_when_both_set(self):
+        with mock.patch.dict("os.environ", {
+            "ASB_SERVER_PORT": "8080",
+            "ASB_CONFIG_ROOT": "/tmp/my config",
+        }):
+            content = install.render_server_unit(Path("/opt/asb/.venv/bin/asb-server"))
+        self.assertIn("Environment=ASB_SERVER_PORT=8080\n", content)
+        # Escaped the same way ExecStart escapes a path with a space: the
+        # whole NAME=value argument quoted as one token.
+        self.assertIn('Environment="ASB_CONFIG_ROOT=/tmp/my config"\n', content)
+
+    def test_environment_lines_sit_in_the_service_section_before_execstart(self):
+        with mock.patch.dict("os.environ", {"ASB_SERVER_PORT": "8080"}):
+            content = install.render_server_unit(Path("/opt/asb/.venv/bin/asb-server"))
+        service_index = content.index("[Service]\n")
+        env_index = content.index("Environment=ASB_SERVER_PORT=8080\n")
+        exec_index = content.index("ExecStart=")
+        self.assertTrue(service_index < env_index < exec_index)
 
 
 class InstallServerTestBase(unittest.TestCase):

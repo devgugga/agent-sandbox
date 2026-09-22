@@ -563,16 +563,39 @@ def render_server_unit(venv_bin: Path) -> str:
     importa `install_runtime` deste modulo no topo do arquivo dele, entao um
     `from .supervisor import ...` aqui no topo do modulo criaria um ciclo de
     import; dentro da funcao, o ciclo nao se manifesta porque `install.py` ja
-    terminou de carregar quando `render_server_unit` roda)."""
+    terminou de carregar quando `render_server_unit` roda).
+
+    Revisao final (Importante 2): uma unidade systemd de usuario NAO herda o
+    ambiente do shell de login — `server_port()` e `server_token_path()`
+    (acima) e `ui.ui()` leem `ASB_SERVER_PORT`/`ASB_CONFIG_ROOT`, mas sem
+    `Environment=` na unidade o daemon sobe com o default (porta 7420,
+    `keyring.CONFIG` default) mesmo quando o operador exportou uma dessas
+    variaveis, e `install-server`/`ui` passam a sondar/ler um lugar que o
+    daemon nunca usou. A espec 7.5 promete as duas como parte do contrato do
+    daemon ("overridable by --port and ASB_SERVER_PORT"; o caminho do token
+    "honors ASB_CONFIG_ROOT like keyring.CONFIG"), entao renderizar a
+    variavel — nao ignora-la no CLI — e a correcao: a unidade e o UNICO
+    caminho de producao do daemon sob systemd. Cada valor e escapado como um
+    unico argumento `NAME=value` (mesmo padrao de `render_keyring_unit` em
+    `supervisor.py`). So entram as que estiverem definidas no ambiente de
+    `install-server` no momento da renderizacao; reexecutar `install-server`
+    regrava a unidade inteira (escrita atomica), entao valores removidos do
+    ambiente somem da unidade tambem — idempotente e sempre atualizado."""
     from .supervisor import escape_systemd_arg
 
     exec_start = f"{escape_systemd_arg(venv_bin)} serve"
+    env_lines = ""
+    for var in ("ASB_SERVER_PORT", "ASB_CONFIG_ROOT"):
+        val = os.environ.get(var)
+        if val:
+            env_lines += f"Environment={escape_systemd_arg(f'{var}={val}')}\n"
     return (
         "[Unit]\n"
         "Description=Agent Sandbox web server (asb-server)\n"
         "\n"
         "[Service]\n"
         "Type=simple\n"
+        f"{env_lines}"
         f"ExecStart={exec_start}\n"
         "Restart=on-failure\n"
         "RestartSec=2\n"
@@ -691,7 +714,14 @@ def install_server(
         print(f"aviso: {url} nao respondeu em {health_timeout:.0f}s; "
               f"veja journalctl --user -u {SERVER_UNIT_NAME}", file=sys.stderr)
 
-    print(f"instalado. Rode 'asb-agent ui' para abrir, ou acesse "
-          f"http://127.0.0.1:{port}/ com o token em {server_token_path()}.",
+    # Fix round final (Minor 4): a mensagem antiga sugeria um fluxo de
+    # colar o token manualmente ("acesse http://.../  com o token em
+    # <path>"), mas a interface nao tem campo de token — so
+    # `asb-agent ui` funciona, abrindo http://127.0.0.1:<port>/#token=...
+    # com o token no fragmento da URL (nunca digitado, nunca numa
+    # requisicao). O caminho do arquivo continua util para quem precisa
+    # do valor bruto (por exemplo, para copiar para outro host).
+    print(f"instalado. Rode 'asb-agent ui' para abrir "
+          f"(porta {port}; token em {server_token_path()}).",
           file=sys.stderr)
     return 0

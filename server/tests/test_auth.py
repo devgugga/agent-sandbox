@@ -160,6 +160,23 @@ class TestMeEndpoint(AuthTestCase):
         response = self.client.get("/api/auth/me")
         self.assertEqual(response.status_code, 401)
 
+    def test_forged_signature_cookie_is_401(self):
+        """A syntactically valid `<id>.<signature>` cookie whose signature
+        does not match its id: this must fail `AuthManager.verify_session_value`'s
+        `hmac.compare_digest` mismatch, a different branch from
+        `test_garbage_cookie_is_401` above (which only exercises the
+        no-separator early return, since that cookie has no `.`)."""
+        cookie = self._login()
+        session_id, _, signature = cookie.partition(".")
+        # Flips one character of a genuine signature: same shape, same
+        # length, still hex — but no longer the signature that verifies
+        # against `session_id`.
+        flipped = "0" if signature[0] != "0" else "1"
+        forged_cookie = f"{session_id}.{flipped}{signature[1:]}"
+        self.client.cookies.set("asb_session", forged_cookie)
+        response = self.client.get("/api/auth/me")
+        self.assertEqual(response.status_code, 401)
+
 
 class TestSessionSurvivesRestart(AuthTestCase):
     def test_cookie_from_one_app_validates_on_a_second_app_same_key_file(self):

@@ -91,6 +91,21 @@
               "last_healthy_at": "2026-09-21T08:30:00Z"
             }
           ]
+        },
+        {
+          "id": "c-merged-pending",
+          "kind": "worktree",
+          "path": "/home/demo/agent-sandbox-worktrees/merged-pending",
+          "workspace": "merged-pending",
+          "status": "absent",
+          "reason": null,
+          "branch": "merged-pending",
+          "detached": false,
+          "host_branch": false,
+          "missing": true,
+          "merged": true,
+          "error": null,
+          "sessions": []
         }
       ],
       "unregistered": [
@@ -102,6 +117,15 @@
           "prunable": true
         }
       ]
+    },
+    {
+      "id": "p-flaky-project",
+      "name": "flaky-project",
+      "primary_path": "/home/demo/flaky-project",
+      "integration_branch": "main",
+      "error": "discover failed: workspace root not found",
+      "checkouts": [],
+      "unregistered": []
     },
     {
       "id": "p-docs-site",

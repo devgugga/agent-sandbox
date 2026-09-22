@@ -117,10 +117,13 @@ def create_app(settings: Settings, *, snapshot_reader: SnapshotReader) -> FastAP
     app.include_router(tree_api.router)
     # LAST: `static_api`'s catch-all (`/{full_path:path}`) must never be
     # tried before a concrete `/api/...` route (amendment Section B).
-    # Starlette matches routes in registration order, so every `/api`
-    # router above wins its own path first; `static.py`'s own
-    # `full_path.startswith("api")` guard enforces the same property a
-    # second, independent way (see that module's docstring).
+    # Starlette matches routes in registration order, so THIS ordering is
+    # what makes every `/api` router above actually answer its own path.
+    # `static.py`'s own `full_path.startswith("api")` guard is a narrower,
+    # order-independent safeguard against a different failure: an
+    # UNMATCHED `/api` path silently serving `index.html`. It does not
+    # substitute for correct ordering — see `static.py`'s module
+    # docstring for what it does and does not guarantee.
     app.include_router(static_api)
     app.add_middleware(BaseHTTPMiddleware, dispatch=_log_requests)
     app.add_exception_handler(Exception, _unhandled_exception)

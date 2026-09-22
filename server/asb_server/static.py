@@ -12,12 +12,21 @@ API down, since `static.py`'s router only ever handles non-`/api` paths.
 
 This router is mounted LAST in `create_app` (`app.py`), after every `/api`
 router, so a concrete `/api/...` path is always tried first by Starlette's
-route matching (routes are matched in registration order). The
-`full_path == "api" or full_path.startswith("api/")` guard below is a
-second, independent enforcement of the same property: it holds even if a
-future change reorders the routers, and it is what
-`server/tests/test_static.py`'s `/api/unknown` case proves rather than
-assumes.
+route matching (routes are matched in registration order) — that mount
+order is what makes a REAL `/api` route (e.g. `/api/tree`) actually
+answer. The `full_path == "api" or full_path.startswith("api/")` guard
+below is a second, narrower safeguard: it only guarantees that an
+UNMATCHED `/api` path (one no `/api` router claims) still 404s here
+rather than silently returning `index.html`, and it holds regardless of
+mount order. It does NOT make the mount order irrelevant — if this
+router were ever registered before the `/api` routers, its catch-all
+would intercept every `/api/...` request first and this guard would turn
+each of them into a 404 too, which fails loudly rather than silently
+serving HTML, but still breaks the API. `server/tests/test_static.py`'s
+`/api/unknown` case proves the guard's own property; it does not (and
+cannot) prove the mount order is correct — that is asserted by the
+`/api/health` and `/api/tree` tests in `test_static.py`/`test_health.py`/
+`test_tree.py` still answering as themselves.
 """
 from __future__ import annotations
 
@@ -56,9 +65,10 @@ def _asset(dist: Path, full_path: str) -> Path | None:
 @router.get("/{full_path:path}")
 async def spa(request: Request, full_path: str) -> FileResponse:
     if full_path == "api" or full_path.startswith("api/"):
-        # Not reachable in practice (see module docstring) unless mount
-        # order regresses; this is the property's own enforcement, not a
-        # bet on ordering.
+        # Not reached for a real `/api` route while the mount order in
+        # `create_app` is correct (see module docstring) — this only
+        # guarantees an UNMATCHED `/api` path 404s instead of serving
+        # `index.html`.
         raise HTTPException(status_code=404)
     dist: Path = request.app.state.settings.web_dist_path
     index = dist / "index.html"

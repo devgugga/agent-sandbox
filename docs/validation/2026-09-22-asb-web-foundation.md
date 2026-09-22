@@ -68,7 +68,7 @@ continuing down the list.
 
 | # | Step | Expected | Result | Date / operator |
 | :-- | :-- | :-- | :-- | :-- |
-| 3.1 | Open a second browser tab at the daemon's origin, with no session cookie (e.g. a private/incognito window, or after clearing cookies for the origin) | Loading the app shows the "not signed in" state; a direct request confirms it: | PENDING | |
+| 3.1 | Open a second browser tab at the daemon's origin, with no session cookie (e.g. a private/incognito window, or after clearing cookies for the origin) | Loading the app shows the "not signed in" state | PENDING | |
 | 3.2 | From that second tab/window, `fetch('/api/tree')` (devtools console) or `curl` without the cookie | 401 | PENDING | |
 | 3.3 | From an unrelated origin (e.g. `https://example.com` devtools console, or `curl -H "Origin: https://example.com"`), `POST /api/auth/session` with any token | 403 | PENDING | |
 
@@ -77,7 +77,7 @@ continuing down the list.
 | # | Step | Expected | Result | Date / operator |
 | :-- | :-- | :-- | :-- | :-- |
 | 4.1 | With the web UI open and authenticated, click Refresh twice in rapid succession (or trigger two near-simultaneous `GET /api/tree` requests) | Both requests succeed with the same `read_at` | PENDING | |
-| 4.2 | `journalctl --user -u asb-server.service` for that window | Exactly **one** `GET /api/tree` log line's `read_at` is shared by both responses — i.e. one physical snapshot read served both, not two | PENDING | |
+| 4.2 | `journalctl --user -u asb-server.service` for that window | **Two** `GET /api/tree` log lines (one per request — the daemon logs per request, not per read), but both carrying the **same** `read_at` value, showing one physical snapshot read served both requests | PENDING | |
 
 ## 5. Token never leaks (spec §17.7)
 

@@ -48,8 +48,6 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "24"
-          cache: pnpm
-          cache-dependency-path: web/pnpm-lock.yaml
 
       # `pnpm check:api` shells out to `uv run --project .. asb-server
       # openapi` (spec §15), so the Python environment must exist first.

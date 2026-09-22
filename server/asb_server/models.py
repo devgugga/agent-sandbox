@@ -39,6 +39,21 @@ def _sanitized(value: str | None) -> str | None:
     return sanitize(value) if value is not None else None
 
 
+class ErrorDetail(BaseModel):
+    """The shape of every non-2xx JSON body this contract documents:
+    FastAPI's own `{"detail": ...}` envelope, `detail` always a plain
+    string here — an `HTTPException`'s `detail`, whether explicit
+    (`/api/tree`'s 503, `snapshot.registry_error`, already sanitized by
+    Task 2) or the default reason phrase FastAPI fills in when a route
+    raises without one (`/api/tree`'s 401, `/api/auth/session`'s 401/403,
+    `/api/auth/me`'s 401). Fix round 1 (Important 2): documented so
+    `openapi-typescript`/`openapi-fetch` (spec Section 9.1) generate a
+    typed error shape instead of leaving these routes' non-2xx responses
+    undocumented."""
+
+    detail: str
+
+
 class SessionNode(BaseModel):
     id: str
     agent: AgentKind

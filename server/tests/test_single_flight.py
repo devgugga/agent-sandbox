@@ -109,6 +109,78 @@ class TestProductionReaderComposition(unittest.TestCase):
         self.assertEqual(mock_checkouts.call_args, call(sentinel_services))
 
 
+class TestSnapshotServiceIsConstructedEagerly(unittest.TestCase):
+    """Regression coverage for fix round 1, Important 1: `get_snapshot_service`
+    (`api/tree.py`) used to build a NEW `SnapshotService` lazily, on first
+    use, caching it on `app.state`. FastAPI resolves a plain-`def`
+    dependency like that via `run_in_threadpool`
+    (`fastapi/dependencies/utils.py`), so two requests arriving
+    concurrently — most plausibly right at daemon cold start, spec
+    Section 17.6's own scenario — could each run that dependency on a
+    DIFFERENT thread-pool thread, each observe `state.snapshot_service is
+    None`, and each construct their own instance: two independent
+    `_inflight` slots, defeating single-flight.
+
+    The OLD `test_two_concurrent_requests_yield_one_read_and_same_read_at`
+    test could not catch this: it synchronizes thread B's start on
+    `entered`, a flag the STUB READER sets from inside a call that can
+    only happen AFTER thread A's dependency resolution (and its
+    `state.snapshot_service` assignment) has already completed. That
+    synchronization closes the exact window the bug lived in. These tests
+    target the window directly rather than hoping to land inside it under
+    thread-scheduling luck."""
+
+    def setUp(self) -> None:
+        tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        self.settings = Settings(
+            port=DAEMON_PORT, token_path=tmp / "server-token",
+            session_key_path=tmp / "server-session-key")
+
+    def test_create_app_builds_it_before_any_request_exists(self):
+        # Deterministic, not timing-dependent: the fix's actual invariant
+        # is that construction happens INSIDE `create_app`, synchronously,
+        # before `create_app` even returns — so there is no window left
+        # for two requests to race into, regardless of scheduling.
+        app = create_app(self.settings, snapshot_reader=_empty_snapshot)
+        self.assertIsNotNone(app.state.snapshot_service)
+
+    def test_the_dependency_never_constructs_a_second_instance(self):
+        from unittest.mock import patch
+
+        from asb_server import app as app_module
+
+        with patch.object(app_module, "SnapshotService",
+                           wraps=app_module.SnapshotService) as mock_cls:
+            app = create_app(self.settings, snapshot_reader=_empty_snapshot)
+            self.assertEqual(mock_cls.call_count, 1)
+
+            manager = AuthManager.load(self.settings)
+            with TestClient(app) as client:
+                response = client.post(
+                    "/api/auth/session", json={"token": manager.token},
+                    headers={"Origin": DAEMON_ORIGIN})
+                assert response.status_code == 204, response.text
+
+                # A burst of concurrent requests, all fired essentially at
+                # once, with NO synchronization on anything the reader
+                # does — the realistic "several requests right after
+                # startup" scenario, not an artificially widened window.
+                threads = [
+                    threading.Thread(target=client.get, args=("/api/tree",))
+                    for _ in range(8)
+                ]
+                for thread in threads:
+                    thread.start()
+                for thread in threads:
+                    thread.join(timeout=5)
+
+            # `SnapshotService` was constructed exactly ONCE — inside
+            # `create_app`, before the app even existed to receive a
+            # request — regardless of how many concurrent requests the
+            # dependency layer resolved afterward.
+            self.assertEqual(mock_cls.call_count, 1)
+
+
 class SingleFlightTestCase(unittest.TestCase):
     def setUp(self) -> None:
         tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))
@@ -268,11 +340,16 @@ class TestSingleFlightCollapsesConcurrentReads(SingleFlightTestCase):
         # The per-request line still fires on this path
         # (`app._log_requests`'s `try`/`finally`) — matched by prefix, not
         # substring, since the traceback lines below also mention
-        # `api/tree.py` in their frames. The traceback itself goes to the
-        # journal, never the response body.
+        # `api/tree.py` in their frames. Fix round 1 (Minor): the status
+        # logged here is the literal, correct `500` — `_unhandled_exception`
+        # always returns 500, so `_log_requests` can state that as fact
+        # rather than the earlier placeholder string. The traceback itself
+        # goes to the journal, never the response body.
         request_lines = [line for line in captured.output
                          if line.startswith("INFO:asb_server:GET /api/tree")]
         self.assertEqual(len(request_lines), 2, captured.output)
+        for line in request_lines:
+            self.assertIn("-> 500", line)
         tracebacks = [line for line in captured.output
                      if "unhandled error handling" in line]
         self.assertEqual(len(tracebacks), 2, captured.output)

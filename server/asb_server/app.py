@@ -22,6 +22,20 @@ a route stashed on `request.state.log_extra` (only `api/tree.py` does,
 with a `read_at` timestamp); `_unhandled_exception` logs the traceback via
 `logger.exception`, which is exception-object text, never request or
 response bodies.
+
+Fix round 1: `app.state.snapshot_service` is built HERE, synchronously,
+rather than lazily inside `api/tree.py`'s dependency. FastAPI resolves a
+plain-`def` dependency via `run_in_threadpool`
+(`fastapi/dependencies/utils.py`), so a lazy "build it on first use"
+dependency runs on a THREAD POOL thread per request: two concurrent
+`/api/tree` requests arriving before the first one has stored anything
+each observe `state.snapshot_service is None` and each construct their
+OWN `SnapshotService` — two independent `_inflight` slots, defeating
+single-flight on exactly a cold-start burst (spec Section 17.6's
+scenario). Building it here, before `create_app` returns and before any
+request can exist, removes the window entirely. `SnapshotService.__init__`
+only stores a reference (no I/O), so this stays compatible with
+`asb-server openapi`'s side-effect-free contract.
 """
 from __future__ import annotations
 
@@ -38,6 +52,7 @@ from .api import auth as auth_api
 from .api import health as health_api
 from .api import tree as tree_api
 from .settings import Settings
+from .snapshot import SnapshotService
 
 # The seam spec Section 10 names: a real read in production, a fixture or a
 # stub in tests. Task 3 stores it for the routes later tasks add; it never
@@ -54,18 +69,21 @@ async def _log_requests(
     exception `_unhandled_exception` turns into a 500 — that conversion
     happens in `ServerErrorMiddleware`, which sits OUTSIDE this
     middleware, so by the time control reaches back here the exception
-    has already propagated past. The `try`/`finally` is what keeps "one
-    line per request" true on that path too, not just the successful
-    one; `status_code` stays `"error"` there because the real response
-    object never comes back to this frame."""
-    status_code: int | str = "error"
+    has already propagated past and the real `Response` object never
+    comes back to this frame. The `try`/`finally` is what keeps "one line
+    per request" true on that path too, not just the successful one;
+    `status_code` defaults to 500 rather than a placeholder because
+    `_unhandled_exception` unconditionally returns 500 — that is the one
+    fact this frame can still know for certain about a response it never
+    sees."""
+    status_code = 500
     try:
         response = await call_next(request)
         status_code = response.status_code
         return response
     finally:
         extra = getattr(request.state, "log_extra", None)
-        logger.info("%s %s -> %s%s", request.method, request.url.path,
+        logger.info("%s %s -> %d%s", request.method, request.url.path,
                     status_code, f" {extra}" if extra else "")
 
 
@@ -79,12 +97,16 @@ async def _unhandled_exception(request: Request, exc: Exception) -> JSONResponse
 
 
 def create_app(settings: Settings, *, snapshot_reader: SnapshotReader) -> FastAPI:
-    """The daemon's FastAPI app. `settings` and `snapshot_reader` are kept
-    on `app.state` so the routers Task 4/5/6 add can read them via the
-    request without changing this function's signature."""
+    """The daemon's FastAPI app. `settings`, `snapshot_reader` and the ONE
+    `SnapshotService` built from it are kept on `app.state` so the routers
+    Task 4/5/6 add can read them via the request without changing this
+    function's signature. `snapshot_service` is built here rather than
+    lazily (see the module docstring) — it must exist, as a single shared
+    instance, before the first request can possibly arrive."""
     app = FastAPI(title="agent-sandbox daemon")
     app.state.settings = settings
     app.state.snapshot_reader = snapshot_reader
+    app.state.snapshot_service = SnapshotService(snapshot_reader)
     app.include_router(auth_api.router)
     app.include_router(health_api.router)
     app.include_router(tree_api.router)

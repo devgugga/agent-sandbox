@@ -8,7 +8,14 @@ import { useEffect, useMemo, useRef, type KeyboardEvent } from "react";
 import { CheckoutRow } from "./CheckoutRow";
 import { SessionRow } from "./SessionRow";
 import { errorLabel } from "../lib/labels";
-import { buildRows, isFoldable, visibleRows, type Row } from "../lib/tree";
+import {
+  NO_CHECKOUTS_LABEL,
+  buildRows,
+  isFoldable,
+  isSelectable,
+  visibleRows,
+  type Row,
+} from "../lib/tree";
 import type { ProjectNode } from "../types/tree";
 
 export interface ProjectTreeProps {
@@ -28,6 +35,10 @@ export function ProjectTree({
 }: ProjectTreeProps) {
   const rows = useMemo(() => buildRows(projects), [projects]);
   const visible = useMemo(() => visibleRows(rows, collapsed), [rows, collapsed]);
+  // Arrow/Enter only ever land on a selectable row (`TreeRow.selectable` in
+  // tui_model.py excludes `NOTE`) — the "(no checkouts)" placeholder is
+  // rendered but never a stop for keyboard navigation.
+  const navigable = useMemo(() => visible.filter(isSelectable), [visible]);
   const containerRef = useRef<HTMLUListElement>(null);
 
   // Focus the tree on first mount so arrow keys work without a prior click
@@ -39,21 +50,21 @@ export function ProjectTree({
   function handleKeyDown(event: KeyboardEvent<HTMLUListElement>) {
     if (event.key === "ArrowDown" || event.key === "ArrowUp") {
       event.preventDefault();
-      if (visible.length === 0) return;
-      const idx = visible.findIndex((row) => row.key === selectedKey);
+      if (navigable.length === 0) return;
+      const idx = navigable.findIndex((row) => row.key === selectedKey);
       const delta = event.key === "ArrowDown" ? 1 : -1;
       const nextIdx =
         idx === -1
           ? event.key === "ArrowDown"
             ? 0
-            : visible.length - 1
-          : Math.min(Math.max(idx + delta, 0), visible.length - 1);
-      onSelectRow(visible[nextIdx].key);
+            : navigable.length - 1
+          : Math.min(Math.max(idx + delta, 0), navigable.length - 1);
+      onSelectRow(navigable[nextIdx].key);
       return;
     }
     if (event.key === "Enter") {
       event.preventDefault();
-      const current = visible.find((row) => row.key === selectedKey);
+      const current = navigable.find((row) => row.key === selectedKey);
       if (!current) return;
       if (isFoldable(current)) {
         onToggleFold(current.key);
@@ -139,6 +150,20 @@ function renderRow(
           selected={selected}
           onSelect={() => onSelectRow(row.key)}
         />
+      );
+    case "note":
+      // tui_model.py's `RowKind.NOTE`: not selectable, never folds.
+      return (
+        <li
+          key={row.key}
+          role="treeitem"
+          aria-selected={false}
+          data-depth={1}
+          style={{ paddingLeft: 16 }}
+          className="px-2 py-1 text-sm text-fg-muted"
+        >
+          {NO_CHECKOUTS_LABEL}
+        </li>
       );
   }
 }

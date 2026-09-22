@@ -21,6 +21,11 @@ export const checkoutKey = (id: string): string => `c:${id}`;
 export const sessionKey = (id: string): string => `s:${id}`;
 export const unregisteredKey = (projectId: string, path: string): string =>
   `u:${projectId}:${path}`;
+export const noteKey = (projectId: string): string => `n:${projectId}`;
+
+/** `tui_model.build_tree`'s placeholder text for a project with neither
+ * checkouts nor unregistered worktrees (`RowKind.NOTE`). */
+export const NO_CHECKOUTS_LABEL = "(no checkouts)";
 
 export type Row =
   | { kind: "project"; key: string; project: ProjectNode }
@@ -37,7 +42,8 @@ export type Row =
       key: string;
       project: ProjectNode;
       unregistered: UnregisteredNode;
-    };
+    }
+  | { kind: "note"; key: string; project: ProjectNode };
 
 /** Rows that fold/unfold; only these can appear in the collapsed set. */
 export type FoldableRow = Extract<Row, { kind: "project" | "checkout" }>;
@@ -76,6 +82,13 @@ export function buildRows(projects: readonly ProjectNode[]): Row[] {
   const rows: Row[] = [];
   for (const project of sortedProjects(projects)) {
     rows.push({ kind: "project", key: projectKey(project.id), project });
+    // `tui_model.build_tree`: a project with neither checkouts nor
+    // unregistered worktrees gets a `(no checkouts)` placeholder row
+    // instead of silently rendering as a childless project.
+    if (project.checkouts.length === 0 && project.unregistered.length === 0) {
+      rows.push({ kind: "note", key: noteKey(project.id), project });
+      continue;
+    }
     for (const checkout of sortedCheckouts(project.checkouts)) {
       rows.push({ kind: "checkout", key: checkoutKey(checkout.id), project, checkout });
       for (const session of sortedSessions(checkout.sessions)) {
@@ -119,6 +132,11 @@ export function isFoldable(row: Row): row is FoldableRow {
   return row.kind === "project" || row.kind === "checkout";
 }
 
+/** `TreeRow.selectable` (tui_model.py): every row kind except `NOTE`. */
+export function isSelectable(row: Row): boolean {
+  return row.kind !== "note";
+}
+
 /** Fold keys that must be unfolded for `row` to be visible in the tree —
  * used to expand ancestors when the command palette jumps to a node. */
 export function ancestorKeys(row: Row): string[] {
@@ -127,6 +145,7 @@ export function ancestorKeys(row: Row): string[] {
       return [];
     case "checkout":
     case "unregistered":
+    case "note":
       return [projectKey(row.project.id)];
     case "session":
       return [projectKey(row.project.id), checkoutKey(row.checkout.id)];

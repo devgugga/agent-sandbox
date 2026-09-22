@@ -62,6 +62,15 @@ describe("ProjectTree — labels", () => {
     const row = screen.getByText("merged / cleanup pending").closest("li")!;
     expect(within(row).getByText("missing")).toBeInTheDocument();
   });
+
+  it("shows the '(no checkouts)' placeholder immediately under a project with none", () => {
+    // flaky-project in the fixture: checkouts=[] and unregistered=[]
+    // (tui_model.py's `build_tree`: `RowKind.NOTE` placeholder).
+    render(<Harness />);
+    const projectRow = screen.getByText("flaky-project").closest("li")!;
+    const noteRow = screen.getByText("(no checkouts)").closest("li")!;
+    expect(projectRow.nextElementSibling).toBe(noteRow);
+  });
 });
 
 describe("ProjectTree — folding", () => {

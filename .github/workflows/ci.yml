@@ -1,0 +1,70 @@
+name: CI
+
+# Task 11 (spec §15, amendment §B): two jobs, run on push and pull request.
+# `tests/integration` and `tests/test-*.sh` stay local (Podman rootless and
+# a systemd user session) and never enter either job (amendment §C).
+on:
+  push:
+  pull_request:
+
+env:
+  # `.python-version` pins 3.14 (a hazard called out in amendment §D): a
+  # runner without that interpreter preinstalled would fail `uv sync
+  # --frozen` before anything else. Rather than pin the runner's Python via
+  # actions/setup-python (which may not carry 3.14), this lets `uv` fetch
+  # its own managed build of the pinned version — `uv`'s default behavior,
+  # made explicit here rather than left to chance. Consequence: `uv sync
+  # --frozen` depends on network access to download that interpreter; see
+  # the task report for what happens if that download ever fails.
+  UV_PYTHON_DOWNLOADS: automatic
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - run: uv sync --frozen
+      - run: uv run ruff check server
+      - run: uv run pytest tests/unit server/tests
+      - run: node scripts/sync-skills.mjs --check
+
+  web:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - uses: pnpm/action-setup@v4
+        with:
+          # `web/package.json` pins no `packageManager` field, so the
+          # version is given explicitly here, matching the pnpm this
+          # repository's `web/pnpm-lock.yaml` (lockfileVersion 9.0) was
+          # generated with.
+          version: 12.5.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: pnpm
+          cache-dependency-path: web/pnpm-lock.yaml
+
+      # `pnpm check:api` shells out to `uv run --project .. asb-server
+      # openapi` (spec §15), so the Python environment must exist first.
+      - run: uv sync --frozen
+      - run: pnpm install --frozen-lockfile
+        working-directory: web
+      - run: pnpm check:api
+        working-directory: web
+      - run: pnpm lint
+        working-directory: web
+      - run: pnpm test
+        working-directory: web
+      - run: pnpm build
+        working-directory: web
+      - run: pnpm exec playwright install chromium
+        working-directory: web
+      - run: pnpm test:e2e
+        working-directory: web

@@ -21,6 +21,7 @@ from asb.doctor import doctor  # noqa: E402
 from asb.agents.base import ResumeUnsupported  # noqa: E402
 from asb.interfaces import cli  # noqa: E402
 from asb.interfaces import sessions as session_cli  # noqa: E402
+from asb.interfaces import ui as ui_interface  # noqa: E402
 from asb.podman import PodmanError  # noqa: E402
 from asb.profile import ProfileError  # noqa: E402
 from asb.projects.registry import ProjectRegistryError  # noqa: E402
@@ -90,6 +91,29 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("list", help="lista os workspaces conhecidos")
     sub.add_parser("install-guards", help="instala asb-claude/codex/agy")
     sub.add_parser("install-broker", help="instala o broker do Docker (sudo)")
+    sub.add_parser(
+        "install-server",
+        help="instala/atualiza o daemon web (asb-server) neste host",
+        description=(
+            "Instala/atualiza o daemon web (asb-server) neste host:\n"
+            "1) confere uv, node e pnpm (uv --version, node --version, pnpm --version);\n"
+            "2) uv sync --frozen na raiz do repositorio;\n"
+            "3) pnpm install --frozen-lockfile e pnpm build em web/;\n"
+            "4) grava ~/.config/systemd/user/asb-server.service "
+            "(ExecStart=<checkout>/.venv/bin/asb-server serve, "
+            "Restart=on-failure, RestartSec=2, WantedBy=default.target);\n"
+            "5) systemctl --user daemon-reload && enable --now asb-server.service;\n"
+            "6) espera ate 10s por GET /api/health e imprime como abrir.\n"
+            "Reexecutar e idempotente; mover o checkout exige reexecutar."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+
+    ui_parser = sub.add_parser(
+        "ui", help="abre a interface web (asb-server) no navegador")
+    ui_parser.add_argument(
+        "--print-url", action="store_true",
+        help="imprime a URL (com o token) em vez de abrir o navegador")
 
     project_parser = sub.add_parser(
         "project", help="registra projetos e checkouts (nunca cria workspace)")
@@ -173,6 +197,10 @@ def main() -> int:
             return install.guards(ROOT)
         if args.command == "install-broker":
             return install.broker(ROOT)
+        if args.command == "install-server":
+            return install.install_server(ROOT)
+        if args.command == "ui":
+            return ui_interface.ui(print_url=args.print_url)
         if args.command == "project":
             services = session_cli.session_services(ROOT)
             if args.project_command == "add":

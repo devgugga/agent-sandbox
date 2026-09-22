@@ -11,17 +11,32 @@ import errno
 import hashlib
 import json
 import os
+import shlex
 import shutil
 import stat
 import subprocess
 import sys
+import time
+import urllib.error
+import urllib.request
 from collections.abc import Callable
 from pathlib import Path
+
+from . import keyring
 
 BROKER_SCRIPT = Path("/usr/local/lib/asb-docker-broker.py")
 BROKER_UNIT = Path("/etc/systemd/system/asb-docker-broker.service")
 DOCKER_SOCKETS = ("/var/run/docker.sock", "/run/docker.sock")
 PROJECT_DROPIN_HEADER = "# Managed by agent-sandbox: podman-restart netns initialization\n"
+
+# Tarefa 7 (interface web): nome da unidade, porta e token do asb-server.
+# `keyring.CONFIG` e a UNICA convencao de ~/.config/agent-sandbox deste
+# repositorio (honra ASB_CONFIG_ROOT); o modulo de configuracao do daemon web
+# (fora de cli/, dentro de server/) segue a mesma. Nenhuma terceira
+# convencao e inventada aqui.
+SERVER_UNIT_NAME = "asb-server.service"
+SERVER_TOKEN_NAME = "server-token"
+DEFAULT_SERVER_PORT = 7420
 
 
 def get_dropin_path(target_dir: Path | None = None) -> Path:
@@ -502,3 +517,181 @@ def install_runtime(
             shutil.rmtree(staging, ignore_errors=True)
 
     return dest
+
+
+# ---------------------------------------------------------------------------
+# Tarefa 7 — `asb-agent install-server`: uv sync, build do web, unidade
+# systemd do asb-server, enable --now e espera de saude. Emenda C: este
+# modulo so IMPORTA stdlib (e `keyring`, que tambem so importa stdlib e
+# `podman`) — uv/node/pnpm sao INVOCADOS como subprocesso, nunca importados.
+# `doctor` (cli/asb/diagnostics/checks.py) reusa `server_port`,
+# `server_token_path`, `server_health_url` e `default_health_check` daqui em
+# vez de reinventar uma segunda convencao.
+# ---------------------------------------------------------------------------
+
+def server_port() -> int:
+    """Mesma resolucao que a do daemon web (`port_from_env`, fora de cli/) —
+    duplicada, nao importada: importar o pacote do daemon exigiria o venv,
+    o que a Emenda C proibe para qualquer modulo de `cli/`."""
+    raw = os.environ.get("ASB_SERVER_PORT")
+    return int(raw) if raw else DEFAULT_SERVER_PORT
+
+
+def server_token_path() -> Path:
+    """Caminho do token do asb-server, pela MESMA convencao de `keyring.CONFIG`."""
+    return keyring.CONFIG / SERVER_TOKEN_NAME
+
+
+def server_health_url(port: int | None = None) -> str:
+    return f"http://127.0.0.1:{port if port is not None else server_port()}/api/health"
+
+
+def default_health_check(url: str, timeout: float = 3.0) -> bool:
+    """Uma unica sondagem de `GET /api/health`, stdlib apenas (`urllib`):
+    nenhum modulo de `cli/` importa `httpx`/`requests` (Emenda C)."""
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as resp:
+            return resp.status == 200
+    except (urllib.error.URLError, OSError, ValueError, TimeoutError):
+        return False
+
+
+def render_server_unit(venv_bin: Path) -> str:
+    """Renderiza a unidade Type=simple do asb-server (espec 8.1).
+
+    Reusa `supervisor.escape_systemd_arg` (import tardio: `supervisor.py`
+    importa `install_runtime` deste modulo no topo do arquivo dele, entao um
+    `from .supervisor import ...` aqui no topo do modulo criaria um ciclo de
+    import; dentro da funcao, o ciclo nao se manifesta porque `install.py` ja
+    terminou de carregar quando `render_server_unit` roda)."""
+    from .supervisor import escape_systemd_arg
+
+    exec_start = f"{escape_systemd_arg(venv_bin)} serve"
+    return (
+        "[Unit]\n"
+        "Description=Agent Sandbox web server (asb-server)\n"
+        "\n"
+        "[Service]\n"
+        "Type=simple\n"
+        f"ExecStart={exec_start}\n"
+        "Restart=on-failure\n"
+        "RestartSec=2\n"
+        "\n"
+        "[Install]\n"
+        "WantedBy=default.target\n"
+    )
+
+
+def _check_tool_version(run: Callable[..., subprocess.CompletedProcess], tool: str, fix: str) -> None:
+    """Passo 1: `<tool> --version` precisa existir e sair com codigo 0."""
+    try:
+        result = run([tool, "--version"], capture_output=True, text=True)
+    except FileNotFoundError:
+        raise RuntimeError(f"{tool} nao encontrado no PATH; {fix}")
+    if result.returncode != 0:
+        raise RuntimeError(f"'{tool} --version' falhou (codigo {result.returncode}); {fix}")
+
+
+def _run_step(
+    run: Callable[..., subprocess.CompletedProcess],
+    argv: list[str],
+    *,
+    fix: str,
+    cwd: Path | None = None,
+) -> None:
+    """Roda um passo (`uv sync`, `pnpm install`, `systemctl ...`); qualquer
+    falha vira RuntimeError com o comando exato de correcao — main() em
+    cli/asb-agent imprime a mensagem e devolve 2 (nunca imprime um traceback
+    cru para o operador)."""
+    try:
+        result = run(argv, cwd=cwd, capture_output=True, text=True)
+    except FileNotFoundError as exc:
+        raise RuntimeError(f"{argv[0]} nao encontrado ({exc}); {fix}") from exc
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "").strip()
+        sufixo = f": {detail}" if detail else ""
+        raise RuntimeError(
+            f"'{' '.join(argv)}' falhou (codigo {result.returncode}){sufixo}; "
+            f"corrija e rode: {fix}"
+        )
+
+
+def _poll_health(
+    url: str, *, timeout: float, interval: float, check: Callable[[str], bool],
+) -> bool:
+    """Sonda `check(url)` ate `timeout`s, dormindo `interval`s entre tentativas."""
+    deadline = time.monotonic() + timeout
+    while True:
+        if check(url):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(interval)
+
+
+def install_server(
+    root: Path,
+    *,
+    run: Callable[..., subprocess.CompletedProcess] = subprocess.run,
+    check_health: Callable[[str], bool] | None = None,
+    health_timeout: float = 10.0,
+    health_interval: float = 0.5,
+) -> int:
+    """`asb-agent install-server` — espec 8.1, os seis passos da Emenda D.
+
+    Idempotente: cada passo (uv sync, pnpm install/build, systemctl
+    enable --now) ja e idempotente por natureza, e a unidade e sempre
+    regravada por completo (escrita atomica), nunca acrescentada — duas
+    execucoes seguidas produzem o MESMO arquivo de unidade e o mesmo estado
+    systemd. Mover o checkout exige reexecutar; `doctor` detecta o
+    ExecStart obsoleto (ver `diagnostics/checks.py`).
+
+    `run` e injetavel (default `subprocess.run`) para que o teste unitario
+    fake TODA invocacao de uv/node/pnpm/systemctl — nenhum teste desta
+    funcao chama o systemd ou um gerenciador de pacote de verdade.
+    """
+    from . import supervisor
+
+    _check_tool_version(run, "uv",
+                        "instale o uv: https://docs.astral.sh/uv/getting-started/installation/")
+    _check_tool_version(run, "node", "instale o Node.js LTS: https://nodejs.org/en/download")
+    _check_tool_version(run, "pnpm",
+                        "instale o pnpm: npm install -g pnpm (ou corepack enable pnpm)")
+    print("ok: uv, node e pnpm presentes", file=sys.stderr)
+
+    _run_step(run, ["uv", "sync", "--frozen"], cwd=root,
+              fix=f"cd {shlex.quote(str(root))} && uv sync --frozen")
+    print("ok: uv sync --frozen", file=sys.stderr)
+
+    web_dir = root / "web"
+    _run_step(run, ["pnpm", "install", "--frozen-lockfile"], cwd=web_dir,
+              fix=f"cd {shlex.quote(str(web_dir))} && pnpm install --frozen-lockfile")
+    _run_step(run, ["pnpm", "build"], cwd=web_dir,
+              fix=f"cd {shlex.quote(str(web_dir))} && pnpm build")
+    print("ok: web/dist construido", file=sys.stderr)
+
+    venv_bin = root / ".venv" / "bin" / "asb-server"
+    unit_path = supervisor.unit_dir() / SERVER_UNIT_NAME
+    supervisor._atomic_write_text(unit_path, render_server_unit(venv_bin))
+    print(f"ok: unidade gravada em {unit_path}", file=sys.stderr)
+
+    _run_step(run, ["systemctl", "--user", "daemon-reload"],
+              fix="systemctl --user daemon-reload")
+    _run_step(run, ["systemctl", "--user", "enable", "--now", SERVER_UNIT_NAME],
+              fix=f"systemctl --user enable --now {SERVER_UNIT_NAME}")
+    print(f"ok: {SERVER_UNIT_NAME} habilitada e ativa", file=sys.stderr)
+
+    port = server_port()
+    url = server_health_url(port)
+    checker = check_health or default_health_check
+    healthy = _poll_health(url, timeout=health_timeout, interval=health_interval, check=checker)
+    if healthy:
+        print(f"ok: {url} respondeu", file=sys.stderr)
+    else:
+        print(f"aviso: {url} nao respondeu em {health_timeout:.0f}s; "
+              f"veja journalctl --user -u {SERVER_UNIT_NAME}", file=sys.stderr)
+
+    print(f"instalado. Rode 'asb-agent ui' para abrir, ou acesse "
+          f"http://127.0.0.1:{port}/ com o token em {server_token_path()}.",
+          file=sys.stderr)
+    return 0

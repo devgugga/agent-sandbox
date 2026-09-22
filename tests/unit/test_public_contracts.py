@@ -136,6 +136,8 @@ class TestRegisteredCliSurface(unittest.TestCase):
             "up", "down", "suspend", "resume", "reload-allowlist", "pull",
             "connect", "purge", "build", "login", "auth", "doctor", "list",
             "install-guards", "install-broker", "project", "session", "tui",
+            # Tarefa 7 (interface web): install-server e ui.
+            "install-server", "ui",
         })
 
     def test_nested_auth_project_session_commands_are_frozen(self):
@@ -341,6 +343,11 @@ class TestDoctorJsonContract(unittest.TestCase):
             "keyring_service", "project_dropin_absent", "network_gate",
             "netns_producers_third_party", "guard_claude", "guard_codex",
             "guard_agy", "cli_guard", "docker_broker",
+            # Tarefa 7, Emenda F: a unidade web nunca foi instalada neste
+            # ambiente de teste (ASB_SYSTEMD_UNIT_DIR/HOME fake, sem
+            # asb-server.service), entao as seis checagens colapsam nesta
+            # UNICA linha informativa — o que mantem este doctor verde.
+            "web_interface",
         ])
         self.assertEqual(report["infrastructure"]["workspaces"], [])
 

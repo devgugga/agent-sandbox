@@ -76,6 +76,11 @@ def diagnose(root: Path) -> dict[str, Any]:
     # 12. broker docker (opcional)
     check_results.append(checks.check_docker_broker())
 
+    # 12b. interface web (Tarefa 7, Emenda F): seis checagens se a unidade
+    # ja foi instalada, ou uma unica linha informativa se nunca foi — essa
+    # linha unica mantem este `doctor` verde num host que nao usa a web.
+    check_results.extend(checks.collect_web_checks(root))
+
     # 13. tool drifts (informativo)
     for tool, label in checks.CONTEXT_TOOLS.items():
         drift = checks.check_tool_drift(tool, label)

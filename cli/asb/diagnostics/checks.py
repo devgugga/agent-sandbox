@@ -37,7 +37,7 @@ from ..lifecycle import IMAGE, names
 from ..profile import load_profile
 from ..readiness import DEAD_UPLINK_REMEDIATION
 from ..runtime.storage import CREDENTIALS_VOLUME, TOOLCACHE_VOLUME
-from ..supervisor import network_unit_name
+from ..supervisor import network_unit_name, unit_dir
 
 
 @dataclass(frozen=True)
@@ -354,6 +354,153 @@ def check_netns_producers_third_party() -> CheckResult:
         remediation="" if not producers
                    else "podem inicializar o namespace antes da rede; revise-os",
     )
+
+
+# ---------------------------------------------------------------------------
+# Tarefa 7, Emenda F — as seis checagens da interface web, ou uma UNICA
+# linha informativa quando a unidade nunca foi instalada. E essa linha unica
+# que mantem `doctor` verde num host que nao usa a interface web (espec
+# 17.2): sem ela, os seis `FALTA` apareceriam em toda maquina sem
+# `asb-agent install-server` rodado, quebrando o "exatamente como antes".
+# ---------------------------------------------------------------------------
+
+def _web_unit_path() -> Path:
+    return unit_dir() / install.SERVER_UNIT_NAME
+
+
+def _web_unit_execstart(unit_path: Path) -> Path | None:
+    """Binario do `ExecStart=` da unidade renderizada, respeitando o
+    escaping de `supervisor.escape_systemd_arg` (aspas quando ha espaco)."""
+    try:
+        text = unit_path.read_text(encoding="utf-8")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        if line.startswith("ExecStart="):
+            try:
+                tokens = shlex.split(line[len("ExecStart="):])
+            except ValueError:
+                return None
+            return Path(tokens[0]) if tokens else None
+    return None
+
+
+def check_web_binary(root: Path) -> CheckResult:
+    path = root / ".venv" / "bin" / "asb-server"
+    ok = path.is_file()
+    return CheckResult(
+        name="web_binary",
+        healthy=ok,
+        label=f"binario {path}" if ok else f"binario ausente: {path}",
+        remediation="" if ok else "asb-agent install-server",
+    )
+
+
+def check_web_dist(root: Path) -> CheckResult:
+    path = root / "web" / "dist" / "index.html"
+    ok = path.is_file()
+    return CheckResult(
+        name="web_dist",
+        healthy=ok,
+        label="web/dist construido" if ok else f"web/dist ausente: {path}",
+        remediation="" if ok else "asb-agent install-server",
+    )
+
+
+def check_web_unit(unit_path: Path) -> CheckResult:
+    """Presente E com `ExecStart` apontando para um binario que existe —
+    um checkout movido deixa a unidade presente mas o ExecStart obsoleto
+    (espec 8.1: 'mover o checkout exige reexecutar')."""
+    execstart = _web_unit_execstart(unit_path)
+    ok = execstart is not None and execstart.is_file()
+    if execstart is None:
+        label = f"unidade {unit_path} sem ExecStart valido"
+    elif ok:
+        label = f"unidade {unit_path} (ExecStart={execstart})"
+    else:
+        label = f"ExecStart aponta para caminho inexistente: {execstart} (checkout movido?)"
+    return CheckResult(
+        name="web_unit",
+        healthy=ok,
+        label=label,
+        remediation="" if ok else "asb-agent install-server",
+    )
+
+
+def check_web_unit_active() -> CheckResult:
+    unit = install.SERVER_UNIT_NAME
+    enabled = subprocess.run(
+        ["systemctl", "--user", "is-enabled", unit],
+        capture_output=True, text=True).stdout.strip()
+    active = subprocess.run(
+        ["systemctl", "--user", "is-active", unit],
+        capture_output=True, text=True).stdout.strip()
+    ok = enabled == "enabled" and active == "active"
+    return CheckResult(
+        name="web_unit_active",
+        healthy=ok,
+        label=f"{unit}: enabled={enabled or 'desconhecido'} active={active or 'desconhecido'}",
+        remediation="" if ok else f"systemctl --user enable --now {unit}",
+    )
+
+
+def check_web_token_mode() -> CheckResult:
+    path = install.server_token_path()
+    try:
+        mode = path.stat().st_mode & 0o777
+    except OSError:
+        return CheckResult(
+            name="web_token_mode",
+            healthy=False,
+            label=f"token ausente: {path}",
+            remediation="asb-agent install-server",
+        )
+    ok = mode == 0o600
+    return CheckResult(
+        name="web_token_mode",
+        healthy=ok,
+        label=f"token {path} modo {oct(mode)}",
+        remediation="" if ok else f"chmod 600 {shlex.quote(str(path))}",
+    )
+
+
+def check_web_health() -> CheckResult:
+    url = install.server_health_url(install.server_port())
+    ok = install.default_health_check(url, timeout=3.0)
+    return CheckResult(
+        name="web_health",
+        healthy=ok,
+        label=f"{url} respondeu" if ok else f"{url} nao respondeu em 3s",
+        remediation="" if ok else f"journalctl --user -u {install.SERVER_UNIT_NAME}",
+    )
+
+
+def collect_web_checks(root: Path) -> list[CheckResult]:
+    """As seis checagens (unidade instalada) ou uma unica linha informativa
+    (unidade nunca instalada) — nunca as duas coisas."""
+    unit_path = _web_unit_path()
+    if not unit_path.is_file():
+        # `healthy=True`: um check informativo nunca reprova o diagnostico
+        # (mesmo padrao de `docker_broker`/`network_gate`). Mas
+        # `report.render_text` so imprime `remediation` para checks com
+        # `healthy=False` (`_line()`) — o comando de instalacao teria que
+        # ir na `label` tambem, senao o modo texto nunca mostra como
+        # instalar a interface web.
+        return [CheckResult(
+            name="web_interface",
+            healthy=True,
+            label=("interface web nao instalada (normal se nao usar a "
+                   "interface web; instale com: asb-agent install-server)"),
+            remediation="asb-agent install-server",
+        )]
+    return [
+        check_web_binary(root),
+        check_web_dist(root),
+        check_web_unit(unit_path),
+        check_web_unit_active(),
+        check_web_token_mode(),
+        check_web_health(),
+    ]
 
 
 # ---------------------------------------------------------------------------

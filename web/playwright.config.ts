@@ -1,7 +1,8 @@
 import { defineConfig } from "@playwright/test";
 
-// End-to-end tests land in later tasks alongside the components they
-// exercise; item 1 only wires the runner so `pnpm test:e2e` is callable.
+// One Playwright smoke e2e (spec §13.2): `tests/e2e.spec.ts` starts the real
+// daemon itself (`--fixture`, an isolated `ASB_CONFIG_ROOT` and a free
+// port), so this config stays minimal — no `webServer`, no browser matrix.
 export default defineConfig({
   testDir: "./tests",
 });

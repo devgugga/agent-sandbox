@@ -27,6 +27,9 @@ explicitly — never garbage-collected behind your back.
   install`)
 - `git`
 - `jq`, only if you use the Orca integration scripts under `recipes/`
+- `uv`, Node.js and `pnpm`, only if you use the web interface (`asb-agent
+  install-server`/`ui`) — see [Web interface](#web-interface) below. The
+  CLI itself stays pure standard library and needs none of them.
 
 Check all of the above at once, plus everything else the sandbox needs, with:
 
@@ -87,6 +90,8 @@ asb-agent purge   --workspace demo --yes   # remove the files too
 | `list` | lists known workspaces and their status |
 | `install-guards` | symlinks `asb-agent` and the provider guards (`asb-claude`, `asb-codex`, `asb-agy`) into `~/.local/bin` |
 | `install-broker` | installs the read-only Docker API broker (requires `sudo`, opt-in) |
+| `install-server` | builds and installs the web interface's daemon as a systemd user unit |
+| `ui [--print-url]` | opens the web interface in an app-mode browser window |
 | `project add --repo <path> [--integration-branch <b>] [--worktree-root <dir>]` | registers a project and its primary checkout — never creates a workspace |
 | `session list\|start\|attach\|stop\|resume` | persistent agent sessions (tmux inside the workspace), survive closing the terminal |
 | `tui` | a terminal UI over projects, checkouts and sessions, with worktree creation and merge-back |
@@ -111,6 +116,24 @@ to create, resume, suspend and destroy a workspace over SSH, plus
 `shim.template.sh` for wiring them up. They are thin wrappers around
 `cli/asb-agent up`/`resume`/`suspend`/`down` that print the one JSON line
 Orca expects.
+
+## Web interface
+
+A browser-based alternative to `asb-agent tui`: the same project,
+checkout and session tree, read from a small local daemon
+(`asb-server`). Requires `uv`, Node.js and `pnpm` — only for this,
+nothing else in the sandbox needs them.
+
+```bash
+asb-agent install-server   # uv sync, build the front end, install and
+                            # start the asb-server.service systemd unit
+asb-agent ui                # open it in an app-mode browser window
+```
+
+`install-server` is idempotent — re-run it after pulling changes or
+moving the checkout. `ui --print-url` prints the URL instead of opening a
+browser. Details: [`docs/domains/server/README.md`](./docs/domains/server/README.md)
+and [`docs/domains/web/README.md`](./docs/domains/web/README.md).
 
 ## If something's wrong
 
@@ -146,10 +169,14 @@ touch any of them.
 cli/asb-agent          the host entry point
 cli/asb/               the CLI's Python implementation
 cli/asb-guard          the wrapper the provider guards run through
+server/                asb-server: the web interface's FastAPI daemon
+web/                   asb-server's React front end
 image/                 the sandbox and proxy container images
 recipes/               Orca lifecycle hooks
 profiles/              the provisioning profile every workspace is staged with
 docs/domains/sandbox/  architecture, configuration, auth, security, failure modes
+docs/domains/server/   the daemon: package layout, error model, auth, testing
+docs/domains/web/      the front end: components, server state, testing
 docs/architecture/     Graphify knowledge-graph reference
 ```
 
@@ -166,5 +193,11 @@ For anything past this quick tour:
 - [`docs/domains/sandbox/security.md`](./docs/domains/sandbox/security.md) —
   the explicit security boundaries, and what the sandbox does not protect
   against.
+- [`docs/domains/server/README.md`](./docs/domains/server/README.md) —
+  the `asb-server` daemon: package layout, the error model,
+  authentication, and testing conventions.
+- [`docs/domains/web/README.md`](./docs/domains/web/README.md) — the
+  React front end: component structure, server state management, and
+  testing conventions.
 - [`AGENTS.md`](./AGENTS.md) — engineering guidelines and workflow for
   anyone (human or AI agent) contributing to this repository.

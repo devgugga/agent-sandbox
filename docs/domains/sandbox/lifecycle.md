@@ -261,6 +261,15 @@ volume is agent-writable.
 
 ## 6. The TUI
 
+The curses TUI is **frozen**: it takes no new features going forward. A
+browser-based alternative (`asb-agent ui`, backed by `asb-server`) now
+covers the same read-only tree — see
+[`docs/domains/server/README.md`](../server/README.md) and
+[`docs/domains/web/README.md`](../web/README.md). The TUI's mutating
+actions (worktree creation, session management, finish/cleanup, §6-§7
+below) stay TUI-only for now; this section documents its current,
+stable behavior, not a moving target.
+
 `asb-agent tui` needs an interactive terminal (exit 2 otherwise) and shows
 one tree: projects, then each project's primary checkout and worktrees,
 then each checkout's sessions (`agent  state  title`). Worktrees that Git

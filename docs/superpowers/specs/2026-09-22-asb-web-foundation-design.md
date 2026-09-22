@@ -253,7 +253,8 @@ characters, and the contract must be clean for any future client.
 
 A snapshot runs Git, Podman and SSH per checkout and takes seconds.
 `SnapshotService.read()` builds the services the same way the CLI does
-(`interfaces.sessions.session_services()` and `tui.default_checkouts()`),
+(`interfaces.sessions.session_services()` and
+`interfaces.snapshot.default_checkouts()`),
 fresh on every read so a registry edited on disk is seen, runs
 `read_snapshot` on a worker thread, and is single-flight: concurrent callers await the read already in progress and
 receive its result. There is no cache and no background refresh in item 1

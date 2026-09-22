@@ -10,6 +10,7 @@ headers, cookie attributes read off the raw `set-cookie` header (the
 """
 from __future__ import annotations
 
+import asyncio
 import stat
 import tempfile
 import unittest
@@ -176,6 +177,80 @@ class TestMeEndpoint(AuthTestCase):
         self.client.cookies.set("asb_session", forged_cookie)
         response = self.client.get("/api/auth/me")
         self.assertEqual(response.status_code, 401)
+
+
+class TestNonAsciiCookie(AuthTestCase):
+    """Whole-branch review, Important 1: `_sign` calls
+    `session_id.encode("ascii")` *before* `hmac.compare_digest` runs, so a
+    non-ASCII byte in the id half raised `UnicodeEncodeError`, which
+    escaped `verify_session_value`'s `except TypeError` and turned into a
+    500 with a traceback in the journal — contradicting this module's own
+    docstring, which claims malformed input including "non-ASCII bytes"
+    fails closed with 401. Cookie values arrive latin-1-decoded from the
+    header, so any byte above 0x7F before the `.` reaches this path
+    pre-authentication."""
+
+    def test_verify_session_value_does_not_raise_on_a_non_ascii_id(self):
+        self.assertFalse(self.manager.verify_session_value("\xe9bad.deadbeef"))
+
+    def test_non_ascii_cookie_at_the_asgi_layer_is_401_not_500(self):
+        """`httpx` (and therefore `TestClient`) refuses to send a cookie
+        header containing a byte above 0x7F, so the only way to reach
+        this path the way a real client would is to drive the ASGI
+        three-callable interface directly, bypassing `TestClient`
+        entirely."""
+        app = create_app(self.settings, snapshot_reader=_unused_snapshot_reader)
+
+        # ASGI header values are raw bytes on the wire; Starlette decodes
+        # them latin-1. Encoding this Python str as latin-1 round-trips
+        # to the exact byte (0xE9) a real client's non-ASCII cookie byte
+        # would arrive as.
+        cookie_header = "asb_session=\xe9bad.deadbeef".encode("latin-1")
+        scope = {
+            "type": "http",
+            "asgi": {"version": "3.0"},
+            "http_version": "1.1",
+            "method": "GET",
+            "scheme": "http",
+            "path": "/api/auth/me",
+            "raw_path": b"/api/auth/me",
+            "query_string": b"",
+            "root_path": "",
+            "headers": [(b"cookie", cookie_header)],
+            "client": ("127.0.0.1", 12345),
+            "server": ("127.0.0.1", DAEMON_PORT),
+        }
+        messages: list[dict] = []
+
+        async def receive():
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        async def send(message):
+            messages.append(message)
+
+        async def drive():
+            await app(scope, receive, send)
+
+        try:
+            asyncio.run(drive())
+        except UnicodeEncodeError:
+            # Unfixed code: Starlette's `ServerErrorMiddleware` sends a
+            # response (asserted below) and then RE-RAISES the exception
+            # for the ASGI server to log — this branch lets that
+            # unfixed-code behavior run to completion instead of failing
+            # the test on the exception itself; the assertion below is
+            # what actually proves the defect (500) or the fix (401).
+            pass
+
+        self.assertTrue(messages, "the app never sent a response")
+        start = messages[0]
+        self.assertEqual(start["type"], "http.response.start")
+        self.assertEqual(
+            start["status"], 401,
+            f"a non-ASCII cookie must fail closed with 401, got "
+            f"{start['status']} instead (a 500 here means the module "
+            f"docstring's fail-closed claim is false)",
+        )
 
 
 class TestSessionSurvivesRestart(AuthTestCase):

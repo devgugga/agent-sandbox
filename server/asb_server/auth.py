@@ -8,7 +8,7 @@ restart. Both are created atomically with
 `os.O_CREAT | os.O_EXCL | os.O_WRONLY` and the mode passed to `os.open` —
 never create-then-`chmod` (`cli/asb/keyring.py`'s pattern), which leaves a
 window where the file is briefly observable at the process umask's mode.
-These two files are the daemon's only secrets (amendment D).
+These two files are the daemon's only secrets.
 
 `AuthManager.load` is called from two places: `main.py::_serve` calls it
 once, eagerly, before `create_app`, purely to fail fast — "the daemon
@@ -19,13 +19,12 @@ byte-stable, disk-write-free command). So `create_app` never loads secrets
 itself; `get_auth_manager` below loads them lazily, on the first request
 that needs them, and caches the result on `app.state`.
 
-Every comparison against a secret goes through `hmac.compare_digest`
-(amendment F) — a plain `==` is a timing oracle on the token or on the
-session signature.
+Every comparison against a secret goes through `hmac.compare_digest` — a
+plain `==` is a timing oracle on the token or on the session signature.
 
-Task 5 (amendment D) adds the one log call spec Section 12 asks for here:
-"token file missing at daemon start: generated with 0600; logged once."
-The line names the path, never the secret value.
+Task 5 adds the one log call spec Section 12 asks for here: "token file
+missing at daemon start: generated with 0600; logged once." The line
+names the path, never the secret value.
 """
 from __future__ import annotations
 
@@ -45,7 +44,7 @@ from .settings import Settings
 SESSION_COOKIE_NAME = "asb_session"
 TOKEN_BYTES = 32
 
-# Any bit set beyond owner read/write is "looser than 0600" (amendment E).
+# Any bit set beyond owner read/write is "looser than 0600".
 _ALLOWED_MODE_BITS = 0o600
 
 logger = logging.getLogger("asb_server")
@@ -96,7 +95,7 @@ class AuthManager:
     def load(cls, settings: Settings) -> AuthManager:
         """Reads or creates both secret files. Raises `InsecureModeError`
         if either is looser than 0600 — the token and the session key are
-        equally secret (amendment E)."""
+        equally secret."""
         token, token_created = _ensure_secret_file(settings.token_path)
         if token_created:
             # Spec Section 12: "token file missing at daemon start:
@@ -134,7 +133,14 @@ class AuthManager:
             return False
         try:
             return hmac.compare_digest(self._sign(session_id), signature)
-        except TypeError:
+        except (TypeError, UnicodeEncodeError):
+            # `_sign` calls `session_id.encode("ascii")` before
+            # `compare_digest` ever runs. A cookie header is latin-1
+            # decoded by the ASGI server, so any byte above 0x7F in
+            # `session_id` raises `UnicodeEncodeError` here rather than
+            # the `TypeError` `compare_digest` itself would raise on a
+            # type mismatch — both are "malformed cookie", both fail
+            # closed the same way.
             return False
 
     def _sign(self, session_id: str) -> str:
@@ -165,7 +171,7 @@ def require_origin(request: Request) -> None:
     """Dependency for POST routes (and, later, WebSocket upgrades): the
     `Origin` header must equal the daemon's own origin or the dev origin.
     A missing or foreign origin is 403 — distinct from 401, which is about
-    the cookie, never the origin (amendment C)."""
+    the cookie, never the origin."""
     settings: Settings = request.app.state.settings
     origin = request.headers.get("origin")
     if origin is None or origin not in allowed_origins(settings):

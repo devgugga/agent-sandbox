@@ -1,0 +1,34 @@
+[project]
+name = "agent-sandbox"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "asb",
+    "asb_server",
+]
+
+[tool.uv]
+package = false
+
+[tool.uv.workspace]
+members = ["cli", "server"]
+
+[tool.uv.sources]
+asb = { workspace = true }
+asb_server = { workspace = true }
+
+[dependency-groups]
+dev = ["pytest", "ruff"]
+
+[tool.pytest.ini_options]
+addopts = "--import-mode=importlib"
+testpaths = ["tests/unit", "server/tests"]
+# importlib import mode does not add each test file's own directory to
+# sys.path (unlike the default "prepend" mode). tests/unit/*.py rely on
+# `import asb_test_isolation` resolving a sibling module by bare name;
+# this restores that resolution without reintroducing the same-name
+# module collision importlib mode was chosen to avoid.
+pythonpath = ["tests/unit"]
+
+[tool.ruff]
+include = ["server/**/*.py"]

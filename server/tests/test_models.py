@@ -246,6 +246,22 @@ class TestSanitization(unittest.TestCase):
         self.assertNotIn(BIDI_OVERRIDE, branch)
         self.assertEqual(branch, "main?evil")
 
+    def test_workspace_with_bidi_override_is_sanitized(self):
+        # CheckoutBinding.workspace is read verbatim from the on-disk
+        # registry file (cli/asb/projects/registry.py's loader does not
+        # validate its content) — an operator-editable field, not an
+        # internally generated id, so it is unprotected until the
+        # converter runs (review finding, Task 3 fix round 1).
+        hostile = f"ws{BIDI_OVERRIDE}-1"
+        checkout = _checkout(workspace=hostile)
+        snapshot = _snapshot(projects=(_project(),), checkouts=(checkout,))
+
+        response = tree_response(snapshot, read_at=datetime(2026, 1, 1, tzinfo=UTC))
+
+        workspace = response.projects[0].checkouts[0].workspace
+        self.assertNotIn(BIDI_OVERRIDE, workspace)
+        self.assertEqual(workspace, "ws?-1")
+
     def test_session_title_with_control_character_is_sanitized(self):
         hostile = f"bell{CONTROL_CHAR}here"
         checkout = _checkout()

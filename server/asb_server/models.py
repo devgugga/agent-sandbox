@@ -6,14 +6,20 @@ Section 7.3, `docs/superpowers/specs/2026-09-22-asb-web-foundation-design.md`).
 `TreeResponse`, grouping the same way `tui_model.build_tree` does: checkouts
 and unregistered worktrees by project, sessions by checkout.
 
-Every operator- or Git-sourced string that reaches a node — titles,
-branches, paths, reasons, errors — passes through `tui_model.sanitize`
-here, even when the source already scrubbed C0/C1 controls (`sanitize`
-also catches bidi overrides and other invisible formatting characters that
-a narrower filter, or React's own HTML escaping, does not). Vocabulary
-fields (`kind`, `status`, `agent`, `state`) reuse `asb`'s own enums rather
-than duplicating their literal values — one definition of each vocabulary,
-not two that can drift apart.
+Spec Section 7.3: "All operator- or Git-sourced strings ... pass through
+`tui_model.sanitize`" — titles, branches, paths, reasons and errors are
+that sentence's examples, not the whole of it. Every free-text field this
+converter builds, including `workspace` (read verbatim from the
+operator-editable registry file — `cli/asb/projects/registry.py`'s loader
+does not validate its content), passes through `sanitize` here, even when
+the source already scrubbed C0/C1 controls (`sanitize` also catches bidi
+overrides and other invisible formatting characters that a narrower
+filter, or React's own HTML escaping, does not). Internally generated ids
+(`checkout_id`, `project_id`, `session_id`, `terminal_id`) and closed enum
+vocabularies (`kind`, `status`, `agent`, `state`) are not operator text and
+are left as-is; the enum fields reuse `asb`'s own `StrEnum`s rather than
+duplicating their literal values — one definition of each vocabulary, not
+two that can drift apart.
 """
 from __future__ import annotations
 
@@ -103,7 +109,7 @@ def _checkout_node(view: CheckoutView, sessions: list[AgentSession]) -> Checkout
         id=str(view.checkout_id),
         kind=view.kind,
         path=sanitize(str(view.source_path)),
-        workspace=view.workspace,
+        workspace=sanitize(view.workspace),
         status=view.status,
         reason=_sanitized(view.reason),
         branch=_sanitized(view.branch),

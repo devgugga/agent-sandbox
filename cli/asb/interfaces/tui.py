@@ -42,21 +42,22 @@ from pathlib import Path
 from typing import TextIO
 
 from .. import podman
-from ..checkouts.git import BranchInfo, GitRepository
+from ..checkouts.git import BranchInfo, GitRepository  # noqa: F401 (tui.GitRepository e patcheado nos testes)
 from ..checkouts.manager import (
     CheckoutManager, CreateCheckout, CreatePreview, FinishPreview,
-    checkout_kind,
 )
 from ..checkouts.model import (
     CheckoutKind, FinishCheckout, FinishResult, FinishState,
 )
 from ..projects.model import Project, ProjectId
 from ..projects.registry import CheckoutBinding
-from ..runtime.sandbox import WorkspaceDiscovery, WorkspaceStatus
 from ..sessions.model import AgentKind, AgentSession, SessionState
 from ..sessions.terminal import Liveness, TmuxTerminal
 from .sessions import (
     SessionServices, session_attach, session_start, session_stop,
+)
+from .snapshot import (
+    _REASON_LIMIT, _reason, default_checkouts, read_branch, read_snapshot,
 )
 from .tui_model import (
     CheckoutView, RowKind, TreeRow, UnregisteredView, build_tree,
@@ -65,7 +66,6 @@ from .tui_model import (
 
 MIN_WIDTH = 40
 MIN_HEIGHT = 5
-_REASON_LIMIT = 120
 # Resultados de finish/cleanup que nao terminaram: a razao vai para o status.
 _UNFINISHED = frozenset({FinishState.BLOCKED, FinishState.CONFLICT,
                          FinishState.CLEANUP_PENDING})
@@ -79,15 +79,6 @@ _ESCAPE = 27
 _BACKSPACE_KEYS = frozenset({8, 127, curses.KEY_BACKSPACE})
 HELP = ("j/k move  Enter open  n new  d stop  w worktree  f finish  "
         "r refresh  q quit")
-
-
-# -- leitura de branch (so chamada por refresh) --------------------------------
-
-
-def read_branch(path: Path) -> BranchInfo | None:
-    """Branch de `path` pelo `GitRepository` (§C): a TUI nao monta argv de
-    Git. `None` em qualquer falha, nunca levanta."""
-    return GitRepository(path).branch()
 
 
 def run_child(argv: list[str]) -> int:
@@ -110,7 +101,10 @@ def pause_after_failure(code: int, *, out: TextIO | None = None,
 def session_liveness(services: SessionServices
                      ) -> Callable[[CheckoutBinding, AgentSession], Liveness]:
     """Sonda do tmux da sessao pela conexao viva do workspace, sem nunca
-    subir nada; uma conexao que nao resolve e `UNKNOWN`."""
+    subir nada; uma conexao que nao resolve e `UNKNOWN`. Fica aqui (e nao
+    em `snapshot.py`) so para os testes poderem substituir `TmuxTerminal`
+    e `Liveness` pelo proprio modulo `tui`; `default_checkouts` recebe
+    esta sonda pronta em vez de montar a sua."""
     def probe(binding: CheckoutBinding, session: AgentSession) -> Liveness:
         try:
             connection = services.resolve(binding.workspace)
@@ -118,24 +112,6 @@ def session_liveness(services: SessionServices
             return Liveness.UNKNOWN
         return TmuxTerminal(connection).probe(session.terminal_id)
     return probe
-
-
-def default_checkouts(services: SessionServices) -> CheckoutManager:
-    """O `CheckoutManager` da TUI, com o que `finish` precisa: o runtime,
-    as sessoes do store, a sonda de liveness e a escrita que marca
-    `completed` os registros que sobram depois da limpeza."""
-    return CheckoutManager(
-        services.registry, runtime=services.runtime,
-        sessions=lambda checkout_id: [s for s in services.store.list()
-                                      if s.checkout_id == checkout_id],
-        liveness=session_liveness(services),
-        complete_session=lambda session: services.store.replace(
-            session.with_state(SessionState.COMPLETED)))
-
-
-def _reason(error: BaseException) -> str:
-    lines = str(error).splitlines() or [type(error).__name__]
-    return sanitize(lines[0].strip() or type(error).__name__)[:_REASON_LIMIT]
 
 
 def _last_line(buffer: io.StringIO) -> str:
@@ -190,7 +166,9 @@ class TuiController:
         self._run_child = run_child
         self._pause_after_failure = pause_after_failure
         self.checkouts = (checkouts if checkouts is not None
-                          else default_checkouts(services))
+                          else default_checkouts(
+                              services, manager=CheckoutManager,
+                              liveness=session_liveness(services)))
         # Substituido pela camada curses (`run`); testes injetam um falso.
         self.terminal = _NoTerminal()
         self.rows: tuple[TreeRow, ...] = ()
@@ -243,105 +221,27 @@ class TuiController:
     # -- refresh ---------------------------------------------------------------
 
     def refresh(self) -> None:
+        """Le a arvore inteira por `snapshot.read_snapshot` e copia os
+        campos; a leitura em si nao mora mais aqui."""
         previous = self.selected_row
-        services = self._services
-        self._project_errors = {}
-        self._views = []
-        self._unregistered = []
-        self._sessions = []
-        try:
-            self._projects = list(services.registry.list())
-        except Exception as error:  # fronteira de UI: vira mensagem
+        snapshot = read_snapshot(self._services, self.checkouts,
+                                 self._read_branch)
+        if snapshot.registry_error is not None:
+            # Mesmo early return de antes: arvore vazia, so a mensagem.
             self._projects = []
-            self.message = f"registry: {_reason(error)}"
+            self._views = []
+            self._unregistered = []
+            self._sessions = []
+            self._project_errors = {}
+            self.message = f"registry: {snapshot.registry_error}"
             self._rebuild(previous)
             return
-        store_error = None
-        try:
-            stored = list(services.store.list())
-        except Exception as error:
-            stored = []
-            store_error = f"sessions: {_reason(error)}"
-        by_checkout: dict[str, list[AgentSession]] = {}
-        for session in stored:
-            by_checkout.setdefault(session.checkout_id, []).append(session)
-        for project in self._projects:
-            try:
-                discovered = services.runtime.discover(project)
-            except Exception as error:
-                self._project_errors[project.id] = _reason(error)
-                continue
-            missing = self._worktrees(project)
-            for found in discovered:
-                view, sessions = self._checkout(
-                    project, found,
-                    by_checkout.get(found.binding.checkout_id, []))
-                if store_error is not None:
-                    view = _with_error(view, store_error)
-                if found.binding.checkout_id in missing:
-                    view = replace(view, missing=True)
-                if view.kind is CheckoutKind.WORKTREE:
-                    # Prova fresca a cada refresh, nunca guardada; para um
-                    # worktree ausente, a das refs exportadas.
-                    view = replace(view, merged=self.checkouts.merged(
-                        view.checkout_id, project.integration_branch))
-                self._views.append(view)
-                self._sessions.extend(sessions)
+        self._projects = list(snapshot.projects)
+        self._views = list(snapshot.checkouts)
+        self._unregistered = list(snapshot.unregistered)
+        self._sessions = list(snapshot.sessions)
+        self._project_errors = dict(snapshot.project_errors)
         self._rebuild(previous)
-
-    def _worktrees(self, project: Project) -> set[str]:
-        """Le a lista do Git (nunca grava): guarda os worktrees fora do
-        registro e devolve os checkouts registrados que sumiram. Uma falha
-        marca o projeto e nao esconde os checkouts registrados."""
-        try:
-            listed = self.checkouts.list(project.id)
-        except Exception as error:
-            self._project_errors[project.id] = _reason(error)
-            return set()
-        missing: set[str] = set()
-        for entry in listed:
-            if entry.binding is not None:
-                if entry.missing:
-                    missing.add(entry.binding.checkout_id)
-                continue
-            # Sem vinculo, a entrada sempre vem do Git; um repositorio bare
-            # nao tem checkout onde abrir sessao.
-            wt = entry.worktree
-            if wt is None or wt.bare:
-                continue
-            self._unregistered.append(UnregisteredView(
-                project_id=project.id, path=entry.path,
-                branch=wt.branch or (wt.head[:7] if wt.head else None),
-                detached=wt.detached, missing=entry.missing,
-                prunable=wt.prunable))
-        return missing
-
-    def _checkout(self, project: Project, found: WorkspaceDiscovery,
-                  sessions: list[AgentSession]
-                  ) -> tuple[CheckoutView, list[AgentSession]]:
-        binding = found.binding
-        ready = (found.status is WorkspaceStatus.READY
-                 and found.connection is not None)
-        # Pronto: o branch do checkout de EXECUCAO do sandbox, onde o
-        # agente roda `git switch`. Senao, o do operador, marcado como host.
-        where = found.connection.project_root if ready else binding.source_path
-        branch = self._read_branch(where)
-        error = None
-        if ready and sessions:
-            try:
-                manager = self._services.manager_for(found.connection)
-                sessions = list(manager.reconcile(binding.checkout_id))
-            except Exception as exc:
-                error = _reason(exc)
-        view = CheckoutView(
-            checkout_id=binding.checkout_id, project_id=project.id,
-            source_path=binding.source_path, workspace=binding.workspace,
-            kind=checkout_kind(project, binding.source_path),
-            status=found.status,
-            branch=branch.name if branch is not None else None,
-            detached=branch.detached if branch is not None else False,
-            host_branch=not ready, reason=found.reason, error=error)
-        return view, sessions
 
     # -- navegacao -------------------------------------------------------------
 
@@ -757,11 +657,6 @@ def _cleanup_lines(preview: FinishPreview, *,
         "remote branches are never touched)",
         _lost_line(preview.lost_sessions),
     ))
-
-
-def _with_error(view: CheckoutView, error: str) -> CheckoutView:
-    combined = f"{view.error}; {error}" if view.error else error
-    return replace(view, error=combined)
 
 
 # -- camada curses ---------------------------------------------------------------

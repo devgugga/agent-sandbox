@@ -41,21 +41,32 @@ def read_branch(path: Path) -> BranchInfo | None:
     return GitRepository(path).branch()
 
 
+def _probe_liveness(services: SessionServices, binding: CheckoutBinding,
+                    session: AgentSession,
+                    terminal_cls: Callable[..., TmuxTerminal]) -> Liveness:
+    """O corpo da sonda de liveness, numa UNICA implementacao: pela conexao
+    viva do workspace, sem nunca subir nada; uma conexao que nao resolve e
+    `UNKNOWN`. `terminal_cls` e injetavel para quem monta o wrapper poder
+    late-bind a classe pelo PROPRIO modulo (ver `_default_liveness` aqui e
+    `tui.session_liveness`), o unico jeito de continuar patcheavel via
+    `mock.patch.object(<modulo>, "TmuxTerminal")` sem duplicar este
+    try/except em cada um."""
+    try:
+        connection = services.resolve(binding.workspace)
+    except (podman.PodmanError, OSError, subprocess.SubprocessError):
+        return Liveness.UNKNOWN
+    return terminal_cls(connection).probe(session.terminal_id)
+
+
 def _default_liveness(services: SessionServices
                       ) -> Callable[[CheckoutBinding, AgentSession], Liveness]:
-    """Sonda padrao do tmux da sessao pela conexao viva do workspace, sem
-    nunca subir nada; uma conexao que nao resolve e `UNKNOWN`. So o
-    fallback de `default_checkouts` quando quem chama nao injeta a sua
-    propria sonda (a TUI injeta: ver `tui.session_liveness`, que fica la
-    de proposito para os testes poderem substituir `TmuxTerminal` pelo
-    proprio modulo `tui`)."""
-    def probe(binding: CheckoutBinding, session: AgentSession) -> Liveness:
-        try:
-            connection = services.resolve(binding.workspace)
-        except (podman.PodmanError, OSError, subprocess.SubprocessError):
-            return Liveness.UNKNOWN
-        return TmuxTerminal(connection).probe(session.terminal_id)
-    return probe
+    """Sonda padrao (usa o `TmuxTerminal` deste modulo): o fallback de
+    `default_checkouts` quando quem chama nao injeta a sua propria (a TUI
+    injeta a dela — `tui.session_liveness` — que usa esta MESMA
+    `_probe_liveness`, so com a classe do proprio modulo `tui`, para
+    continuar patcheavel nos testes existentes)."""
+    return lambda binding, session: _probe_liveness(
+        services, binding, session, TmuxTerminal)
 
 
 def default_checkouts(services: SessionServices, *,

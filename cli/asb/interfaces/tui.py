@@ -41,7 +41,6 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TextIO
 
-from .. import podman
 from ..checkouts.git import BranchInfo, GitRepository  # noqa: F401 (tui.GitRepository e patcheado nos testes)
 from ..checkouts.manager import (
     CheckoutManager, CreateCheckout, CreatePreview, FinishPreview,
@@ -57,7 +56,8 @@ from .sessions import (
     SessionServices, session_attach, session_start, session_stop,
 )
 from .snapshot import (
-    _REASON_LIMIT, _reason, default_checkouts, read_branch, read_snapshot,
+    _REASON_LIMIT, _probe_liveness, _reason, default_checkouts, read_branch,
+    read_snapshot,
 )
 from .tui_model import (
     CheckoutView, RowKind, TreeRow, UnregisteredView, build_tree,
@@ -100,18 +100,15 @@ def pause_after_failure(code: int, *, out: TextIO | None = None,
 
 def session_liveness(services: SessionServices
                      ) -> Callable[[CheckoutBinding, AgentSession], Liveness]:
-    """Sonda do tmux da sessao pela conexao viva do workspace, sem nunca
-    subir nada; uma conexao que nao resolve e `UNKNOWN`. Fica aqui (e nao
-    em `snapshot.py`) so para os testes poderem substituir `TmuxTerminal`
-    e `Liveness` pelo proprio modulo `tui`; `default_checkouts` recebe
+    """Sonda do tmux da sessao pela conexao viva do workspace. O corpo
+    (try/except, `Liveness.UNKNOWN`) mora numa UNICA implementacao em
+    `snapshot._probe_liveness`; aqui so o wrapper que informa o
+    `TmuxTerminal` DESTE modulo, late-bound a cada chamada — e assim
+    continua patcheavel pelos testes via
+    `mock.patch.object(tui, "TmuxTerminal")`. `default_checkouts` recebe
     esta sonda pronta em vez de montar a sua."""
-    def probe(binding: CheckoutBinding, session: AgentSession) -> Liveness:
-        try:
-            connection = services.resolve(binding.workspace)
-        except (podman.PodmanError, OSError, subprocess.SubprocessError):
-            return Liveness.UNKNOWN
-        return TmuxTerminal(connection).probe(session.terminal_id)
-    return probe
+    return lambda binding, session: _probe_liveness(
+        services, binding, session, TmuxTerminal)
 
 
 def _last_line(buffer: io.StringIO) -> str:

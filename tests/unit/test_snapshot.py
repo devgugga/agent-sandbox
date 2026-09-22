@@ -23,10 +23,12 @@ from asb.checkouts.manager import CheckoutError, ListedCheckout  # noqa: E402
 from asb.checkouts.model import CheckoutKind  # noqa: E402
 from asb.podman import PodmanError  # noqa: E402
 from asb.projects.model import Project  # noqa: E402
+from asb.sessions.model import SessionState  # noqa: E402
+from asb.interfaces import snapshot  # noqa: E402
 from asb.interfaces.snapshot import read_snapshot  # noqa: E402
 
 from test_tui_controller import (  # noqa: E402
-    C_PRI, C_WT, OTHER_PROJECT, PROJECT, WORKTREE, _Case,
+    C_PRI, C_WT, OTHER_PROJECT, PROJECT, WORKTREE, _Case, _info,
 )
 
 
@@ -106,6 +108,27 @@ class TestReadSnapshot(_Case):
         # Os checkouts descobertos pelo runtime continuam presentes.
         self.assertEqual({v.checkout_id for v in snap.checkouts},
                          {C_PRI, C_WT})
+
+
+class TestDefaultCheckoutsLivenessFallback(_Case):
+    """§7.4 (spec): o daemon monta o `CheckoutManager` por
+    `default_checkouts(services)` SEM injetar `liveness` — o unico
+    chamador de producao que injeta e `TuiController.__init__`. Este e o
+    caminho padrao (`_default_liveness`, via `_probe_liveness`) que fica
+    sem cobertura se so testarmos o wrapper da TUI."""
+
+    def test_the_default_liveness_probe_actually_works(self):
+        self.runtime.sandbox_absent.return_value = False
+        lost = self.stored(C_WT, state=SessionState.DETACHED)
+        manager = snapshot.default_checkouts(self.services())
+        with mock.patch.object(snapshot, "TmuxTerminal") as terminal:
+            terminal.return_value.probe.return_value = snapshot.Liveness.DEAD
+            self.assertEqual(manager.lost_sessions(C_WT), (lost,))
+        terminal.assert_called_once_with(_info())
+        # Uma conexao que nao resolve e UNKNOWN, nunca DEAD: a sessao sai
+        # da lista do que o purge apagaria.
+        self.resolve.side_effect = PodmanError("container parado")
+        self.assertEqual(manager.lost_sessions(C_WT), ())
 
 
 class TestSnapshotImportsWithoutCurses(unittest.TestCase):

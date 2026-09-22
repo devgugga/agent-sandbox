@@ -12,9 +12,9 @@ default `token_path`/`session_key_path` are module-level constants
 resolved at import time (see `settings.py`), so only a fresh process
 picks up a fresh `ASB_CONFIG_ROOT` — patching the already-imported module
 in-process would not exercise the same code path `asb-server openapi`
-actually runs. This also verifies amendment Section F's "no secrets at
-import or `create_app` time" property directly: the fresh config root is
-still empty after both runs.
+actually runs. This also verifies the "no secrets at import or
+`create_app` time" property directly: the fresh config root is still
+empty after both runs.
 """
 from __future__ import annotations
 
@@ -57,7 +57,7 @@ class TestOpenapiByteStability(unittest.TestCase):
         self.assertEqual(list(self.tmp.iterdir()), [])
 
     def test_documents_401_403_and_503_on_the_relevant_routes(self):
-        # Task 5's documentation must not regress (amendment Section E).
+        # Task 5's documentation must not regress.
         schema = json.loads(_run_openapi(self.tmp).stdout)
         tree_get = schema["paths"]["/api/tree"]["get"]["responses"]
         self.assertIn("401", tree_get)

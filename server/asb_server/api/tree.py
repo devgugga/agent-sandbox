@@ -1,12 +1,11 @@
 """server/asb_server/api/tree.py — GET /api/tree.
 
 Requires the session cookie: reuses `auth.require_session` rather than a
-second cookie check (amendment Section A/Section F — Task 4 already owns
-that mechanism). The only condition that turns this route into an HTTP
-error is a registry failure (`Snapshot.registry_error`); every
-per-project or per-checkout failure stays data inside a 200 body via
-`models.tree_response`, the one converter Task 3 built (amendment
-Section E).
+second cookie check — Task 4 already owns that mechanism. The only
+condition that turns this route into an HTTP error is a registry failure
+(`Snapshot.registry_error`); every per-project or per-checkout failure
+stays data inside a 200 body via `models.tree_response`, the one
+converter Task 3 built.
 
 Fix round 1 (Important 2): the route documents its 401 and 503
 responses via `responses=`, both shaped `models.ErrorDetail`. Spec
@@ -61,10 +60,10 @@ async def get_tree(
     # the SAME `read_at` in the journal — spec Section 17.6's
     # observability requirement, without a second, dedicated log line.
     request.state.log_extra = f"read_at={read_at.isoformat()}"
-    # Task 6 (task-6-amendments.md Section D): a `--fixture` reader may
-    # yield the wire `TreeResponse` directly rather than a `Snapshot` —
-    # see `snapshot.py`'s module docstring for why. That shape is already
-    # the response; nothing left to convert or sanitize.
+    # Task 6: a `--fixture` reader may yield the wire `TreeResponse`
+    # directly rather than a `Snapshot` — see `snapshot.py`'s module
+    # docstring for why. That shape is already the response; nothing
+    # left to convert or sanitize.
     if isinstance(result, TreeResponse):
         return result
     if result.registry_error is not None:

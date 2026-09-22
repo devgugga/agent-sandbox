@@ -1,5 +1,5 @@
 // TopBar — refresh button, "read at" time, in-progress indicator, stale
-// marker (spec §9.2, amendment §D).
+// marker (spec §9.2).
 export interface TopBarProps {
   onRefresh: () => void;
   /** `data.read_at` from the last successful `/api/tree` response, if any. */
@@ -7,8 +7,7 @@ export interface TopBarProps {
   /** True while a read (initial or refetch) is in flight. */
   isFetching: boolean;
   /** True when the tree on screen is the last good one, but the most
-   * recent read failed (amendment §D: a 503 marks it stale, never clears
-   * it). */
+   * recent read failed: a 503 marks it stale, never clears it. */
   isStale: boolean;
 }
 

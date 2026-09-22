@@ -2,7 +2,7 @@
 
 The mechanism (token file, session cookie, Origin check) lives in
 `asb_server.auth`; this module only wires the two routes spec Section 7.2
-lists (amendment B: Task 4 owns both files).
+lists (Task 4 owns both files).
 
 Task 5 fix round 1 (controller ruling on Important 2): both routes now
 declare their non-2xx `responses=` (`models.ErrorDetail`) so the
@@ -49,7 +49,7 @@ async def create_session(
     """Body `{token}`; on match sets the session cookie and returns 204;
     401 otherwise (spec Section 7.2). The token arrives in the POST body,
     never a query string, so it never reaches a request line or a log
-    (spec Section 7.5, amendment G)."""
+    (spec Section 7.5)."""
     if not manager.verify_token(payload.token):
         raise HTTPException(status_code=401)
     response.set_cookie(

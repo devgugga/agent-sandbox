@@ -1,4 +1,4 @@
-// Direct evidence for the eight labels spec §9.2/amendment §B mandate
+// Direct evidence for the eight labels spec §9.2 mandates
 // verbatim, independent of any DOM rendering. Each case here is a rule
 // from `cli/asb/interfaces/tui_model.py`'s `_branch_label`, `_status_label`,
 // and the merged/error suffixes `_checkout_text` builds.

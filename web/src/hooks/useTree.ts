@@ -1,7 +1,7 @@
 // TanStack Query hook over `GET /api/tree` (spec §9.1, §9.4).
 //
-// Item 1 has no cache and no background refresh (spec §7.4, amendment §E):
-// refresh is the operator pressing a button, so window-focus and reconnect
+// Item 1 has no cache and no background refresh (spec §7.4): refresh is
+// the operator pressing a button, so window-focus and reconnect
 // refetching are disabled here and nothing polls. `refetch` is exposed for
 // that button. Retries are off too: a 401 or 503 is not transient the way a
 // blip is, and Task 8 (§C) needs to see `isError` right away to decide

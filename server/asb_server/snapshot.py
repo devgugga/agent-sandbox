@@ -1,8 +1,8 @@
 """server/asb_server/snapshot.py — SnapshotService: single-flight read on a
 worker thread.
 
-Spec Section 7.4 / task-5-amendments.md Section B, Section C: a snapshot
-runs Git, Podman and SSH per checkout and takes seconds.
+Spec Section 7.4: a snapshot runs Git, Podman and SSH per checkout and
+takes seconds.
 `SnapshotService.read()` must never block the event loop and must collapse
 concurrent callers onto ONE physical read.
 
@@ -10,8 +10,8 @@ concurrent callers onto ONE physical read.
 (matches `asb_server.app.SnapshotReader`): it composes `session_services`,
 `asb.interfaces.snapshot.default_checkouts` and `read_snapshot` fresh on
 every call — the same three calls `TuiController.refresh` makes, minus
-`tui.py`. Amendment Section C: the daemon imports `asb.interfaces.snapshot`,
-never `asb.interfaces.tui`, which does `import curses` at module level —
+`tui.py`. The daemon imports `asb.interfaces.snapshot`, never
+`asb.interfaces.tui`, which does `import curses` at module level —
 importing it here would undo Task 2 entirely.
 
 `SnapshotService` itself is generic and knows nothing about how a
@@ -23,10 +23,10 @@ onto one in-flight read, and a `read_at` timestamp captured once per
 physical read and shared by every caller that collapsed onto it. There is
 no cache: once the in-flight read completes, the NEXT call starts a
 brand-new one — caching and background refresh are item 4's job, not
-item 1's (amendment Section B).
+item 1's.
 
-Task 6 (task-6-amendments.md Section D) adds `fixture_reader` here, next
-to `production_reader`: a `--fixture <path.json>` reader. Spec Section 10
+Task 6 adds `fixture_reader` here, next to `production_reader`: a
+`--fixture <path.json>` reader. Spec Section 10
 says the fixture file has the `TreeResponse` *wire* shape — the far side
 of `models.tree_response`'s conversion — not a `Snapshot`'s. Reconstructing
 a real `Snapshot` from that shape would be lossy (`asb.projects.model
@@ -82,9 +82,9 @@ def production_reader(root: Path = _REPO_ROOT) -> Snapshot:
     snapshot. Fresh on every call, deliberately: `session_services`'s own
     docstring says construction touches no disk, Podman or SSH, so
     rebuilding it here is cheap and is what lets a registry edited on disk
-    between reads be seen (amendment Section B, property 3).
+    between reads be seen.
     `default_checkouts` is `asb.interfaces.snapshot`'s own function —
-    never `tui.default_checkouts` (amendment Section C). No custom
+    never `tui.default_checkouts`. No custom
     liveness probe is passed either: the default (`_default_liveness`,
     this module's own `TmuxTerminal`-based prober) is exactly what a
     caller without a `tui`-flavoured one should use."""
@@ -100,7 +100,7 @@ def fixture_reader(path: Path) -> SnapshotReader:
     fails fast with a clear message rather than as a 500 on the first
     `/api/tree` call.
 
-    `{"registry_error": "<reason>"}` (amendment Section C) drives the
+    `{"registry_error": "<reason>"}` drives the
     same 503 branch a real registry failure takes: an all-empty
     `Snapshot` with `registry_error` set, `reason` sanitized the same way
     `cli/asb/interfaces/snapshot.py::_reason` sanitizes a real one. Any

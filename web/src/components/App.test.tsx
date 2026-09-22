@@ -1,6 +1,6 @@
-// `AppShell` integration tests: the 503 path (spec §7.6, §9.2, amendment
-// §D) and the keyboard shortcuts that are not scoped to a single component
-// (spec §9.3, amendment §C). Mocked at the network boundary, exactly like
+// `AppShell` integration tests: the 503 path (spec §7.6, §9.2) and the
+// keyboard shortcuts that are not scoped to a single component
+// (spec §9.3). Mocked at the network boundary, exactly like
 // Task 9a's `useTree.test.tsx` — this exercises the real `useTree` hook
 // through a real `QueryClientProvider`, not a mock of it.
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -46,7 +46,7 @@ async function loadInitialTree() {
   await waitFor(() => expect(screen.getByText("agent-sandbox")).toBeInTheDocument());
 }
 
-describe("AppShell — the 503 path keeps the stale tree (amendment §D)", () => {
+describe("AppShell — the 503 path keeps the stale tree", () => {
   it("keeps the last tree on screen, marked stale, alongside the error banner", async () => {
     await loadInitialTree();
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
@@ -66,7 +66,7 @@ describe("AppShell — the 503 path keeps the stale tree (amendment §D)", () =>
   });
 });
 
-describe("AppShell — keyboard shortcuts (spec §9.3, amendment §C)", () => {
+describe("AppShell — keyboard shortcuts (spec §9.3)", () => {
   it("Ctrl+K opens the command palette", async () => {
     await loadInitialTree();
     await userEvent.setup().keyboard("{Control>}k{/Control}");

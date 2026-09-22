@@ -1,4 +1,4 @@
-// `DetailPanel` for each node kind (spec §9.2, §9.4, amendment §H): full
+// `DetailPanel` for each node kind (spec §9.2, §9.4): full
 // path, workspace, status/reason, branch and where it was read, sessions
 // with state and timestamps.
 import { render, screen } from "@testing-library/react";

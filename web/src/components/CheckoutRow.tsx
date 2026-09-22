@@ -1,6 +1,6 @@
 // CheckoutRow — a checkout or an unregistered worktree (spec §9.2, §9.4).
 // Renders the label vocabulary from `lib/labels.ts`, which mirrors
-// `cli/asb/interfaces/tui_model.py` verbatim (amendment §B): every string
+// `cli/asb/interfaces/tui_model.py` verbatim: every string
 // a viewer can read off this row for a checkout's branch, status, merge
 // state and error, and for an unregistered worktree's branch, "unregistered"
 // and "prunable", is exactly what the curses TUI would show for the same

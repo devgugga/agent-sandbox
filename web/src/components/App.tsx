@@ -1,7 +1,7 @@
 // App — top-level composition: AuthGate, TopBar, ProjectTree, DetailPanel,
 // ErrorBanner, CommandPalette (spec §9.4). Owns the two shortcuts that are
-// not scoped to a single component (`Ctrl+K`, `Alt+R` — amendment §C);
-// `ProjectTree` owns arrow/Enter navigation itself.
+// not scoped to a single component (`Ctrl+K`, `Alt+R`); `ProjectTree`
+// owns arrow/Enter navigation itself.
 //
 // `AppShell` is exported separately from the default `App` so tests can
 // mount it directly with a `QueryClientProvider` and a stubbed `fetch`,
@@ -36,9 +36,9 @@ export function AppShell() {
   useEffect(() => {
     function onKeyDown(event: KeyboardEvent) {
       const key = event.key.toLowerCase();
-      // `Ctrl+R` is the browser's reload in app mode and is left alone
-      // (amendment §C): no handler below matches it. `Alt+1..9`/`Alt+N`
-      // are reserved for item 2 and are likewise never bound here.
+      // `Ctrl+R` is the browser's reload in app mode and is left alone:
+      // no handler below matches it. `Alt+1..9`/`Alt+N` are reserved for
+      // item 2 and are likewise never bound here.
       if (event.ctrlKey && !event.altKey && !event.metaKey && key === "k") {
         event.preventDefault();
         setPaletteOpen(true);

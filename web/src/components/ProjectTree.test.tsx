@@ -1,5 +1,5 @@
-// `ProjectTree` renders the fixture with every label (spec §9.2, amendment
-// §B/§H); keyboard navigation and folding (spec §9.3). Tested through what
+// `ProjectTree` renders the fixture with every label (spec §9.2);
+// keyboard navigation and folding (spec §9.3). Tested through what
 // a user sees and types, never through component internals.
 import { useState } from "react";
 import { render, screen, within } from "@testing-library/react";

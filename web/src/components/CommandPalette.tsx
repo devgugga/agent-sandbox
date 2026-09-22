@@ -1,5 +1,5 @@
 // CommandPalette — Ctrl+K filtering: jump to a project, checkout or
-// session, or run "refresh" (spec §9.3, §9.4, amendment §C). This is the
+// session, or run "refresh" (spec §9.3, §9.4). This is the
 // one place every tree row and the refresh action are reachable from,
 // regardless of fold state or scroll position — "everything is reachable
 // through the palette; shortcuts are a complement" (spec §9.3).

@@ -15,8 +15,8 @@ from pydantic import BaseModel
 router = APIRouter(prefix="/api", tags=["health"])
 
 # Fixed once, at import time — every `/api/health` response in this
-# process reports the SAME instant (amendment Section F: "fixed at
-# process start, not per request").
+# process reports the SAME instant ("fixed at process start, not per
+# request").
 _STARTED_AT = datetime.now(UTC)
 
 # The installed `asb_server` distribution's version, exactly as

@@ -1,12 +1,12 @@
-"""server/tests/test_models.py — the wire contract (amendment H of Task 3).
+"""server/tests/test_models.py — the wire contract (Task 3).
 
 Covers: every model serializes and deserializes with all required fields
 present; `Snapshot` -> `TreeResponse` for a snapshot carrying a per-project
 error, a per-checkout error, a missing checkout, both merged-evidence
 labels (`merged / cleanup available` vs. `merged / cleanup pending`,
 tui_model.MERGED_LABEL / PENDING_LABEL) and an unregistered worktree; and
-the sanitization proof of amendment D, with genuinely hostile strings
-(a bidi override, a control character) rather than clean data.
+the sanitization proof, with genuinely hostile strings (a bidi override,
+a control character) rather than clean data.
 
 Deliberately named to collide with `tests/unit/test_models.py`-shaped
 suites elsewhere: `--import-mode=importlib` (Task 1) is what lets this
@@ -89,8 +89,7 @@ def _snapshot(**overrides: object) -> Snapshot:
 def _label_for(*, merged: bool, missing: bool) -> str | None:
     """The exact decision `tui_model.build_tree`/`_checkout_text` makes
     (cli/asb/interfaces/tui_model.py): only from `merged` and `missing`,
-    both present on `CheckoutNode` — the amendment E finding this test
-    proves."""
+    both present on `CheckoutNode` — the finding this test proves."""
     if not merged:
         return None
     return PENDING_LABEL if missing else MERGED_LABEL
@@ -153,7 +152,7 @@ class TestSnapshotConversion(unittest.TestCase):
     per-checkout error, a missing checkout, both merged labels, and an
     unregistered worktree."""
 
-    def test_covers_every_amendment_h_scenario(self):
+    def test_covers_every_conversion_scenario(self):
         project = _project()
         checkout_ready = _checkout(
             checkout_id=CheckoutId("c-ready0001"), kind=CheckoutKind.PRIMARY,

@@ -1,4 +1,4 @@
-// AuthGate — token exchange and URL cleanup (spec §7.5, §9.4, amendment §E).
+// AuthGate — token exchange and URL cleanup (spec §7.5, §9.4).
 //
 // `asb-agent ui` opens `http://127.0.0.1:<port>/#token=<token>` exactly
 // once. This component reads that token from the URL fragment (never a

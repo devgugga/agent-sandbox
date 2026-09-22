@@ -10,9 +10,9 @@ token or session-key files at this point — `create_app` also runs inside
 (see `asb_server.auth`'s module docstring). Secrets load lazily, on the
 first request that needs them.
 
-Task 5 adds the daemon's logging convention here (task-5-amendments.md
-Section D), for the two sites that are cross-cutting rather than owned by
-one route: `_log_requests` is the "one line per request to stdout"
+Task 5 adds the daemon's logging convention here, for the two sites that
+are cross-cutting rather than owned by one route: `_log_requests` is the
+"one line per request to stdout"
 middleware (spec Section 7.6), and `_unhandled_exception` is the
 "traceback to the journal only, generic 500 to the caller" handler.
 Neither writes the token, the cookie, or provider output — `_log_requests`
@@ -116,8 +116,8 @@ def create_app(settings: Settings, *, snapshot_reader: SnapshotReader) -> FastAP
     app.include_router(health_api.router)
     app.include_router(tree_api.router)
     # LAST: `static_api`'s catch-all (`/{full_path:path}`) must never be
-    # tried before a concrete `/api/...` route (amendment Section B).
-    # Starlette matches routes in registration order, so THIS ordering is
+    # tried before a concrete `/api/...` route. Starlette matches routes
+    # in registration order, so THIS ordering is
     # what makes every `/api` router above actually answer its own path.
     # `static.py`'s own `full_path.startswith("api")` guard is a narrower,
     # order-independent safeguard against a different failure: an

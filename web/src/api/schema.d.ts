@@ -40,7 +40,7 @@ export interface paths {
          * @description Body `{token}`; on match sets the session cookie and returns 204;
          *     401 otherwise (spec Section 7.2). The token arrives in the POST body,
          *     never a query string, so it never reaches a request line or a log
-         *     (spec Section 7.5, amendment G).
+         *     (spec Section 7.5).
          */
         post: operations["create_session_api_auth_session_post"];
         delete?: never;

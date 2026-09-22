@@ -1,5 +1,5 @@
-// `CommandPalette` filtering and jump (spec §9.3, §9.4, amendment §C/§H):
-// jump to a project, checkout or session, or run "refresh".
+// `CommandPalette` filtering and jump (spec §9.3, §9.4): jump to a
+// project, checkout or session, or run "refresh".
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";

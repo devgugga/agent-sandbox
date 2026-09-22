@@ -1,5 +1,5 @@
-// Label rules mirroring `cli/asb/interfaces/tui_model.py` (spec §9.2,
-// amendment §B). Every string this module can produce is copied verbatim
+// Label rules mirroring `cli/asb/interfaces/tui_model.py` (spec §9.2).
+// Every string this module can produce is copied verbatim
 // from `_branch_label`, `_status_label`, `_checkout_text` and
 // `_unregistered_text` there — this file is the front end's single source
 // for the eight mandated labels, so no component builds label text inline.

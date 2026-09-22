@@ -10,8 +10,7 @@ Cobre so o que a Tarefa 1 entrega: `import asb` funciona, `cli/asb-agent`
 continua rodando sem venv (sys.path.insert, sem instalacao), e `asb` nunca
 referencia `asb_server` (direcao unica de dependencia, spec Secao 5). A
 asserçao de `from asb_server import app` do brief original foi movida para
-a Tarefa 3 (ruling do controlador, amendment H) — `asb_server.app` nao
-existe ate la.
+a Tarefa 3 (ruling do controlador) — `asb_server.app` nao existe ate la.
 """
 from __future__ import annotations
 
@@ -55,9 +54,8 @@ class TestNoImportCycle(unittest.TestCase):
 
     def test_from_asb_server_import_app_works(self):
         # A outra metade da direcao: server importa asb. asb_server.app so
-        # existe a partir da Tarefa 3 (ruling do controlador, amendment F);
-        # por isso esta asserçao (do brief original da Tarefa 1) foi
-        # movida para ca.
+        # existe a partir da Tarefa 3 (ruling do controlador); por isso
+        # esta asserçao (do brief original da Tarefa 1) foi movida para ca.
         from asb_server import app  # noqa: F401
 
 

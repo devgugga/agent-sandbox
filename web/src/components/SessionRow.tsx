@@ -1,7 +1,7 @@
 // SessionRow — a leaf row for one agent session (spec §9.2, §9.4). Mirrors
 // the fields `tui_model.build_tree` puts on a session line (agent, state,
 // title); the exact "agent  state  title" concatenation is a curses
-// rendering detail, not one of the mandated labels (amendment §B), so this
+// rendering detail, not one of the mandated labels, so this
 // renders the same three fields as separate, styled pieces instead.
 import type { SessionNode } from "../types/tree";
 

@@ -1,7 +1,7 @@
-// `ErrorBanner` on 503 (spec §9.2, §7.6, amendment §D/§H). This file
-// covers the banner's own rendering in isolation; the "stale tree still
-// visible" half of amendment §D is covered by `App.test.tsx`, where the
-// banner sits alongside a real `ProjectTree`.
+// `ErrorBanner` on 503 (spec §9.2, §7.6). This file covers the banner's
+// own rendering in isolation; the "stale tree still visible" half (the
+// banner never hides the last good tree) is covered by `App.test.tsx`,
+// where the banner sits alongside a real `ProjectTree`.
 import { render, screen } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { ErrorBanner } from "./ErrorBanner";

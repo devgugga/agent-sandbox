@@ -1,6 +1,6 @@
-// Fold state for the project tree, persisted in `localStorage` (spec §9.2,
-// amendment §F: "nothing else belongs there — the session lives in the
-// cookie"). This is the only thing this app puts in browser storage.
+// Fold state for the project tree, persisted in `localStorage` (spec
+// §9.2). Nothing else belongs there — the session lives in the cookie.
+// This is the only thing this app puts in browser storage.
 import { useCallback, useState } from "react";
 
 const STORAGE_KEY = "asb.tree.collapsed";

@@ -1,8 +1,8 @@
 // DetailPanel — everything a tree row cannot hold for the selected node
-// (spec §9.2, §9.4, amendment §G): full path, workspace id, status and
-// reason, branch and where it was read (sandbox or host), sessions with
-// state and timestamps. This area becomes the terminal workbench in item
-// 2 — it stays a plain, read-only summary here.
+// (spec §9.2, §9.4): full path, workspace id, status and reason, branch
+// and where it was read (sandbox or host), sessions with state and
+// timestamps. This area becomes the terminal workbench in item 2 — it
+// stays a plain, read-only summary here.
 import { UNREGISTERED_LABEL, branchLabel, statusLabel } from "../lib/labels";
 import type { Row } from "../lib/tree";
 import type { CheckoutNode, ProjectNode, SessionNode, UnregisteredNode } from "../types/tree";

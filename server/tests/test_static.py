@@ -10,11 +10,12 @@ Amendment Section B's whole point: `/api/*` NEVER falls back to
 still fail the property even at the right status code), not by trusting
 that `static.router` is mounted after the `/api` routers.
 
-`TestFixtureReader` proves amendment Section C/D/F: a real daemon built
-with `snapshot.fixture_reader` over the two files in `server/fixtures/`
-serves the healthy tree's data verbatim (Section D's bypass of
-`models.tree_response`/`sanitize`) and drives the registry-failure
-fixture through the exact same 503 branch a real registry failure takes;
+`TestFixtureReader` proves: a real daemon built with
+`snapshot.fixture_reader` over the two files in `server/fixtures/`
+serves the healthy tree's data verbatim (bypassing
+`models.tree_response`/`sanitize`, since a fixture already carries the
+wire shape) and drives the registry-failure fixture through the exact
+same 503 branch a real registry failure takes;
 auth is untouched either way (Section F) — every fixture-backed request
 below still needs the real cookie.
 """
@@ -158,9 +159,8 @@ class TestMissingDist(StaticTestCase):
 
 class FixtureTestCase(unittest.TestCase):
     """Common fixture for `--fixture`-reader tests: a real token/session
-    (auth is never disabled — amendment Section F) and a real `dist` so
-    the daemon this builds is exactly what `asb-server serve --fixture`
-    would run."""
+    (auth is never disabled) and a real `dist` so the daemon this builds
+    is exactly what `asb-server serve --fixture` would run."""
 
     def setUp(self) -> None:
         tmp = Path(self.enterContext(tempfile.TemporaryDirectory()))

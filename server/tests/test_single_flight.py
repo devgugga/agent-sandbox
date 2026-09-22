@@ -105,7 +105,7 @@ class TestProductionReaderComposition(unittest.TestCase):
         self.assertIs(result, sentinel_snapshot)
         # Nothing here reaches for a second, `tui`-specific liveness probe
         # or manager factory — `default_checkouts` is called with just the
-        # services, relying on its own default (amendment Section C).
+        # services, relying on its own default.
         self.assertEqual(mock_checkouts.call_args, call(sentinel_services))
 
 
@@ -281,7 +281,7 @@ class TestSingleFlightCollapsesConcurrentReads(SingleFlightTestCase):
 
     def test_next_request_after_completion_reads_again(self):
         # No cache: once the in-flight read finishes, the NEXT call is a
-        # genuinely new physical read (amendment Section B, property 3).
+        # genuinely new physical read.
         calls: list[datetime] = []
 
         def reader() -> Snapshot:

@@ -1,7 +1,7 @@
 """server/asb_server/static.py — serve `web/dist` with SPA fallback.
 
-Spec Section 9/Section 12, amendment Section B: `/` and any non-`/api`
-path serve the built front end's `index.html` (a single-page app owns
+Spec Section 9/Section 12: `/` and any non-`/api` path serve the built
+front end's `index.html` (a single-page app owns
 further routing client-side once loaded); `/api/*` NEVER falls back — an
 unmatched `/api` path must stay a 404 the front end can tell apart from a
 real response, never HTML it might try to parse as one. `web/dist`

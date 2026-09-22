@@ -1,5 +1,5 @@
-// `AuthGate` exchanges the token and clears the fragment (spec §7.5,
-// amendment §E/§H). Mocked at the network boundary (`global.fetch`), like
+// `AuthGate` exchanges the token and clears the fragment (spec §7.5).
+// Mocked at the network boundary (`global.fetch`), like
 // Task 9a's own client tests — never by mocking `../api/client` itself.
 import { render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -43,7 +43,7 @@ describe("AuthGate — token in the URL fragment", () => {
 
     await waitFor(() => expect(screen.getByText("authenticated content")).toBeInTheDocument());
 
-    // The fragment never lingers, success or failure (amendment §E).
+    // The fragment never lingers, success or failure.
     expect(window.location.hash).toBe("");
 
     const [request] = mockFetch.mock.calls[0] as [Request];

@@ -46,8 +46,8 @@ class TestHealthEndpoint(unittest.TestCase):
         datetime.fromisoformat(body["started_at"])
 
     def test_started_at_is_fixed_across_requests(self):
-        # spec/amendment Section F: fixed at process start, not per
-        # request — two calls to the SAME app report the SAME instant.
+        # Fixed at process start, not per request — two calls to the
+        # SAME app report the SAME instant.
         client = self._client()
         first = client.get("/api/health").json()["started_at"]
         second = client.get("/api/health").json()["started_at"]

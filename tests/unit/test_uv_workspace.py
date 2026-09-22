@@ -53,6 +53,13 @@ class TestNoImportCycle(unittest.TestCase):
         text = ASB_AGENT.read_text(encoding="utf-8")
         self.assertNotIn("asb_server", text)
 
+    def test_from_asb_server_import_app_works(self):
+        # A outra metade da direcao: server importa asb. asb_server.app so
+        # existe a partir da Tarefa 3 (ruling do controlador, amendment F);
+        # por isso esta asserçao (do brief original da Tarefa 1) foi
+        # movida para ca.
+        from asb_server import app  # noqa: F401
+
 
 class TestAsbAgentRunsWithoutVenv(unittest.TestCase):
     """cli/asb-agent roda direto do checkout: sem venv, sem PYTHONPATH."""

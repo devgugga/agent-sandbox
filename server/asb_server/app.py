@@ -51,13 +51,18 @@ from starlette.responses import Response
 from .api import auth as auth_api
 from .api import health as health_api
 from .api import tree as tree_api
+from .models import TreeResponse
 from .settings import Settings
 from .snapshot import SnapshotService
+from .static import router as static_api
 
 # The seam spec Section 10 names: a real read in production, a fixture or a
 # stub in tests. Task 3 stores it for the routes later tasks add; it never
-# calls it itself.
-SnapshotReader = Callable[[], Snapshot]
+# calls it itself. Task 6 broadens this to `Snapshot | TreeResponse`
+# (mirrors `snapshot.SnapshotReader` — see that module's docstring): a
+# `--fixture` reader yields the wire `TreeResponse` directly for the
+# healthy case, never a reconstructed `Snapshot`.
+SnapshotReader = Callable[[], Snapshot | TreeResponse]
 
 logger = logging.getLogger("asb_server")
 
@@ -110,6 +115,13 @@ def create_app(settings: Settings, *, snapshot_reader: SnapshotReader) -> FastAP
     app.include_router(auth_api.router)
     app.include_router(health_api.router)
     app.include_router(tree_api.router)
+    # LAST: `static_api`'s catch-all (`/{full_path:path}`) must never be
+    # tried before a concrete `/api/...` route (amendment Section B).
+    # Starlette matches routes in registration order, so every `/api`
+    # router above wins its own path first; `static.py`'s own
+    # `full_path.startswith("api")` guard enforces the same property a
+    # second, independent way (see that module's docstring).
+    app.include_router(static_api)
     app.add_middleware(BaseHTTPMiddleware, dispatch=_log_requests)
     app.add_exception_handler(Exception, _unhandled_exception)
     return app

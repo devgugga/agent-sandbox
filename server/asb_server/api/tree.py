@@ -55,12 +55,18 @@ async def get_tree(
     request: Request,
     service: SnapshotService = Depends(get_snapshot_service),  # noqa: B008 (FastAPI idiom)
 ) -> TreeResponse:
-    snapshot, read_at = await service.read()
+    result, read_at = await service.read()
     # Surfaced in the per-request log line (`app._log_requests`): two
     # concurrent requests that collapsed onto the same physical read show
     # the SAME `read_at` in the journal — spec Section 17.6's
     # observability requirement, without a second, dedicated log line.
     request.state.log_extra = f"read_at={read_at.isoformat()}"
-    if snapshot.registry_error is not None:
-        raise HTTPException(status_code=503, detail=snapshot.registry_error)
-    return tree_response(snapshot, read_at=read_at)
+    # Task 6 (task-6-amendments.md Section D): a `--fixture` reader may
+    # yield the wire `TreeResponse` directly rather than a `Snapshot` —
+    # see `snapshot.py`'s module docstring for why. That shape is already
+    # the response; nothing left to convert or sanitize.
+    if isinstance(result, TreeResponse):
+        return result
+    if result.registry_error is not None:
+        raise HTTPException(status_code=503, detail=result.registry_error)
+    return tree_response(result, read_at=read_at)

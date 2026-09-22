@@ -1,0 +1,144 @@
+{
+  "read_at": "2026-09-22T12:00:00Z",
+  "projects": [
+    {
+      "id": "p-agent-sandbox",
+      "name": "agent-sandbox",
+      "primary_path": "/home/demo/agent-sandbox",
+      "integration_branch": "main",
+      "error": null,
+      "checkouts": [
+        {
+          "id": "c-primary",
+          "kind": "primary",
+          "path": "/home/demo/agent-sandbox",
+          "workspace": "main",
+          "status": "ready",
+          "reason": null,
+          "branch": "main",
+          "detached": false,
+          "host_branch": false,
+          "missing": false,
+          "merged": false,
+          "error": null,
+          "sessions": [
+            {
+              "id": "s-claude-review",
+              "agent": "claude",
+              "state": "running",
+              "title": "review PR #42",
+              "cwd": "/home/demo/agent-sandbox",
+              "terminal_id": "t-1",
+              "started_at": "2026-09-22T09:00:00Z",
+              "ended_at": null,
+              "last_healthy_at": "2026-09-22T11:55:00Z"
+            }
+          ]
+        },
+        {
+          "id": "c-feature-x",
+          "kind": "worktree",
+          "path": "/home/demo/agent-sandbox-worktrees/feature-x",
+          "workspace": "feature-x",
+          "status": "unavailable",
+          "reason": "podman down",
+          "branch": "feature-x",
+          "detached": false,
+          "host_branch": false,
+          "missing": false,
+          "merged": false,
+          "error": "reconcile failed",
+          "sessions": []
+        },
+        {
+          "id": "c-gone",
+          "kind": "worktree",
+          "path": "/home/demo/agent-sandbox-worktrees/gone",
+          "workspace": "gone",
+          "status": "absent",
+          "reason": null,
+          "branch": null,
+          "detached": false,
+          "host_branch": false,
+          "missing": true,
+          "merged": false,
+          "error": null,
+          "sessions": []
+        },
+        {
+          "id": "c-merged-cleanup",
+          "kind": "worktree",
+          "path": "/home/demo/agent-sandbox-worktrees/merged-cleanup",
+          "workspace": "merged-cleanup",
+          "status": "ready",
+          "reason": null,
+          "branch": "merged-cleanup",
+          "detached": false,
+          "host_branch": false,
+          "missing": false,
+          "merged": true,
+          "error": null,
+          "sessions": [
+            {
+              "id": "s-codex-idle",
+              "agent": "codex",
+              "state": "detached",
+              "title": "cleanup notes",
+              "cwd": "/home/demo/agent-sandbox-worktrees/merged-cleanup",
+              "terminal_id": null,
+              "started_at": "2026-09-21T08:00:00Z",
+              "ended_at": null,
+              "last_healthy_at": "2026-09-21T08:30:00Z"
+            }
+          ]
+        }
+      ],
+      "unregistered": [
+        {
+          "path": "/home/demo/agent-sandbox-worktrees/scratch",
+          "branch": "wip-scratch",
+          "detached": false,
+          "missing": false,
+          "prunable": true
+        }
+      ]
+    },
+    {
+      "id": "p-docs-site",
+      "name": "docs-site",
+      "primary_path": "/home/demo/docs-site",
+      "integration_branch": "main",
+      "error": null,
+      "checkouts": [
+        {
+          "id": "c-docs-primary",
+          "kind": "primary",
+          "path": "/home/demo/docs-site",
+          "workspace": "main",
+          "status": "ready",
+          "reason": null,
+          "branch": "main",
+          "detached": true,
+          "host_branch": true,
+          "missing": false,
+          "merged": false,
+          "error": null,
+          "sessions": [
+            {
+              "id": "s-antigravity-draft",
+              "agent": "antigravity",
+              "state": "starting",
+              "title": "draft changelog",
+              "cwd": "/home/demo/docs-site",
+              "terminal_id": "t-2",
+              "started_at": "2026-09-22T11:00:00Z",
+              "ended_at": null,
+              "last_healthy_at": null
+            }
+          ]
+        }
+      ],
+      "unregistered": []
+    }
+  ]
+}

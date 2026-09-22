@@ -24,10 +24,32 @@ physical read and shared by every caller that collapsed onto it. There is
 no cache: once the in-flight read completes, the NEXT call starts a
 brand-new one — caching and background refresh are item 4's job, not
 item 1's (amendment Section B).
+
+Task 6 (task-6-amendments.md Section D) adds `fixture_reader` here, next
+to `production_reader`: a `--fixture <path.json>` reader. Spec Section 10
+says the fixture file has the `TreeResponse` *wire* shape — the far side
+of `models.tree_response`'s conversion — not a `Snapshot`'s. Reconstructing
+a real `Snapshot` from that shape would be lossy (`asb.projects.model
+.Project` needs `worktree_root`/`git_common_dir`, which `TreeResponse`
+never carries, and `ProjectNode.name` is an independent JSON field where
+production instead derives the name from `Project.primary`'s last path
+segment — a fixture's declared name could silently disagree with what a
+reconstructed `Project` would produce). So `fixture_reader` yields the
+parsed `TreeResponse` directly for the healthy case, bypassing
+`tree_response`/`sanitize` entirely; that conversion already has its own
+exhaustive coverage in `server/tests/test_tree.py` and `test_models.py`,
+so nothing goes uncovered by this choice. The registry-failure fixture
+(`{"registry_error": "<reason>"}`) is the one case that genuinely IS a
+`Snapshot` concept — a real registry failure has no tree at all — so that
+branch returns an all-empty `Snapshot` with `registry_error` set, driving
+the exact same 503 branch `api/tree.py::get_tree` already has.
+`SnapshotReader` below is broadened to `Snapshot | TreeResponse` to carry
+either result through the same `SnapshotService`/`get_tree` plumbing.
 """
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -39,8 +61,11 @@ from asb.interfaces.snapshot import (
     read_branch,
     read_snapshot,
 )
+from asb.interfaces.tui_model import sanitize
 
-SnapshotReader = Callable[[], Snapshot]
+from .models import TreeResponse
+
+SnapshotReader = Callable[[], Snapshot | TreeResponse]
 
 # `cli/asb-agent`'s own `ROOT` is `Path(__file__).resolve().parent.parent`
 # from `cli/asb-agent` — the repository root, which `SandboxRuntime` uses
@@ -68,6 +93,35 @@ def production_reader(root: Path = _REPO_ROOT) -> Snapshot:
     return read_snapshot(services, checkouts, read_branch)
 
 
+def fixture_reader(path: Path) -> SnapshotReader:
+    """Builds a `--fixture <path.json>` reader (spec Section 10). Parsed
+    ONCE here, at `serve` startup (`main.py` calls this before
+    `uvicorn.run`), not lazily on the first request — a malformed fixture
+    fails fast with a clear message rather than as a 500 on the first
+    `/api/tree` call.
+
+    `{"registry_error": "<reason>"}` (amendment Section C) drives the
+    same 503 branch a real registry failure takes: an all-empty
+    `Snapshot` with `registry_error` set, `reason` sanitized the same way
+    `cli/asb/interfaces/snapshot.py::_reason` sanitizes a real one. Any
+    other file is parsed as the `TreeResponse` wire shape and returned
+    as-is — see the module docstring for why this bypasses
+    `models.tree_response`/`sanitize` rather than reconstructing a
+    `Snapshot`."""
+    data = json.loads(path.read_text())
+    if "registry_error" in data:
+        result: Snapshot | TreeResponse = Snapshot(
+            projects=(), checkouts=(), sessions=(), unregistered=(),
+            project_errors={}, registry_error=sanitize(data["registry_error"]))
+    else:
+        result = TreeResponse.model_validate(data)
+
+    def _read() -> Snapshot | TreeResponse:
+        return result
+
+    return _read
+
+
 class SnapshotService:
     """Wraps a `SnapshotReader` with worker-thread execution and
     single-flight collapsing. Built once and cached on `app.state`
@@ -77,9 +131,11 @@ class SnapshotService:
 
     def __init__(self, reader: SnapshotReader) -> None:
         self._reader = reader
-        self._inflight: asyncio.Future[tuple[Snapshot, datetime]] | None = None
+        self._inflight: (
+            asyncio.Future[tuple[Snapshot | TreeResponse, datetime]] | None
+        ) = None
 
-    async def read(self) -> tuple[Snapshot, datetime]:
+    async def read(self) -> tuple[Snapshot | TreeResponse, datetime]:
         """Runs `self._reader` on the default executor (a worker thread,
         never the event loop) and returns `(snapshot, read_at)`.
 
@@ -108,10 +164,12 @@ class SnapshotService:
             self._inflight = future
         return await asyncio.shield(future)
 
-    def _clear(self, _future: asyncio.Future[tuple[Snapshot, datetime]]) -> None:
+    def _clear(
+        self, _future: asyncio.Future[tuple[Snapshot | TreeResponse, datetime]]
+    ) -> None:
         self._inflight = None
 
-    async def _read_once(self) -> tuple[Snapshot, datetime]:
+    async def _read_once(self) -> tuple[Snapshot | TreeResponse, datetime]:
         loop = asyncio.get_running_loop()
         snapshot = await loop.run_in_executor(None, self._reader)
         return snapshot, datetime.now(UTC)

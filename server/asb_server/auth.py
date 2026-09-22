@@ -22,11 +22,16 @@ that needs them, and caches the result on `app.state`.
 Every comparison against a secret goes through `hmac.compare_digest`
 (amendment F) — a plain `==` is a timing oracle on the token or on the
 session signature.
+
+Task 5 (amendment D) adds the one log call spec Section 12 asks for here:
+"token file missing at daemon start: generated with 0600; logged once."
+The line names the path, never the secret value.
 """
 from __future__ import annotations
 
 import hashlib
 import hmac
+import logging
 import os
 import secrets
 import stat
@@ -43,17 +48,19 @@ TOKEN_BYTES = 32
 # Any bit set beyond owner read/write is "looser than 0600" (amendment E).
 _ALLOWED_MODE_BITS = 0o600
 
+logger = logging.getLogger("asb_server")
+
 
 class InsecureModeError(RuntimeError):
     """A secret file's mode is looser than 0600. `str(exc)` names the exact
     `chmod` command to run (spec Section 12); the daemon must not start."""
 
 
-def _ensure_secret_file(path: Path) -> str:
-    """Returns the hex secret at `path`, creating it (32 random bytes,
-    hex, mode 0600) if it does not exist yet. Creation is atomic: the
-    kernel sets the mode at `os.open` time, so the file is never
-    observable at any other mode. Raises `InsecureModeError` if an
+def _ensure_secret_file(path: Path) -> tuple[str, bool]:
+    """Returns `(hex secret at path, was it just created)`, creating it
+    (32 random bytes, hex, mode 0600) if it does not exist yet. Creation
+    is atomic: the kernel sets the mode at `os.open` time, so the file is
+    never observable at any other mode. Raises `InsecureModeError` if an
     existing file's mode is looser than 0600."""
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -64,7 +71,7 @@ def _ensure_secret_file(path: Path) -> str:
         secret = secrets.token_hex(TOKEN_BYTES)
         with os.fdopen(fd, "w") as handle:
             handle.write(secret)
-        return secret
+        return secret, True
 
     mode = stat.S_IMODE(path.stat().st_mode)
     if mode & ~_ALLOWED_MODE_BITS:
@@ -72,7 +79,7 @@ def _ensure_secret_file(path: Path) -> str:
             f"{path} has mode {mode:04o}, which is looser than 0600. "
             f"Run: chmod 600 {path}"
         )
-    return path.read_text().strip()
+    return path.read_text().strip(), False
 
 
 @dataclass(frozen=True)
@@ -90,8 +97,14 @@ class AuthManager:
         """Reads or creates both secret files. Raises `InsecureModeError`
         if either is looser than 0600 — the token and the session key are
         equally secret (amendment E)."""
-        token = _ensure_secret_file(settings.token_path)
-        session_key_hex = _ensure_secret_file(settings.session_key_path)
+        token, token_created = _ensure_secret_file(settings.token_path)
+        if token_created:
+            # Spec Section 12: "token file missing at daemon start:
+            # generated with 0600; logged once." Only the path, never the
+            # token itself.
+            logger.info("token file created at %s (mode 0600)",
+                        settings.token_path)
+        session_key_hex, _ = _ensure_secret_file(settings.session_key_path)
         return cls(token=token, session_key=bytes.fromhex(session_key_hex))
 
     def verify_token(self, candidate: str) -> bool:

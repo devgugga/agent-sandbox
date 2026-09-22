@@ -5,29 +5,28 @@ and the cookie/token auth is Task 4's (amendment A). `openapi` must print
 byte-identical JSON across runs — `pnpm check:api` (spec Section 5) depends
 on that determinism, and this is where it is designed in: `sort_keys=True`
 so no dict's insertion order leaks into the output.
+
+Logging is configured here, in `_serve`, rather than in `create_app`:
+`asb-server openapi` calls `create_app` too and must stay a pure,
+side-effect-free command, so process-wide logging setup belongs to the
+one entry point that actually serves traffic. It runs before
+`AuthManager.load` so that call's own "token file created" log line
+(spec Section 12, `auth.py`) is not silently dropped.
 """
 from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
 from collections.abc import Sequence
 
 import uvicorn
-from asb.interfaces.snapshot import Snapshot
 
 from .app import create_app
 from .auth import AuthManager, InsecureModeError
 from .settings import DEV_ORIGIN, Settings, port_from_env
-
-
-def _unwired_snapshot_reader() -> Snapshot:
-    """`SnapshotService.read` is Task 5's (amendment A); until it exists,
-    `serve` starts and answers `/api/health` (Task 5's route) but any route
-    that reads the tree has nothing working to call."""
-    raise NotImplementedError(
-        "snapshot reading is asb_server.snapshot.SnapshotService (Task 5); "
-        "asb-server serve has no working tree reader yet")
+from .snapshot import production_reader
 
 
 def _settings_for(args: argparse.Namespace) -> Settings:
@@ -38,6 +37,8 @@ def _settings_for(args: argparse.Namespace) -> Settings:
 
 def _serve(args: argparse.Namespace) -> None:
     settings = _settings_for(args)
+    logging.basicConfig(level=logging.INFO, stream=sys.stdout,
+                         format="%(asctime)s %(name)s %(message)s")
     try:
         AuthManager.load(settings)
     except InsecureModeError as exc:
@@ -45,12 +46,12 @@ def _serve(args: argparse.Namespace) -> None:
         # `create_app` itself never loads secrets (see auth.py).
         print(str(exc), file=sys.stderr)
         sys.exit(1)
-    app = create_app(settings, snapshot_reader=_unwired_snapshot_reader)
+    app = create_app(settings, snapshot_reader=production_reader)
     uvicorn.run(app, host=settings.host, port=settings.port)
 
 
 def _openapi(_args: argparse.Namespace) -> None:
-    app = create_app(Settings(), snapshot_reader=_unwired_snapshot_reader)
+    app = create_app(Settings(), snapshot_reader=production_reader)
     json.dump(app.openapi(), sys.stdout, indent=2, sort_keys=True)
     sys.stdout.write("\n")
 

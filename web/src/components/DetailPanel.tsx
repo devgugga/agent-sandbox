@@ -3,7 +3,7 @@
 // reason, branch and where it was read (sandbox or host), sessions with
 // state and timestamps. This area becomes the terminal workbench in item
 // 2 — it stays a plain, read-only summary here.
-import { branchLabel, statusLabel } from "../lib/labels";
+import { UNREGISTERED_LABEL, branchLabel, statusLabel } from "../lib/labels";
 import type { Row } from "../lib/tree";
 import type { CheckoutNode, ProjectNode, SessionNode, UnregisteredNode } from "../types/tree";
 
@@ -104,7 +104,7 @@ function UnregisteredDetails({
         label="Branch"
         value={branchLabel(unregistered.branch, unregistered.detached, false)}
       />
-      <Field label="Status" value="unregistered" />
+      <Field label="Status" value={UNREGISTERED_LABEL} />
       <Field label="Missing" value={unregistered.missing ? "yes" : "no"} />
       <Field label="Prunable" value={unregistered.prunable ? "yes" : "no"} />
     </dl>

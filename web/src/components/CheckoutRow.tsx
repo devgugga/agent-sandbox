@@ -6,7 +6,15 @@
 // and "prunable", is exactly what the curses TUI would show for the same
 // node.
 import type { ReactNode } from "react";
-import { branchLabel, errorLabel, mergedLabel, statusLabel } from "../lib/labels";
+import {
+  MISSING_LABEL,
+  PRUNABLE_LABEL,
+  UNREGISTERED_LABEL,
+  branchLabel,
+  errorLabel,
+  mergedLabel,
+  statusLabel,
+} from "../lib/labels";
 import type { CheckoutNode, UnregisteredNode } from "../types/tree";
 
 export type CheckoutRowNode =
@@ -92,7 +100,7 @@ function CheckoutFields({ checkout }: { checkout: CheckoutNode }) {
       </span>
       <Badge>{statusLabel(checkout.status, checkout.reason)}</Badge>
       {checkout.kind === "worktree" && <Badge>{checkout.path}</Badge>}
-      {checkout.missing && <Badge>missing</Badge>}
+      {checkout.missing && <Badge>{MISSING_LABEL}</Badge>}
       {merged && <Badge>{merged}</Badge>}
       {error && <Badge tone="danger">{error}</Badge>}
     </>
@@ -106,10 +114,10 @@ function UnregisteredFields({ unregistered }: { unregistered: UnregisteredNode }
       <span className="text-fg">
         {branchLabel(unregistered.branch, unregistered.detached, false)}
       </span>
-      <Badge>unregistered</Badge>
+      <Badge>{UNREGISTERED_LABEL}</Badge>
       <Badge>{unregistered.path}</Badge>
-      {unregistered.missing && <Badge>missing</Badge>}
-      {unregistered.prunable && <Badge>prunable</Badge>}
+      {unregistered.missing && <Badge>{MISSING_LABEL}</Badge>}
+      {unregistered.prunable && <Badge>{PRUNABLE_LABEL}</Badge>}
     </>
   );
 }

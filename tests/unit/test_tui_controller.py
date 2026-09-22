@@ -30,7 +30,7 @@ from asb.checkouts.model import (  # noqa: E402
     Checkout, CheckoutId, CheckoutKind, CheckoutState, FinishCheckout,
     FinishResult, FinishState,
 )
-from asb.interfaces import sessions, tui  # noqa: E402
+from asb.interfaces import sessions, snapshot, tui  # noqa: E402
 from asb.interfaces.tui_model import PLACEHOLDER, RowKind  # noqa: E402
 from asb.podman import PodmanError  # noqa: E402
 from asb.projects.model import Project, ProjectId  # noqa: E402
@@ -1184,7 +1184,11 @@ class TestReadBranch(unittest.TestCase):
 
     def test_the_default_reads_through_the_git_repository(self):
         info = BranchInfo("main", False)
-        with mock.patch.object(tui.GitRepository, "branch",
+        # `tui.read_branch` is `snapshot.read_branch` (Tarefa 12, aliased
+        # via import): it resolves `GitRepository` from `snapshot.py`'s
+        # own module scope, so the patch target is `snapshot.GitRepository`,
+        # not a name in `tui.py` (`tui.py` no longer imports it).
+        with mock.patch.object(snapshot.GitRepository, "branch",
                                autospec=True, return_value=info) as branch:
             self.assertEqual(tui.read_branch(Path("/r")), info)
         [call] = branch.call_args_list

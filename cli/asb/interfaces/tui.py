@@ -41,7 +41,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TextIO
 
-from ..checkouts.git import BranchInfo, GitRepository  # noqa: F401 (tui.GitRepository e patcheado nos testes)
+from ..checkouts.git import BranchInfo
 from ..checkouts.manager import (
     CheckoutManager, CreateCheckout, CreatePreview, FinishPreview,
 )

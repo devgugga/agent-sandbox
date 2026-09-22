@@ -9,6 +9,11 @@ import tailwindcss from "@tailwindcss/vite";
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   server: {
+    // `server/asb_server/settings.py`'s DEV_ORIGIN pins :5173 as the
+    // allowed dev Origin. Without strictPort, Vite silently moves to
+    // :5174 when :5173 is taken, and the dev-mode token POST then fails
+    // with a 403 the operator has no way to explain.
+    strictPort: true,
     proxy: {
       "/api": {
         target: "http://127.0.0.1:7420",

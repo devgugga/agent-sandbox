@@ -182,6 +182,18 @@ class TestAggregateExitCode(unittest.TestCase):
                    CheckResult("netns_producers_third_party", False, "y", "z")]
         self.assertEqual(aggregate_exit_code(results), 0)
 
+    def test_a_stopped_web_unit_alone_does_not_flip_the_json_code(self):
+        """Minor 8 (revisao final): as seis checagens web sao
+        infraestrutura opcional, mesmo precedente de `docker_broker` e
+        `network_gate` — um `asb-server.service` parado nao pode derrubar
+        `infra_healthy` do sandbox inteiro."""
+        for name in ("web_binary", "web_dist", "web_unit", "web_unit_active",
+                     "web_token_mode", "web_health"):
+            with self.subTest(name):
+                results = [CheckResult("podman_installed", True, "x", ""),
+                           CheckResult(name, False, "parado", "systemctl ...")]
+                self.assertEqual(aggregate_exit_code(results), 0)
+
     def test_empty_results_is_infrastructure_failure_not_healthy(self):
         """R26: um conjunto vazio de checks nunca reporta saudavel — vale so
         para esta funcao pura (`doctor()` nunca a chama com lista vazia,
@@ -210,6 +222,16 @@ class TestTextExitCode(unittest.TestCase):
     def test_drift_failure_does_not_flip_the_text_code(self):
         diag = _diag([CheckResult("drift_rtk", False, "defasado", "asb-agent build")])
         self.assertEqual(text_exit_code(diag), 0)
+
+    def test_a_stopped_web_unit_alone_does_not_flip_the_text_code(self):
+        """Minor 8 (revisao final): a mesma exclusao vale no modo texto —
+        e o sintoma que o achado descreve e exatamente `asb-agent doctor`
+        (texto) saindo 1."""
+        for name in ("web_binary", "web_dist", "web_unit", "web_unit_active",
+                     "web_token_mode", "web_health"):
+            with self.subTest(name):
+                diag = _diag([CheckResult(name, False, "parado", "systemctl ...")])
+                self.assertEqual(text_exit_code(diag), 0)
 
     def test_legacy_workspace_flips_the_text_code(self):
         ws = {"workspace": "demo", "healthy": False,

@@ -1,5 +1,5 @@
-// ErrorBanner — registry 503, stale tree still visible (spec §9.2, §7.6,
-// amendment §D). This component only renders the message; keeping the
+// ErrorBanner — registry 503, stale tree still visible (spec §9.2, §7.6).
+// This component only renders the message; keeping the
 // stale tree on screen alongside it is `AppShell`'s job (it never stops
 // rendering `ProjectTree` just because `useTree`'s `error` is set).
 import { ServiceUnavailableError, UnauthorizedError, type TreeFetchError } from "../api/client";
@@ -13,7 +13,10 @@ function describe(error: TreeFetchError): string {
     return `Registry unavailable: ${error.message}`;
   }
   if (error instanceof UnauthorizedError) {
-    return `Session expired: ${error.message}`;
+    // `AuthGate` only checks the session at mount, so a mid-session 401
+    // has no route back to a fresh cookie on its own — the banner has to
+    // name the fix, the same one `AuthGate.tsx` gives at mount.
+    return `Session expired: ${error.message} Run 'asb-agent ui' again to open a fresh link.`;
   }
   return `Failed to read the tree: ${error.message}`;
 }

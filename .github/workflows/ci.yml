@@ -7,6 +7,12 @@ on:
   push:
   pull_request:
 
+# Neither job needs more than the default read scope (checkout, install
+# dependencies, run tests — nothing here writes to the repo, comments on
+# a PR, or publishes a package).
+permissions:
+  contents: read
+
 env:
   # `.python-version` pins 3.14 — a runner without that interpreter
   # preinstalled would fail `uv sync --frozen` before anything else.

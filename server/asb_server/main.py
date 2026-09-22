@@ -1,7 +1,7 @@
 """server/asb_server/main.py — console entry: `asb-server serve` / `openapi`.
 
-`serve`'s cookie/token auth is Task 4's (amendment A); `--fixture` is
-Task 6's (`_reader_for` below). `openapi` never touches `--fixture` — it
+`serve`'s cookie/token auth is Task 4's; `--fixture` is Task 6's
+(`_reader_for` below). `openapi` never touches `--fixture` — it
 always uses `production_reader`, and must print byte-identical JSON
 across runs: `pnpm check:api` (spec Section 5) depends on that
 determinism, and this is where it is designed in: `sort_keys=True` so no
@@ -39,10 +39,10 @@ def _settings_for(args: argparse.Namespace) -> Settings:
 
 def _reader_for(args: argparse.Namespace) -> SnapshotReader:
     """`--fixture <path.json>` (spec Section 10) is a testability hook,
-    not a bypass (amendment Section F): it only swaps WHAT `create_app`
-    reads, never whether auth runs (`_serve` still calls `AuthManager
-    .load` first, exactly as without it), the bind address (`settings
-    .host` is untouched — `_settings_for` never reads `args.fixture`), or
+    not a bypass: it only swaps WHAT `create_app` reads, never whether
+    auth runs (`_serve` still calls `AuthManager.load` first, exactly as
+    without it), the bind address (`settings.host` is untouched —
+    `_settings_for` never reads `args.fixture`), or
     whether secrets are created at `create_app` time (`create_app` never
     loads them either way; see `auth.py`'s module docstring). The fixture
     file itself is read and validated HERE, once, before `uvicorn.run` —
@@ -70,7 +70,11 @@ def _serve(args: argparse.Namespace) -> None:
         print(str(exc), file=sys.stderr)
         sys.exit(1)
     app = create_app(settings, snapshot_reader=_reader_for(args))
-    uvicorn.run(app, host=settings.host, port=settings.port)
+    # `access_log=False`: uvicorn's own access log would double every
+    # request line alongside `app.py`'s `_log_requests` middleware, which
+    # is the "one line per request" spec Section 7.6 asks for (and what
+    # the validation checklist's row 4.2 counts).
+    uvicorn.run(app, host=settings.host, port=settings.port, access_log=False)
 
 
 def _openapi(_args: argparse.Namespace) -> None:

@@ -24,9 +24,22 @@ from .checks import CheckResult
 # no caso de `network_gate`, um achado empirico preexistente (ver
 # `_TEXT_EXCLUDED_NAMES` abaixo e o relatorio da Tarefa 5) — NAO um requisito
 # do brief, preservado tal como estava, nao corrigido.
+#
+# Revisao final (Minor 8): as seis checagens web (`collect_web_checks`,
+# `checks.py`) entram aqui pelo MESMO motivo que `docker_broker` e
+# `network_gate` — infraestrutura opcional. Sem isto, instalar a interface
+# web e depois parar `asb-server.service` (por exemplo, para manutencao)
+# derruba `infra_healthy` do sandbox inteiro, que nada tem a ver com o
+# daemon web. `web_interface` (o placeholder de "nao instalada") fica de
+# fora desta lista: seu `healthy` ja e sempre True, entao exclui-lo nao
+# mudaria nada.
+_WEB_CHECK_NAMES = frozenset({
+    "web_binary", "web_dist", "web_unit", "web_unit_active",
+    "web_token_mode", "web_health",
+})
 _JSON_EXCLUDED_NAMES = frozenset({
     "network_gate", "docker_broker", "netns_producers_third_party",
-})
+}) | _WEB_CHECK_NAMES
 _DRIFT_PREFIX = "drift_"
 
 # Nomes excluidos do agregado de saude do modo texto. Divergem dos do JSON:
@@ -34,8 +47,10 @@ _DRIFT_PREFIX = "drift_"
 # original nunca teve um `if c["name"] == "network_gate": continue` — so
 # tratava `docker_broker` e `drift_*` como especiais. Ver o relatorio da
 # Tarefa 5, secao "achado empirico": os dois modos ja divergiam antes desta
-# Tarefa, e este modulo preserva a divergencia em vez de unifica-la.
-_TEXT_EXCLUDED_NAMES = frozenset({"docker_broker"})
+# Tarefa, e este modulo preserva a divergencia em vez de unifica-la. As seis
+# checagens web sao excluidas nos DOIS modos (ver `_JSON_EXCLUDED_NAMES`
+# acima): a divergencia preexistente e sobre `network_gate`, nao sobre elas.
+_TEXT_EXCLUDED_NAMES = frozenset({"docker_broker"}) | _WEB_CHECK_NAMES
 
 
 def _line(lines: list[str], ok: bool, label: str, fix: str = "") -> bool:
